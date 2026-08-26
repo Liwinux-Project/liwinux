@@ -35,6 +35,24 @@ enum Cmd {
 enum KeymapAction {
     /// Kullanılabilir girdi cihazlarını listele
     Devices,
+    /// Android dokunuş göstergesini aç/kapat (kalibrasyon görsel yardımı)
+    Overlay {
+        /// kapat
+        #[arg(long)]
+        off: bool,
+    },
+    /// Koordinat taraması: hangi noktaların pencereye ulaştığını ölç
+    Sweep {
+        /// Eksen: x veya y
+        #[arg(default_value = "x")]
+        axis: char,
+        /// Nokta sayısı
+        #[arg(long, default_value_t = 11)]
+        count: u32,
+        /// Noktalar arası bekleme (ms)
+        #[arg(long, default_value_t = 900)]
+        gap: u64,
+    },
     /// Klavyeyi kalibrasyonla belirle: bir tuşa bas
     Detect {
         /// Bulunan cihazı yapılandırmaya kaydet
@@ -125,6 +143,8 @@ async fn main() -> Result<()> {
         Cmd::Keymap { action } => {
             return match action {
                 KeymapAction::Devices => keymap::list_devices(),
+                KeymapAction::Overlay { off } => keymap::overlay(!off).await,
+                KeymapAction::Sweep { axis, count, gap } => keymap::sweep(axis, count, gap).await,
                 KeymapAction::Detect { save } => keymap::detect(save).await,
                 KeymapAction::Watch { device } => keymap::watch(device).await,
                 KeymapAction::Poke { x, y, hold, to, region, invert_x, invert_y } => {

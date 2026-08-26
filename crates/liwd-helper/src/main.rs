@@ -22,6 +22,7 @@ const OBJ_PATH: &str = "/id/liwinux/Helper1";
 const ACT_PROP: &str = "id.liwinux.helper.read-property";
 const ACT_DIAG: &str = "id.liwinux.helper.net-diagnose";
 const ACT_REPAIR: &str = "id.liwinux.helper.net-repair";
+const ACT_OVERLAY: &str = "id.liwinux.helper.debug-overlay";
 
 struct Helper {
     conn: Connection,
@@ -93,6 +94,35 @@ impl Helper {
         #[zbus(header)] hdr: Header<'_>,
     ) -> zbus::fdo::Result<bool> {
         Ok(self.get_prop("sys.boot_completed", hdr).await?.trim() == "1")
+    }
+
+    /// Android'in dokunuş göstergesini (pointer location) açar/kapatır.
+    ///
+    /// Kalibrasyon için şart: dokunuşun ekranda NEREYE düştüğü görülmeden
+    /// koordinat eşlemesi ayarlanamaz. Yalnızca bu geliştirici ayarını
+    /// değiştirir; sabit komut, kullanıcıdan gelen dize yok.
+    async fn set_pointer_location(
+        &self,
+        enabled: bool,
+        #[zbus(header)] hdr: Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        self.authorize(&hdr, ACT_OVERLAY, false).await?;
+        let val = if enabled { "1" } else { "0" };
+        for key in ["pointer_location", "show_touches"] {
+            let out = Command::new("waydroid")
+                .args(["--details-to-stdout", "shell", "--",
+                       "settings", "put", "system", key, val])
+                .stdin(Stdio::null())
+                .output().await
+                .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+            if !out.status.success() {
+                let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                return Err(zbus::fdo::Error::Failed(
+                    format!("settings put {key} başarısız: {err}")));
+            }
+        }
+        tracing::info!(enabled, "dokunuş göstergesi ayarlandı");
+        Ok(())
     }
 
     /// Salt okunur ağ teşhisi (JSON). Sistemi değiştirmez, etkileşim istemez.

@@ -358,3 +358,44 @@ pub async fn detect(save: bool) -> Result<()> {
     }
     Ok(())
 }
+
+/// Android dokunuş göstergesini açar/kapatır (kalibrasyon için).
+pub async fn overlay(on: bool) -> Result<()> {
+    let h = liw_core::HelperClient::connect().await
+        .context("liwd-helper'a bağlanılamadı — çalışıyor mu? \
+                  (sudo systemctl status liwd-helper)")?;
+    h.set_pointer_location(on).await.context("gösterge ayarlanamadı")?;
+    println!("dokunuş göstergesi: {}", if on { "AÇIK" } else { "kapalı" });
+    if on {
+        println!("Artık her dokunuş ekranda işaretlenecek — nereye düştüğünü göreceksin.");
+    }
+    Ok(())
+}
+
+/// X ekseni boyunca tarama yapar: hangi koordinatların pencereye ulaştığını bulur.
+///
+/// Koordinat eşlemesini tahminle ayarlamak yerine ölçmek için. Kullanıcı
+/// hangi noktaların ekranda göründüğünü ve NEREDE göründüğünü bildirir.
+pub async fn sweep(axis: char, count: u32, gap_ms: u64) -> Result<()> {
+    use liw_core::input::Norm;
+
+    let mut b = UinputBackend::new(ScreenMap::default())
+        .context("sanal dokunmatik ekran oluşturulamadı")?;
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    println!("Tarama: {} ekseni, {count} nokta, {gap_ms}ms aralık", axis);
+    println!("Android ekranını izle — hangi numaraların göründüğünü not al.");
+    println!();
+
+    for i in 0..count {
+        let t = i as f32 / (count - 1).max(1) as f32;
+        let at = if axis == 'y' { Norm::new(0.5, t) } else { Norm::new(t, 0.5) };
+        println!("  #{:<2}  {} = {:.2}   ({:.3}, {:.3})", i, axis, t, at.x, at.y);
+        b.dispatch(&[TouchAction::Down { id: 0, at }])?;
+        tokio::time::sleep(std::time::Duration::from_millis(160)).await;
+        b.dispatch(&[TouchAction::Up { id: 0 }])?;
+        tokio::time::sleep(std::time::Duration::from_millis(gap_ms)).await;
+    }
+    println!();
+    println!("Görünen ilk ve son numarayı söyle — eşlemeyi ondan hesaplayacağım.");
+    Ok(())
+}

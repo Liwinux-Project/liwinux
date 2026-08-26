@@ -29,6 +29,17 @@
     </defaults>
   </action>
 
+  <!-- Geliştirici görsel yardımı; sistem güvenliğini etkilemez. -->
+  <action id="id.liwinux.helper.debug-overlay">
+    <description>Android dokunuş göstergesini aç/kapat</description>
+    <message>liwinux'un kalibrasyon için dokunuş göstergesini açması gerekiyor</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
   <!-- Güvenlik duvarını DEĞİŞTİRİR: yönetici kimlik doğrulaması şart.
        auth_admin_keep, arka arkaya onarım adımlarında tekrar tekrar
        parola sormayı önler ama yetkiyi kalıcı kılmaz. -->

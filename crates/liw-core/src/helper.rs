@@ -43,6 +43,11 @@ impl HelperClient {
             .await.map_err(|e| HelperError::Call(e.to_string()))
     }
 
+    pub async fn set_pointer_location(&self, enabled: bool) -> Result<(), HelperError> {
+        self.proxy.call("SetPointerLocation", &(enabled,))
+            .await.map_err(|e| HelperError::Call(e.to_string()))
+    }
+
     pub async fn net_diagnose(&self) -> Result<String, HelperError> {
         self.proxy.call("NetDiagnose", &())
             .await.map_err(|e| HelperError::Call(e.to_string()))
