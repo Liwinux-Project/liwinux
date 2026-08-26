@@ -40,28 +40,57 @@ const ABS_MAX: i32 = 32767;
 ///
 /// Waydroid penceresi tam ekran değilse, pencerenin ekran içindeki
 /// konumu/oranı burada hesaba katılır.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct ScreenMap {
-    /// Pencerenin ekran içindeki sol üst köşesi (0..1).
+    /// Hedef pencerenin dokunmatik uzayındaki sol üst köşesi (0..1).
     pub origin_x: f32,
     pub origin_y: f32,
-    /// Pencerenin ekran içindeki oranı (0..1).
+    /// Hedef pencerenin dokunmatik uzayındaki oranı (0..1).
     pub scale_x: f32,
     pub scale_y: f32,
+    /// Eksen aynalaması. Çoklu monitör veya döndürülmüş çıkışlarda
+    /// gerekebilir; ölçümle belirlenir, varsayılmaz.
+    #[serde(default)]
+    pub invert_x: bool,
+    #[serde(default)]
+    pub invert_y: bool,
 }
 
 impl Default for ScreenMap {
-    /// Tam ekran: birebir eşleme.
+    /// Tam ekran, tek monitör: birebir eşleme.
     fn default() -> Self {
-        Self { origin_x: 0.0, origin_y: 0.0, scale_x: 1.0, scale_y: 1.0 }
+        Self {
+            origin_x: 0.0, origin_y: 0.0,
+            scale_x: 1.0, scale_y: 1.0,
+            invert_x: false, invert_y: false,
+        }
     }
 }
 
 impl ScreenMap {
     pub fn apply(&self, x: f32, y: f32) -> (i32, i32) {
+        let x = if self.invert_x { 1.0 - x } else { x };
+        let y = if self.invert_y { 1.0 - y } else { y };
         let sx = (self.origin_x + x * self.scale_x).clamp(0.0, 1.0);
         let sy = (self.origin_y + y * self.scale_y).clamp(0.0, 1.0);
         ((sx * ABS_MAX as f32) as i32, (sy * ABS_MAX as f32) as i32)
+    }
+
+    /// Masaüstü içindeki bir dikdörtgeni hedefleyen eşleme kurar.
+    ///
+    /// Çoklu monitörde sanal dokunmatik ekran tüm masaüstüne eşlenebilir;
+    /// o durumda hedef pencerenin masaüstü içindeki payı hesaplanmalıdır.
+    pub fn for_region(
+        desktop_w: f32, desktop_h: f32,
+        win_x: f32, win_y: f32, win_w: f32, win_h: f32,
+    ) -> Self {
+        Self {
+            origin_x: win_x / desktop_w,
+            origin_y: win_y / desktop_h,
+            scale_x: win_w / desktop_w,
+            scale_y: win_h / desktop_h,
+            invert_x: false, invert_y: false,
+        }
     }
 }
 
@@ -235,16 +264,55 @@ mod tests {
     /// Pencere ekranın sağ yarısındaysa, profil koordinatı oraya taşınmalı.
     #[test]
     fn windowed_map_offsets_and_scales() {
-        let m = ScreenMap { origin_x: 0.5, origin_y: 0.0, scale_x: 0.5, scale_y: 1.0 };
+        let m = ScreenMap { origin_x: 0.5, origin_y: 0.0, scale_x: 0.5, scale_y: 1.0,
+                            ..ScreenMap::default() };
         let (x, _) = m.apply(0.0, 0.0);
         assert_eq!(x, ABS_MAX / 2, "pencerenin solu ekranın ortası olmalı");
         let (x2, _) = m.apply(1.0, 0.0);
         assert_eq!(x2, ABS_MAX, "pencerenin sağı ekranın sağı olmalı");
     }
 
+    /// İkinci monitördeki tam ekran pencere: 4480x1440 masaüstünde
+    /// 1920x1080'lik pencere x=2560'ta.
+    #[test]
+    fn region_map_targets_second_monitor() {
+        let m = ScreenMap::for_region(4480.0, 1440.0, 2560.0, 0.0, 1920.0, 1080.0);
+        // Pencerenin solu masaüstünün %57.1'i
+        let (x, _) = m.apply(0.0, 0.0);
+        assert_eq!(x, (2560.0 / 4480.0 * ABS_MAX as f32) as i32);
+        // Pencerenin sağı masaüstünün sağ kenarı
+        let (x2, _) = m.apply(1.0, 0.0);
+        assert_eq!(x2, ABS_MAX);
+        // Pencerenin ortası
+        let (xm, _) = m.apply(0.5, 0.0);
+        assert_eq!(xm, ((2560.0 + 960.0) / 4480.0 * ABS_MAX as f32) as i32);
+    }
+
+    #[test]
+    fn invert_x_mirrors_horizontally() {
+        let m = ScreenMap { invert_x: true, ..ScreenMap::default() };
+        assert_eq!(m.apply(0.0, 0.5).0, ABS_MAX);
+        assert_eq!(m.apply(1.0, 0.5).0, 0);
+    }
+
+    #[test]
+    fn invert_y_mirrors_vertically() {
+        let m = ScreenMap { invert_y: true, ..ScreenMap::default() };
+        assert_eq!(m.apply(0.5, 0.0).1, ABS_MAX);
+        assert_eq!(m.apply(0.5, 1.0).1, 0);
+    }
+
+    /// Aynalama yalnızca istenen ekseni etkilemeli.
+    #[test]
+    fn invert_x_leaves_y_untouched() {
+        let m = ScreenMap { invert_x: true, ..ScreenMap::default() };
+        assert_eq!(m.apply(0.0, 0.25).1, m.apply(1.0, 0.25).1);
+    }
+
     #[test]
     fn map_clamps_outside_screen() {
-        let m = ScreenMap { origin_x: 0.9, origin_y: 0.0, scale_x: 0.5, scale_y: 1.0 };
+        let m = ScreenMap { origin_x: 0.9, origin_y: 0.0, scale_x: 0.5, scale_y: 1.0,
+                            ..ScreenMap::default() };
         let (x, _) = m.apply(1.0, 0.0);
         assert_eq!(x, ABS_MAX, "ekran dışına taşmamalı");
     }

@@ -35,6 +35,18 @@ enum Cmd {
 enum KeymapAction {
     /// Kullanılabilir girdi cihazlarını listele
     Devices,
+    /// Klavyeyi kalibrasyonla belirle: bir tuşa bas
+    Detect {
+        /// Bulunan cihazı yapılandırmaya kaydet
+        #[arg(short, long)]
+        save: bool,
+    },
+    /// Hangi cihazın hangi tuş kodunu ürettiğini izle (teşhis)
+    Watch {
+        /// Tek bir cihazı izle (varsayılan: tüm klavyeler)
+        #[arg(short, long)]
+        device: Option<std::path::PathBuf>,
+    },
     /// Tek dokunuş/sürükleme gönder — eşlemeden bağımsız enjeksiyon testi
     Poke {
         /// X (0..1)
@@ -49,6 +61,15 @@ enum KeymapAction {
         /// Sürükleme hedefi: --to X,Y
         #[arg(long)]
         to: Option<String>,
+        /// Dokunmatik uzayda hedef bölge: ORIGIN_X,ORIGIN_Y,SCALE_X,SCALE_Y
+        #[arg(long)]
+        region: Option<String>,
+        /// X eksenini aynala
+        #[arg(long)]
+        invert_x: bool,
+        /// Y eksenini aynala
+        #[arg(long)]
+        invert_y: bool,
     },
     /// Profili gerçek klavyeyle dene (Android'e enjeksiyon YOK)
     Test {
@@ -104,7 +125,9 @@ async fn main() -> Result<()> {
         Cmd::Keymap { action } => {
             return match action {
                 KeymapAction::Devices => keymap::list_devices(),
-                KeymapAction::Poke { x, y, hold, to } => {
+                KeymapAction::Detect { save } => keymap::detect(save).await,
+                KeymapAction::Watch { device } => keymap::watch(device).await,
+                KeymapAction::Poke { x, y, hold, to, region, invert_x, invert_y } => {
                     let drag = match to {
                         Some(s) => {
                             let (a, b) = s.split_once(',')
@@ -113,7 +136,19 @@ async fn main() -> Result<()> {
                         }
                         None => None,
                     };
-                    keymap::poke(x, y, hold, drag).await
+                    let mut map = liw_core::input::ScreenMap::default();
+                    if let Some(r) = region {
+                        let v: Vec<f32> = r.split(',')
+                            .map(|p| p.trim().parse::<f32>())
+                            .collect::<Result<_, _>>()
+                            .context("--region biçimi: OX,OY,SX,SY")?;
+                        anyhow::ensure!(v.len() == 4, "--region dört sayı ister: OX,OY,SX,SY");
+                        map.origin_x = v[0]; map.origin_y = v[1];
+                        map.scale_x = v[2];  map.scale_y = v[3];
+                    }
+                    map.invert_x = invert_x;
+                    map.invert_y = invert_y;
+                    keymap::poke(x, y, hold, drag, map).await
                 }
                 KeymapAction::Test { profile, device, grab, width, height, inject } =>
                     keymap::test_profile(profile, device, grab, (width, height), inject).await,

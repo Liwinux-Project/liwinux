@@ -15,10 +15,17 @@ pub fn list_devices() -> Result<()> {
         println!("Kullanıcı 'input' grubunda mı?  ->  groups | grep input");
         return Ok(());
     }
-    println!("{:<22} {:<10} {}", "YOL", "TÜR", "AD");
-    for d in devs {
-        println!("{:<22} {:<10} {}", d.path.display(), format!("{:?}", d.kind), d.name);
+    let best = capture::best_keyboard(&devs).map(|d| d.path.clone());
+    println!("{:<20} {:<9} {:<5} {:<7} {}", "YOL", "TÜR", "PUAN", "SANAL", "AD");
+    for d in &devs {
+        let mark = if Some(&d.path) == best.as_ref() { " <- varsayılan" } else { "" };
+        println!("{:<20} {:<9} {:<5} {:<7} {}{}",
+            d.path.display(), format!("{:?}", d.kind), d.typing_score,
+            if d.virtual_device { "evet" } else { "hayır" }, d.name, mark);
     }
+    println!();
+    println!("PUAN = gerçek yazma klavyesi olma olasılığı (22 üzerinden).");
+    println!("Doğru cihazdan emin değilsen:  liw keymap watch");
     Ok(())
 }
 
@@ -40,12 +47,18 @@ pub async fn test_profile(
     println!("Bağlantı sayısı: {}", profile.bindings.len());
 
     let devs = capture::discover();
-    let target = match device {
+    // Sıra: açık -d > kaydedilmiş kalibrasyon > kaba tahmin.
+    // Tahmin son çare ve güvenilmez olduğu için kullanıcı uyarılır.
+    let cfg = liw_core::Config::load();
+    let target = match device.or(cfg.keyboard) {
         Some(p) => p,
-        None => devs.iter()
-            .find(|d| matches!(d.kind, capture::DeviceKind::Keyboard | capture::DeviceKind::Combo))
-            .map(|d| d.path.clone())
-            .context("klavye bulunamadı — 'liw keymap devices' ile bak")?,
+        None => {
+            eprintln!("uyarı: kalibre edilmiş klavye yok, tahmin ediliyor.");
+            eprintln!("       doğrusu için:  liw keymap detect --save");
+            capture::best_keyboard(&devs)
+                .map(|d| d.path.clone())
+                .context("klavye bulunamadı — 'liw keymap devices' ile bak")?
+        }
     };
     let name = devs.iter().find(|d| d.path == target)
         .map(|d| d.name.clone()).unwrap_or_default();
@@ -172,12 +185,17 @@ fn print_action(act: &TouchAction, (w, h): (u32, u32)) {
 ///
 /// Bu ayrımın nedeni teşhis: oyun tepki vermezse sorunun eşlemede mi
 /// yoksa enjeksiyon yolunda mı olduğunu bilmek gerekir.
-pub async fn poke(x: f32, y: f32, hold_ms: u64, drag_to: Option<(f32, f32)>) -> Result<()> {
+pub async fn poke(
+    x: f32, y: f32, hold_ms: u64, drag_to: Option<(f32, f32)>,
+    map: ScreenMap,
+) -> Result<()> {
     use liw_core::input::Norm;
 
-    let mut b = UinputBackend::new(ScreenMap::default())
+    let mut b = UinputBackend::new(map)
         .context("sanal dokunmatik ekran oluşturulamadı")?;
     println!("Sanal cihaz: {}", b.dev_nodes().join(", "));
+    println!("Harita: origin({:.3},{:.3}) scale({:.3},{:.3}) invert({},{})",
+        map.origin_x, map.origin_y, map.scale_x, map.scale_y, map.invert_x, map.invert_y);
     println!("KWin/libinput'un cihazı tanıması bekleniyor...");
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
@@ -208,5 +226,135 @@ pub async fn poke(x: f32, y: f32, hold_ms: u64, drag_to: Option<(f32, f32)>) -> 
     // Cihaz hemen yok olursa son olaylar işlenmeden kaybolabilir.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     println!("bitti");
+    Ok(())
+}
+
+/// Tüm klavyeleri aynı anda dinler ve hangi cihazın hangi kodu ürettiğini yazar.
+///
+/// Teşhis için: "tuşa bastım ama bir şey olmadı" durumunda ilk sorulacak şey
+/// doğru cihazı dinleyip dinlemediğimizdir. Çoklu arayüzlü klavyelerde
+/// (Razer, Logitech) harf tuşları beklenmedik bir event düğümünde olabilir.
+pub async fn watch(device: Option<PathBuf>) -> Result<()> {
+    let devs = capture::discover();
+    let targets: Vec<_> = match device {
+        Some(p) => vec![p],
+        None => devs.iter()
+            .filter(|d| !matches!(d.kind, capture::DeviceKind::Pointer))
+            .filter(|d| !d.virtual_device)
+            .map(|d| d.path.clone())
+            .collect(),
+    };
+    if targets.is_empty() {
+        println!("Dinlenecek cihaz yok.");
+        return Ok(());
+    }
+
+    println!("Dinlenen cihazlar:");
+    for t in &targets {
+        let n = devs.iter().find(|d| &d.path == t)
+            .map(|d| d.name.as_str()).unwrap_or("?");
+        println!("  {}  {}", t.display(), n);
+    }
+    println!();
+    println!("Tuşlara bas — hangi cihazın hangi kodu ürettiğini göreceksin.");
+    println!("Profilde kullanılacak değer 'kod' sütunudur. Ctrl+C ile çık.");
+    println!();
+    println!("{:<20} {:<8} {:<10} {}", "CİHAZ", "KOD", "DURUM", "AD");
+
+    let mut set = tokio::task::JoinSet::new();
+    for path in targets {
+        let name = devs.iter().find(|d| d.path == path)
+            .map(|d| d.name.clone()).unwrap_or_default();
+        // Kilit YOK: teşhis sırasında kullanıcının klavyesini almak kabul edilemez.
+        let dev = match GrabbedDevice::open(&path, false) {
+            Ok(d) => d,
+            Err(e) => { eprintln!("  atlandı {}: {e}", path.display()); continue; }
+        };
+        let mut stream = match dev.into_stream() {
+            Ok(s) => s,
+            Err(e) => { eprintln!("  akış kurulamadı {}: {e}", path.display()); continue; }
+        };
+        let short = path.file_name().map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        set.spawn(async move {
+            while let Ok(ev) = stream.next_event().await {
+                if let Some(input) = translate(&ev) {
+                    let (kod, durum) = match input {
+                        InputEvent::Press(TriggerKind::Key(k)) => (k.to_string(), "BASILDI"),
+                        InputEvent::Release(TriggerKind::Key(k)) => (k.to_string(), "bırakıldı"),
+                        InputEvent::Press(t) => (format!("{t:?}"), "BASILDI"),
+                        InputEvent::Release(t) => (format!("{t:?}"), "bırakıldı"),
+                        InputEvent::MouseMove { .. } => continue,
+                    };
+                    println!("{:<20} {:<8} {:<10} {}", short, kod, durum, name);
+                }
+            }
+        });
+    }
+
+    tokio::signal::ctrl_c().await.ok();
+    set.abort_all();
+    println!();
+    println!("bitti");
+    Ok(())
+}
+
+/// Klavyeyi kalibrasyonla belirler: bir tuşa bas, hangi cihaz ürettiyse o.
+///
+/// Otomatik tespit yerine ölçüm. Çoklu arayüzlü klavyelerde yetenek listesi
+/// ayırt edici DEĞİL — bu makinede aynı klavyenin iki arayüzü de tam tuş
+/// aralığını bildiriyor ama olayları yalnızca biri üretiyor.
+pub async fn detect(save: bool) -> Result<()> {
+    let devs = capture::discover();
+    let cands: Vec<_> = devs.iter()
+        .filter(|d| !d.virtual_device)
+        .filter(|d| !matches!(d.kind, capture::DeviceKind::Pointer))
+        .collect();
+    if cands.is_empty() {
+        println!("Aday klavye yok. 'input' grubunda mısın?  ->  groups");
+        return Ok(());
+    }
+    println!("{} aday dinleniyor. ŞİMDİ BİR TUŞA BAS...", cands.len());
+    println!();
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(PathBuf, String, u16)>(8);
+    let mut set = tokio::task::JoinSet::new();
+    for d in &cands {
+        let (path, name, tx) = (d.path.clone(), d.name.clone(), tx.clone());
+        let Ok(dev) = GrabbedDevice::open(&path, false) else { continue };
+        let Ok(mut stream) = dev.into_stream() else { continue };
+        set.spawn(async move {
+            while let Ok(ev) = stream.next_event().await {
+                if let Some(InputEvent::Press(TriggerKind::Key(k))) = translate(&ev) {
+                    let _ = tx.send((path.clone(), name.clone(), k)).await;
+                    return;
+                }
+            }
+        });
+    }
+    drop(tx);
+
+    let found = tokio::select! {
+        v = rx.recv() => v,
+        _ = tokio::time::sleep(std::time::Duration::from_secs(20)) => {
+            println!("Zaman aşımı — tuş algılanmadı."); None
+        }
+        _ = tokio::signal::ctrl_c() => { println!("iptal edildi"); None }
+    };
+    set.abort_all();
+
+    let Some((path, name, code)) = found else { return Ok(()) };
+    println!("Klavye : {}  ({})", path.display(), name);
+    println!("İlk tuş kodu: {code}");
+
+    if save {
+        let mut cfg = liw_core::Config::load();
+        cfg.keyboard = Some(path);
+        let p = cfg.save().context("yapılandırma kaydedilemedi")?;
+        println!("Kaydedildi: {}", p.display());
+        println!("Artık 'liw keymap test' bu cihazı varsayılan kullanacak.");
+    } else {
+        println!("(kaydetmek için: liw keymap detect --save)");
+    }
     Ok(())
 }

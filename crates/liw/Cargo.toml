@@ -10,5 +10,5 @@ anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive"] }
 liw-core = { version = "0.1.0", path = "../liw-core" }
 serde_json = "1.0.151"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
 zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }

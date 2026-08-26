@@ -43,6 +43,33 @@ pub struct DeviceInfo {
     pub path: PathBuf,
     pub name: String,
     pub kind: DeviceKind,
+    /// uinput ile oluşturulmuş sanal cihaz mı.
+    pub virtual_device: bool,
+    /// Gerçek yazma klavyesi olma puanı (yüksek = daha olası).
+    pub typing_score: u32,
+}
+
+/// Gerçek yazma klavyesini ayırt etmek için aranan tuşlar.
+///
+/// Sadece `KEY_A..KEY_Z`ye bakmak YETMEZ: çoklu arayüzlü klavyeler (Razer,
+/// Logitech) medya/makro arayüzlerinde de bu aralığı bildirir ama gerçek
+/// tuş olaylarını üretmez. Bu makinede `event18` ve `event23` aynı klavyenin
+/// iki arayüzü; yazma olayları yalnızca ikincisinden geliyor.
+const TYPING_KEYS: &[KeyCode] = &[
+    KeyCode::KEY_A, KeyCode::KEY_Z, KeyCode::KEY_Q, KeyCode::KEY_M,
+    KeyCode::KEY_0, KeyCode::KEY_9,
+    KeyCode::KEY_SPACE, KeyCode::KEY_ENTER, KeyCode::KEY_TAB,
+    KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_RIGHTSHIFT,
+    KeyCode::KEY_LEFTCTRL, KeyCode::KEY_LEFTALT,
+    KeyCode::KEY_CAPSLOCK, KeyCode::KEY_ESC, KeyCode::KEY_BACKSPACE,
+    KeyCode::KEY_F1, KeyCode::KEY_F12,
+    KeyCode::KEY_UP, KeyCode::KEY_DOWN, KeyCode::KEY_LEFT, KeyCode::KEY_RIGHT,
+];
+
+/// Cihazın gerçek yazma klavyesi olma puanı.
+pub fn typing_score(dev: &Device) -> u32 {
+    let Some(keys) = dev.supported_keys() else { return 0 };
+    TYPING_KEYS.iter().filter(|k| keys.contains(**k)).count() as u32
 }
 
 /// Bir cihazın türünü yeteneklerine bakarak belirler.
@@ -73,15 +100,33 @@ fn classify(dev: &Device) -> Option<DeviceKind> {
 pub fn discover() -> Vec<DeviceInfo> {
     let mut out = Vec::new();
     for (path, dev) in evdev::enumerate() {
-        // Kendi sanal cihazlarımızı asla yakalamayalım: geri besleme döngüsü olur.
         let name = dev.name().unwrap_or("(isimsiz)").to_string();
+        // Kendi sanal dokunmatik ekranımızı asla yakalamayalım: geri besleme olur.
         if name.starts_with("liwinux") { continue; }
-        if let Some(kind) = classify(&dev) {
-            out.push(DeviceInfo { path, name, kind });
-        }
+        let Some(kind) = classify(&dev) else { continue };
+        // uinput cihazlarının fiziksel yolu yoktur. Ad'a bakmak güvenilmez
+        // (herkes istediği adı verebilir); fiziksel yol yokluğu ise
+        // doğrudan uinput'tan gelir.
+        let virtual_device = dev.physical_path().is_none_or(str::is_empty);
+        out.push(DeviceInfo {
+            path, name, kind, virtual_device,
+            typing_score: typing_score(&dev),
+        });
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
+}
+
+/// Yazmak için en olası klavyeyi seçer.
+///
+/// Sıralama: sanal olmayan > yüksek yazma puanı > düşük event numarası.
+/// Berabere kalırsa seçim keyfidir; o durumda kullanıcı `liw keymap watch`
+/// ile doğru cihazı kendisi belirlemelidir — tahmin etmektense sormak iyidir.
+pub fn best_keyboard(devs: &[DeviceInfo]) -> Option<&DeviceInfo> {
+    devs.iter()
+        .filter(|d| !d.virtual_device)
+        .filter(|d| matches!(d.kind, DeviceKind::Keyboard | DeviceKind::Combo))
+        .max_by_key(|d| d.typing_score)
 }
 
 /// Kilitlenmiş tek bir cihaz. `Drop`da kilit çözülür.
