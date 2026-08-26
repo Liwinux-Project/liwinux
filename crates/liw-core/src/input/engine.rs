@@ -101,6 +101,7 @@ impl Engine {
     pub fn is_enabled(&self) -> bool { self.enabled }
 
     /// Motoru açar/kapatır. Kapatırken tüm parmakları kaldırır.
+    #[must_use = "kapatma sırasında üretilen UP eylemleri gönderilmezse                   parmaklar ekranda kalır"]
     pub fn set_enabled(&mut self, on: bool) -> Vec<TouchAction> {
         if self.enabled == on { return Vec::new(); }
         self.enabled = on;
@@ -123,6 +124,7 @@ impl Engine {
     ///
     /// Motor saf kalsın diye zaman DIŞARIDAN verilir; böylece jest zamanlaması
     /// gerçek saate ihtiyaç duymadan test edilebilir.
+    #[must_use = "üretilen dokunuş eylemleri arka uca GÖNDERİLMELİ;                   atılırsa parmak ekranda asılı kalır"]
     pub fn tick(&mut self, now_ms: u64) -> Vec<TouchAction> {
         self.now_ms = now_ms;
         if !self.enabled { return Vec::new(); }
@@ -170,6 +172,7 @@ impl Engine {
     /// Devam eden jest sayısı (test ve teşhis için).
     pub fn swipe_count(&self) -> usize { self.swipes.len() }
 
+    #[must_use = "üretilen dokunuş eylemleri arka uca GÖNDERİLMELİ"]
     pub fn handle(&mut self, ev: InputEvent) -> Vec<TouchAction> {
         if !self.enabled { return Vec::new(); }
         match ev {
@@ -378,7 +381,7 @@ mod tests {
     #[test]
     fn joystick_second_direction_moves_not_redowns() {
         let mut e = Engine::new(joystick_profile());
-        e.handle(InputEvent::Press(key(W)));
+        let _ = e.handle(InputEvent::Press(key(W)));
         let a = e.handle(InputEvent::Press(key(D)));
         assert!(matches!(a[..], [TouchAction::Move { .. }]), "ikinci yön Move olmalı: {a:?}");
     }
@@ -387,7 +390,7 @@ mod tests {
     #[test]
     fn diagonal_is_normalised_not_faster() {
         let mut e = Engine::new(joystick_profile());
-        e.handle(InputEvent::Press(key(W)));
+        let _ = e.handle(InputEvent::Press(key(W)));
         let a = e.handle(InputEvent::Press(key(D)));
         let at = match a[..] { [TouchAction::Move { at, .. }] => at, _ => panic!() };
         let dist = ((at.x - 0.2).powi(2) + (at.y - 0.7).powi(2)).sqrt();
@@ -399,8 +402,8 @@ mod tests {
     #[test]
     fn releasing_one_direction_keeps_finger_down() {
         let mut e = Engine::new(joystick_profile());
-        e.handle(InputEvent::Press(key(W)));
-        e.handle(InputEvent::Press(key(D)));
+        let _ = e.handle(InputEvent::Press(key(W)));
+        let _ = e.handle(InputEvent::Press(key(D)));
         let a = e.handle(InputEvent::Release(key(W)));
         assert!(matches!(a[..], [TouchAction::Move { .. }]),
                 "hâlâ D basılı, parmak kalkmamalı: {a:?}");
@@ -409,7 +412,7 @@ mod tests {
     #[test]
     fn releasing_last_direction_lifts_finger() {
         let mut e = Engine::new(joystick_profile());
-        e.handle(InputEvent::Press(key(W)));
+        let _ = e.handle(InputEvent::Press(key(W)));
         let a = e.handle(InputEvent::Release(key(W)));
         assert!(matches!(a[..], [TouchAction::Up { .. }]), "{a:?}");
     }
@@ -433,7 +436,7 @@ mod tests {
     #[test]
     fn aim_moves_finger_from_origin() {
         let mut e = Engine::new(aim_profile());
-        e.handle(InputEvent::Press(TriggerKind::MouseRight));
+        let _ = e.handle(InputEvent::Press(TriggerKind::MouseRight));
         let a = e.handle(InputEvent::MouseMove { dx: 100.0, dy: 0.0 });
         match a[..] {
             [TouchAction::Move { at, .. }] =>
@@ -446,7 +449,7 @@ mod tests {
     #[test]
     fn aim_ignores_jitter_below_deadzone() {
         let mut e = Engine::new(aim_profile());
-        e.handle(InputEvent::Press(TriggerKind::MouseRight));
+        let _ = e.handle(InputEvent::Press(TriggerKind::MouseRight));
         assert!(e.handle(InputEvent::MouseMove { dx: 0.2, dy: 0.1 }).is_empty());
     }
 
@@ -461,8 +464,8 @@ mod tests {
     #[test]
     fn disabling_lifts_every_held_finger() {
         let mut e = Engine::new(joystick_profile());
-        e.handle(InputEvent::Press(key(W)));
-        e.handle(InputEvent::Press(key(SPACE)));
+        let _ = e.handle(InputEvent::Press(key(W)));
+        let _ = e.handle(InputEvent::Press(key(SPACE)));
         let acts = e.set_enabled(false);
         assert_eq!(acts.len(), 2, "iki parmak da kalkmalı: {acts:?}");
         assert!(acts.iter().all(|a| matches!(a, TouchAction::Up { .. })));
@@ -471,7 +474,7 @@ mod tests {
     #[test]
     fn disabled_engine_produces_nothing() {
         let mut e = Engine::new(joystick_profile());
-        e.set_enabled(false);
+        let _ = e.set_enabled(false);
         assert!(e.handle(InputEvent::Press(key(SPACE))).is_empty());
     }
 
@@ -520,7 +523,7 @@ mod tests {
         let mut e = grouped_engine();
         let a = e.handle(InputEvent::Press(key(A)));
         let first_id = match a[..] { [TouchAction::Down { id, .. }] => id, _ => panic!("{a:?}") };
-        e.tick(20);
+        let _ = e.tick(20);
         let w = e.handle(InputEvent::Press(key(W)));
         // Önce iptal (Up), sonra yeni jest (Down).
         match w[..] {
@@ -535,9 +538,9 @@ mod tests {
     #[test]
     fn cancelled_gesture_stops_ticking() {
         let mut e = grouped_engine();
-        e.handle(InputEvent::Press(key(A)));
-        e.tick(20);
-        e.handle(InputEvent::Press(key(W)));
+        let _ = e.handle(InputEvent::Press(key(A)));
+        let _ = e.tick(20);
+        let _ = e.handle(InputEvent::Press(key(W)));
         // Sonraki tick'ler yalnızca W'nin jestini ilerletmeli: dikey hareket.
         let mut moves = Vec::new();
         for ms in (25..=110).step_by(5) {
@@ -555,8 +558,8 @@ mod tests {
     #[test]
     fn ungrouped_gesture_is_not_cancelled() {
         let mut e = grouped_engine();
-        e.handle(InputEvent::Press(key(SPACE)));
-        e.tick(10);
+        let _ = e.handle(InputEvent::Press(key(SPACE)));
+        let _ = e.tick(10);
         let a = e.handle(InputEvent::Press(key(A)));
         assert!(matches!(a[..], [TouchAction::Down { .. }]),
                 "grupsuz jest iptal edilmemeli: {a:?}");
@@ -578,7 +581,7 @@ mod tests {
     #[test]
     fn swipe_emits_intermediate_steps() {
         let mut e = swipe_engine();
-        e.handle(InputEvent::Press(key(A)));
+        let _ = e.handle(InputEvent::Press(key(A)));
         let mut moves = 0;
         for ms in (0..=80).step_by(5) {
             for act in e.tick(ms) {
@@ -591,7 +594,7 @@ mod tests {
     #[test]
     fn swipe_reaches_target_and_lifts() {
         let mut e = swipe_engine();
-        e.handle(InputEvent::Press(key(A)));
+        let _ = e.handle(InputEvent::Press(key(A)));
         let mut last_pos = None;
         let mut lifted = false;
         for ms in (0..=100).step_by(5) {
@@ -613,8 +616,8 @@ mod tests {
     #[test]
     fn releasing_key_does_not_abort_swipe() {
         let mut e = swipe_engine();
-        e.handle(InputEvent::Press(key(A)));
-        e.tick(20);
+        let _ = e.handle(InputEvent::Press(key(A)));
+        let _ = e.tick(20);
         let a = e.handle(InputEvent::Release(key(A)));
         assert!(a.is_empty(), "bırakma olay üretmemeli: {a:?}");
         assert!(e.has_pending(), "jest devam etmeli");
@@ -624,8 +627,8 @@ mod tests {
     #[test]
     fn repeated_press_does_not_stack_swipes() {
         let mut e = swipe_engine();
-        e.handle(InputEvent::Press(key(A)));
-        e.handle(InputEvent::Release(key(A)));
+        let _ = e.handle(InputEvent::Press(key(A)));
+        let _ = e.handle(InputEvent::Release(key(A)));
         let a = e.handle(InputEvent::Press(key(A)));
         assert!(a.is_empty(), "ikinci jest başlamamalı: {a:?}");
     }
@@ -642,7 +645,7 @@ mod tests {
             group: None, easing: Easing::EaseOutStrong,
         });
         let mut e = Engine::new(Profile { name: "t".into(), package: "p".into(), bindings: b });
-        e.handle(InputEvent::Press(key(A)));
+        let _ = e.handle(InputEvent::Press(key(A)));
 
         let mut moves: Vec<Norm> = Vec::new();
         let mut lifted = false;
@@ -677,9 +680,32 @@ mod tests {
     #[test]
     fn disabling_clears_pending_swipes() {
         let mut e = swipe_engine();
-        e.handle(InputEvent::Press(key(A)));
+        let _ = e.handle(InputEvent::Press(key(A)));
         assert!(e.has_pending());
-        e.set_enabled(false);
+        let _ = e.set_enabled(false);
         assert!(!e.has_pending());
+    }
+}
+
+#[cfg(test)]
+mod must_use_guard {
+    //! `tick` ve `handle` dönüşlerinin atılması bugün gerçek bir hataya yol
+    //! açtı: önceki jestin UP'ı kayboluyor ve parmak ekranda asılı kalıyordu.
+    //! `#[must_use]` bunu derleme zamanında yakalar; bu modül niyeti belgeler.
+    use super::*;
+
+    #[test]
+    fn tick_and_handle_return_actions_that_must_be_dispatched() {
+        let mut b = std::collections::BTreeMap::new();
+        b.insert("t".into(), Binding::Tap {
+            trigger: Trigger::Key(57), at: Norm::new(0.5, 0.5),
+        });
+        let mut e = Engine::new(Profile {
+            name: "t".into(), package: "p".into(), bindings: b,
+        });
+        let down = e.handle(InputEvent::Press(TriggerKind::Key(57)));
+        assert!(!down.is_empty(), "eylemler çağırana DÖNMELİ, içeride tutulmamalı");
+        let up = e.handle(InputEvent::Release(TriggerKind::Key(57)));
+        assert!(matches!(up[..], [TouchAction::Up { .. }]));
     }
 }

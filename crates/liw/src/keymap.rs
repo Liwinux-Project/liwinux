@@ -138,8 +138,11 @@ pub async fn test_profile(
                     }
                 }
 
-                engine.tick(t0.elapsed().as_millis() as u64);
-                let acts = engine.handle(input);
+                // tick'in ürettiği eylemler ATILMAMALI: önceki jestin son
+                // MOVE'u ve UP'ı orada olabilir. Atılırsa parmak ekranda
+                // asılı kalır ve sonraki jestler bozulur.
+                let mut acts = engine.tick(t0.elapsed().as_millis() as u64);
+                acts.extend(engine.handle(input));
                 for act in &acts { print_action(act, screen); }
                 if let Some(b) = backend.as_mut() {
                     if let Err(e) = b.dispatch(&acts) {
@@ -559,8 +562,9 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
                 }
 
                 if let Some(e) = engine.as_mut() {
-                    e.tick(t0.elapsed().as_millis() as u64);
-                    let acts = e.handle(input);
+                    // Bkz. test_profile: tick eylemleri atılırsa parmak asılı kalır.
+                    let mut acts = e.tick(t0.elapsed().as_millis() as u64);
+                    acts.extend(e.handle(input));
                     if !acts.is_empty() {
                         if let Err(err) = backend.dispatch(&acts) {
                             eprintln!("enjeksiyon hatası: {err}");

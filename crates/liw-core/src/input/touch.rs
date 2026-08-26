@@ -77,6 +77,7 @@ impl PointerPool {
 
     /// Tüm işaretçileri bırakır; her biri için Up eylemi üretir.
     /// Profil değişiminde veya acil durdurmada takılı parmak kalmasın diye.
+    #[must_use = "üretilen UP eylemleri gönderilmezse parmaklar ekranda kalır"]
     pub fn release_all(&mut self) -> Vec<TouchAction> {
         let mut acts: Vec<TouchAction> = self.assigned.values()
             .map(|&id| TouchAction::Up { id }).collect();
@@ -123,7 +124,7 @@ mod tests {
     fn released_id_returns_to_pool() {
         let mut p = PointerPool::new();
         let a = p.acquire("x").unwrap();
-        p.release("x");
+        let _ = p.release("x");
         assert_eq!(p.active_count(), 0);
         let b = p.acquire("y").unwrap();
         assert_eq!(a, b, "boşalan kimlik tekrar kullanılabilmeli");
@@ -139,7 +140,7 @@ mod tests {
     #[test]
     fn release_all_lifts_every_finger() {
         let mut p = PointerPool::new();
-        p.acquire("a"); p.acquire("b"); p.acquire("c");
+        let _ = p.acquire("a"); let _ = p.acquire("b"); let _ = p.acquire("c");
         let acts = p.release_all();
         assert_eq!(acts.len(), 3);
         assert!(acts.iter().all(|a| matches!(a, TouchAction::Up { .. })));
