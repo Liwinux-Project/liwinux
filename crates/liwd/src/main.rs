@@ -5,6 +5,7 @@
 //! ayrı bir sistem yardımcısına + polkit'e taşınacak.
 
 mod keymapper;
+mod window;
 
 use anyhow::Result;
 use liw_core::{Health, SessionState, Supervisor, SupervisorConfig};
@@ -19,6 +20,7 @@ struct Manager {
     sup: Arc<Supervisor>,
     state: Arc<RwLock<SessionState>>,
     km: Arc<keymapper::Handle>,
+    win: Arc<window::WindowState>,
 }
 
 #[interface(name = "id.liwinux.Manager1")]
@@ -66,12 +68,54 @@ impl Manager {
         Ok(())
     }
 
+    /// KWin script'inin pencere geometrisi geri bildirimi.
+    async fn report_window_geometry(
+        &self, found: bool, x: i32, y: i32, width: i32, height: i32, fullscreen: bool,
+    ) -> zbus::fdo::Result<()> {
+        self.win.set(window::WindowGeometry {
+            found, x, y, width, height, fullscreen,
+        }).await;
+        Ok(())
+    }
+
+    /// Waydroid penceresini tam ekran yapmayı dener.
+    async fn fullscreen(&self) -> zbus::fdo::Result<bool> {
+        Ok(window::fullscreen_with_retry(
+            self.win.clone(), 5, std::time::Duration::from_millis(700)).await)
+    }
+
+    /// Pencere geometrisi (JSON).
+    async fn window_geometry(&self) -> zbus::fdo::Result<String> {
+        let g = self.win.get().await;
+        serde_json::to_string(&g).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+
     /// KWin script'inin çağırdığı geri bildirim: hangi pencere odakta.
     ///
     /// Android pencerenin küçültüldüğünü bilmez; bu bilgi olmadan oyun alt
     /// tabdayken bile eşleme sürer ve dokunuşlar masaüstüne düşer.
     async fn set_active_window(&self, class: &str) -> zbus::fdo::Result<()> {
         self.km.set_active_window(class).await;
+
+        // Pencere İLK kez etkinleştiğinde tam ekran yap.
+        //
+        // Session başlangıcında denemek yetmiyor: pencere o an henüz
+        // olmayabilir (`show-full-ui` ayrı bir adım ve kullanıcı ne zaman
+        // açacağını biz bilemeyiz). Olay güdümlü olmak tek doğru yol.
+        //
+        // "İlk kez" şartı bilinçli: kullanıcı tam ekrandan kasten çıktıysa
+        // her odaklanmada geri zorlamak düşmanca olur.
+        if class.eq_ignore_ascii_case("waydroid")
+            && !self.win.fullscreen_attempted().await
+            && liw_core::Config::load().fullscreen_on_start
+        {
+            self.win.mark_fullscreen_attempted().await;
+            let w = self.win.clone();
+            tokio::spawn(async move {
+                window::fullscreen_with_retry(
+                    w, 3, std::time::Duration::from_millis(500)).await;
+            });
+        }
         Ok(())
     }
 
@@ -103,11 +147,13 @@ async fn main() -> Result<()> {
     let sup = Arc::new(Supervisor::new(cfg.clone()).with_helper().await);
     let state = Arc::new(RwLock::new(SessionState::Stopped));
     let km = Arc::new(keymapper::Handle::new());
+    let win = window::WindowState::new();
 
     let _conn = connection::Builder::session()?
         .name(BUS_NAME)?
         .serve_at(OBJ_PATH, Manager {
-            sup: sup.clone(), state: state.clone(), km: km.clone(),
+            sup: sup.clone(), state: state.clone(),
+            km: km.clone(), win: win.clone(),
         })?
         .build()
         .await?;
@@ -116,6 +162,7 @@ async fn main() -> Result<()> {
     // --- gözetim döngüsü ---
     let mut unhealthy = 0u32;
     let mut attempts = 0u32;
+    let mut was_running = false;
     let mut ticker = tokio::time::interval(cfg.poll_interval);
     let mut sigterm = tokio::signal::unix::signal(
         tokio::signal::unix::SignalKind::terminate())?;
@@ -126,10 +173,24 @@ async fn main() -> Result<()> {
                 let h = sup.health().await;
                 let next = if !h.session_running {
                     unhealthy = 0; attempts = 0;
+                    if was_running { win.reset().await; }
+                    was_running = false;
                     SessionState::Stopped
                 } else if h.is_healthy() {
                     if unhealthy > 0 { tracing::info!("session toparlandı"); }
                     unhealthy = 0; attempts = 0;
+                    // Session yeni ayağa kalktıysa pencereyi tam ekran yap.
+                    // Boot tamamlandığında pencere HENÜZ olmayabilir, o yüzden
+                    // tekrar denemeli; ayrıca her döngüde değil YALNIZCA
+                    // geçişte tetikliyoruz.
+                    if !was_running && liw_core::Config::load().fullscreen_on_start {
+                        let w = win.clone();
+                        tokio::spawn(async move {
+                            window::fullscreen_with_retry(
+                                w, 6, std::time::Duration::from_millis(1200)).await;
+                        });
+                    }
+                    was_running = true;
                     SessionState::Running
                 } else {
                     unhealthy += 1;

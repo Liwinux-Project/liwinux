@@ -299,6 +299,9 @@ mod tests {
         assert!(!s.running);
         assert!(s.active_profile.is_none());
         assert!(!s.grabbed);
+        // Odak varsayılanı KAPALI: bilinmezken açık saymak masaüstüne
+        // dokunuş enjekte etme riski demek.
+        assert!(!s.host_focused);
     }
 
     /// Kaçış eşiği 1 olmamalı: oyunda ESC'ye basmak kazara çıkmaya yol açmasın.
@@ -310,7 +313,7 @@ mod tests {
     #[test]
     fn state_is_serialisable_for_dbus() {
         let s = RunnerState { running: true, foreground: Some("com.x".into()),
-            active_profile: Some("P".into()), grabbed: true,
+            active_profile: Some("P".into()), grabbed: true, host_focused: true,
             latency_p50_us: 80, latency_p99_us: 170 };
         let j = serde_json::to_string(&s).unwrap();
         let back: RunnerState = serde_json::from_str(&j).unwrap();

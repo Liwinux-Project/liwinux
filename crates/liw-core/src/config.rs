@@ -3,13 +3,28 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Kalibrasyonla belirlenmiş klavye. Otomatik tespit güvenilmez olduğu
     /// için (çoklu arayüzlü klavyelerde yetenekler ayırt edici değil)
     /// kullanıcının seçimi kalıcı olarak saklanır.
     pub keyboard: Option<PathBuf>,
     pub mouse: Option<PathBuf>,
+    /// Session ayağa kalkınca Waydroid penceresini tam ekran yap.
+    ///
+    /// Varsayılan açık: dokunuşlar ekran uzayında gittiği için pencere
+    /// çıkışla hizalı olmazsa profil koordinatları kayar. Yine de bir
+    /// tercih meselesi — kullanıcı pencere modunda çalışmak isteyebilir.
+    #[serde(default = "default_true")]
+    pub fullscreen_on_start: bool,
+}
+
+fn default_true() -> bool { true }
+
+impl Default for Config {
+    fn default() -> Self {
+        Self { keyboard: None, mouse: None, fullscreen_on_start: true }
+    }
 }
 
 impl Config {
@@ -56,11 +71,19 @@ mod tests {
         assert!(c.keyboard.is_none());
     }
 
+    /// Eski yapılandırmada alan yoksa varsayılan AÇIK olmalı, false değil.
+    #[test]
+    fn missing_fullscreen_field_defaults_to_true() {
+        let c: Config = toml::from_str("keyboard = \"/dev/input/event23\"").unwrap();
+        assert!(c.fullscreen_on_start);
+    }
+
     #[test]
     fn roundtrips_through_toml() {
         let c = Config {
             keyboard: Some(PathBuf::from("/dev/input/event23")),
             mouse: None,
+            fullscreen_on_start: true,
         };
         let s = toml::to_string(&c).unwrap();
         let back: Config = toml::from_str(&s).unwrap();

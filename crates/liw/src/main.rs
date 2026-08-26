@@ -170,6 +170,8 @@ enum SessionAction {
     Status,
     /// Ayrıntılı sağlık kontrolü — hangi göstergenin düştüğünü söyler
     Health,
+    /// Waydroid penceresini tam ekran yap
+    Fullscreen,
 }
 
 /// Daemon varsa ona konuş; yoksa doğrudan Waydroid'e düş.
@@ -275,6 +277,18 @@ async fn main() -> Result<()> {
             } else {
                 println!("liwd      : çalışmıyor");
             }
+        }
+        SessionAction::Fullscreen => {
+            let p = proxy.as_ref()
+                .context("liwd çalışmıyor — systemctl --user status liwd")?;
+            let ok: bool = p.call("Fullscreen", &()).await.context("Fullscreen çağrısı")?;
+            let json: String = p.call("WindowGeometry", &()).await.unwrap_or_default();
+            if ok {
+                println!("pencere tam ekran");
+            } else {
+                println!("tam ekran yapılamadı");
+            }
+            if !json.is_empty() { println!("geometri: {json}"); }
         }
         SessionAction::Health => {
             let h: Health = match &proxy {

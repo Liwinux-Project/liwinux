@@ -1,3 +1,11 @@
+// Waydroid penceresini tam ekran yapar ve sonucu liwd'ye BİLDİRİR.
+//
+// Bildirim şart: KWin scripting API'si script çıktısını çağırana döndürmez.
+// Geri bildirim olmadan liwd "oldu mu olmadı mı" bilemez ve sessizce
+// yanlış varsayımla devam eder.
+//
+// Neden tam ekran: dokunuşlar EKRAN uzayında gidiyor. Pencere çıkışla
+// hizalı değilse profil koordinatları kayar, kenar dokunuşları dışarı düşer.
 // Yalnızca resourceClass'a bakılır.
 //
 // Başlığa (caption) veya resourceName'e bakmak TEHLİKELİ: kullanıcının
@@ -22,24 +30,29 @@ function liwFindWaydroid(wins) {
     return best;
 }
 
-// Teşhis: tüm pencereleri listeler, Waydroid'i işaretler.
+function liwReport(found, x, y, w, h, fs) {
+    callDBus("id.liwinux.Manager1", "/id/liwinux/Manager1",
+             "id.liwinux.Manager1", "ReportWindowGeometry",
+             found, x, y, w, h, fs);
+}
+
 var wins = (typeof workspace.windowList === "function")
     ? workspace.windowList()
     : (typeof workspace.stackingOrder !== "undefined" ? workspace.stackingOrder
                                                       : workspace.clientList());
 
-print("LIWINUX: toplam pencere = " + wins.length);
-for (var i = 0; i < wins.length; i++) {
-    var w = wins[i];
-    print("LIWINUX: pencere cls='" + (w.resourceClass || "") +
-          "' cap='" + (w.caption || "") + "'");
-}
+var target = liwFindWaydroid(wins);
 
-var t = liwFindWaydroid(wins);
-if (t === null) {
-    print("LIWINUX: Waydroid penceresi BULUNAMADI");
+if (target === null) {
+    liwReport(false, 0, 0, 0, 0, false);
 } else {
-    var g = t.frameGeometry;
-    print("LIWINUX: BULUNDU geometri=" + g.x + "," + g.y + " " +
-          g.width + "x" + g.height + " tamekran=" + t.fullScreen);
+    if (!target.fullScreen) {
+        // Etkinleştir: KWin bazı işlemleri yalnızca etkin pencerede uygular.
+        try { workspace.activeWindow = target; }
+        catch (e) { try { workspace.activeClient = target; } catch (e2) {} }
+        try { target.setMaximize(true, true); } catch (e) {}
+        target.fullScreen = true;
+    }
+    var g = target.frameGeometry;
+    liwReport(true, g.x, g.y, g.width, g.height, target.fullScreen);
 }
