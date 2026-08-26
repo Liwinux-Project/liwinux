@@ -44,10 +44,33 @@ impl From<&Trigger> for TriggerKind {
     }
 }
 
+/// Devam eden bir kaydırma jesti.
+///
+/// Kaydırma "ateşle ve unut"tur: tuşa basınca tam jest oynar, tuşun ne kadar
+/// basılı tutulduğu önemli değildir. Oyunlar kaydırmayı ara hareketlerden
+/// tanır; tek sıçrama jest sayılmaz.
+#[derive(Debug, Clone)]
+struct ActiveSwipe {
+    binding: String,
+    id: u8,
+    from: Norm,
+    to: Norm,
+    start_ms: u64,
+    duration_ms: u64,
+    /// Son gönderilen ara adım; aynı konumu tekrar göndermemek için.
+    last_step: u32,
+}
+
+/// Kaydırma kaç ara adıma bölünsün. Az olursa jest tanınmaz, çok olursa
+/// gereksiz olay üretilir. 12 adım 80ms'de ~7ms aralık demek — 144Hz'de bile yeterli.
+const SWIPE_STEPS: u32 = 12;
+
 pub struct Engine {
     profile: Profile,
     pool: PointerPool,
     held: HashSet<TriggerKind>,
+    swipes: Vec<ActiveSwipe>,
+    now_ms: u64,
     /// Aim modunda mevcut parmak konumu.
     aim_pos: Option<Norm>,
     /// Motor etkin mi. Kapalıyken hiçbir olay üretilmez ama takılı
@@ -59,6 +82,7 @@ impl Engine {
     pub fn new(profile: Profile) -> Self {
         Self {
             profile, pool: PointerPool::new(), held: HashSet::new(),
+            swipes: Vec::new(), now_ms: 0,
             aim_pos: None, enabled: true,
         }
     }
@@ -73,6 +97,7 @@ impl Engine {
         if !on {
             self.held.clear();
             self.aim_pos = None;
+            self.swipes.clear();
             self.pool.release_all()
         } else { Vec::new() }
     }
@@ -83,6 +108,44 @@ impl Engine {
             .find(|(_, b)| b.triggers().iter().any(|x| TriggerKind::from(x) == t))
             .map(|(n, b)| (n.as_str(), b))
     }
+
+    /// Zamanı ilerletir ve devam eden jestlerin ara adımlarını üretir.
+    ///
+    /// Motor saf kalsın diye zaman DIŞARIDAN verilir; böylece jest zamanlaması
+    /// gerçek saate ihtiyaç duymadan test edilebilir.
+    pub fn tick(&mut self, now_ms: u64) -> Vec<TouchAction> {
+        self.now_ms = now_ms;
+        if !self.enabled { return Vec::new(); }
+        let mut acts = Vec::new();
+        let mut finished: Vec<String> = Vec::new();
+
+        for sw in &mut self.swipes {
+            let elapsed = now_ms.saturating_sub(sw.start_ms);
+            let step = if sw.duration_ms == 0 { SWIPE_STEPS } else {
+                ((elapsed * SWIPE_STEPS as u64) / sw.duration_ms).min(SWIPE_STEPS as u64) as u32
+            };
+            if step == sw.last_step { continue; }
+            sw.last_step = step;
+            let t = step as f32 / SWIPE_STEPS as f32;
+            let at = Norm::new(
+                sw.from.x + (sw.to.x - sw.from.x) * t,
+                sw.from.y + (sw.to.y - sw.from.y) * t,
+            );
+            acts.push(TouchAction::Move { id: sw.id, at });
+            if step >= SWIPE_STEPS {
+                acts.push(TouchAction::Up { id: sw.id });
+                finished.push(sw.binding.clone());
+            }
+        }
+        for name in finished {
+            self.pool.release(&name);
+            self.swipes.retain(|s| s.binding != name);
+        }
+        acts
+    }
+
+    /// Devam eden bir jest var mı? Varsa çağıran `tick`i sık çağırmalı.
+    pub fn has_pending(&self) -> bool { !self.swipes.is_empty() }
 
     pub fn handle(&mut self, ev: InputEvent) -> Vec<TouchAction> {
         if !self.enabled { return Vec::new(); }
@@ -113,9 +176,19 @@ impl Engine {
                     None => Vec::new(),
                 }
             }
-            Binding::Swipe { from, .. } => {
+            Binding::Swipe { from, to, duration_ms, .. } => {
+                // Aynı kaydırma zaten oynuyorsa yenisini başlatma.
+                if self.swipes.iter().any(|s| s.binding == name) { return Vec::new(); }
                 match self.pool.acquire(&name) {
-                    Some(id) => vec![TouchAction::Down { id, at: from }],
+                    Some(id) => {
+                        self.swipes.push(ActiveSwipe {
+                            binding: name.clone(), id, from, to,
+                            start_ms: self.now_ms,
+                            duration_ms: duration_ms as u64,
+                            last_step: 0,
+                        });
+                        vec![TouchAction::Down { id, at: from }]
+                    }
                     None => Vec::new(),
                 }
             }
@@ -140,17 +213,9 @@ impl Engine {
                 self.pool.release(&name).map(|id| vec![TouchAction::Up { id }])
                     .unwrap_or_default()
             }
-            Binding::Swipe { to, .. } => {
-                // Basitleştirme: bırakınca hedefe taşı ve kaldır.
-                // Zamanlanmış ara adımlar zamanlayıcı katmanında üretilecek.
-                match self.pool.get(&name) {
-                    Some(id) => {
-                        self.pool.release(&name);
-                        vec![TouchAction::Move { id, at: to }, TouchAction::Up { id }]
-                    }
-                    None => Vec::new(),
-                }
-            }
+            // Kaydırma ateşle-ve-unut: tuşun bırakılması jesti etkilemez.
+            // Yarıda kesmek oyunlarda "yanlış kaydırma" olarak algılanır.
+            Binding::Swipe { .. } => Vec::new(),
             _ => self.pool.release(&name).map(|id| vec![TouchAction::Up { id }])
                     .unwrap_or_default(),
         }
@@ -374,16 +439,95 @@ mod tests {
         assert!(e.handle(InputEvent::Release(key(SPACE))).is_empty());
     }
 
-    #[test]
-    fn swipe_moves_to_target_then_lifts() {
+    fn swipe_engine() -> Engine {
         let mut b = BTreeMap::new();
         b.insert("sol".into(), Binding::Swipe {
             trigger: Trigger::Key(A),
             from: Norm::new(0.5, 0.5), to: Norm::new(0.2, 0.5), duration_ms: 80,
         });
-        let mut e = Engine::new(Profile { name: "t".into(), package: "p".into(), bindings: b });
-        assert!(matches!(e.handle(InputEvent::Press(key(A)))[..], [TouchAction::Down { .. }]));
+        Engine::new(Profile { name: "t".into(), package: "p".into(), bindings: b })
+    }
+
+    #[test]
+    fn swipe_starts_with_finger_down_at_origin() {
+        let mut e = swipe_engine();
+        let a = e.handle(InputEvent::Press(key(A)));
+        match a[..] {
+            [TouchAction::Down { at, .. }] => assert!((at.x - 0.5).abs() < 1e-5),
+            _ => panic!("{a:?}"),
+        }
+        assert!(e.has_pending(), "jest devam etmeli");
+    }
+
+    /// Kaydırma ARA ADIMLAR üretmeli — tek sıçrama oyunlarda jest sayılmaz.
+    #[test]
+    fn swipe_emits_intermediate_steps() {
+        let mut e = swipe_engine();
+        e.handle(InputEvent::Press(key(A)));
+        let mut moves = 0;
+        for ms in (0..=80).step_by(5) {
+            for act in e.tick(ms) {
+                if matches!(act, TouchAction::Move { .. }) { moves += 1; }
+            }
+        }
+        assert!(moves >= 8, "en az 8 ara adım bekleniyordu, {moves} üretildi");
+    }
+
+    #[test]
+    fn swipe_reaches_target_and_lifts() {
+        let mut e = swipe_engine();
+        e.handle(InputEvent::Press(key(A)));
+        let mut last_pos = None;
+        let mut lifted = false;
+        for ms in (0..=100).step_by(5) {
+            for act in e.tick(ms) {
+                match act {
+                    TouchAction::Move { at, .. } => last_pos = Some(at),
+                    TouchAction::Up { .. } => lifted = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(lifted, "jest sonunda parmak kalkmalı");
+        let at = last_pos.expect("hiç hareket üretilmedi");
+        assert!((at.x - 0.2).abs() < 1e-4, "hedefe ulaşmalı, {at:?}");
+        assert!(!e.has_pending(), "biten jest listede kalmamalı");
+    }
+
+    /// Ateşle-ve-unut: tuşu bırakmak jesti kesmemeli.
+    #[test]
+    fn releasing_key_does_not_abort_swipe() {
+        let mut e = swipe_engine();
+        e.handle(InputEvent::Press(key(A)));
+        e.tick(20);
         let a = e.handle(InputEvent::Release(key(A)));
-        assert!(matches!(a[..], [TouchAction::Move { .. }, TouchAction::Up { .. }]), "{a:?}");
+        assert!(a.is_empty(), "bırakma olay üretmemeli: {a:?}");
+        assert!(e.has_pending(), "jest devam etmeli");
+    }
+
+    /// Aynı kaydırma oynarken tekrar basmak ikinci jest başlatmamalı.
+    #[test]
+    fn repeated_press_does_not_stack_swipes() {
+        let mut e = swipe_engine();
+        e.handle(InputEvent::Press(key(A)));
+        e.handle(InputEvent::Release(key(A)));
+        let a = e.handle(InputEvent::Press(key(A)));
+        assert!(a.is_empty(), "ikinci jest başlamamalı: {a:?}");
+    }
+
+    #[test]
+    fn tick_without_pending_gesture_is_silent() {
+        let mut e = swipe_engine();
+        assert!(e.tick(1000).is_empty());
+    }
+
+    /// Motor kapatılınca devam eden jest de temizlenmeli.
+    #[test]
+    fn disabling_clears_pending_swipes() {
+        let mut e = swipe_engine();
+        e.handle(InputEvent::Press(key(A)));
+        assert!(e.has_pending());
+        e.set_enabled(false);
+        assert!(!e.has_pending());
     }
 }

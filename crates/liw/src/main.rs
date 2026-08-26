@@ -1,5 +1,7 @@
 //! liw — liwinux komut satırı istemcisi.
 
+mod keymap;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use liw_core::{Health, Supervisor, SupervisorConfig};
@@ -21,6 +23,52 @@ enum Cmd {
     Session {
         #[command(subcommand)]
         action: SessionAction,
+    },
+    /// Tuş eşleme
+    Keymap {
+        #[command(subcommand)]
+        action: KeymapAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeymapAction {
+    /// Kullanılabilir girdi cihazlarını listele
+    Devices,
+    /// Tek dokunuş/sürükleme gönder — eşlemeden bağımsız enjeksiyon testi
+    Poke {
+        /// X (0..1)
+        #[arg(default_value_t = 0.5)]
+        x: f32,
+        /// Y (0..1)
+        #[arg(default_value_t = 0.5)]
+        y: f32,
+        /// Basılı tutma / sürükleme süresi (ms)
+        #[arg(long, default_value_t = 120)]
+        hold: u64,
+        /// Sürükleme hedefi: --to X,Y
+        #[arg(long)]
+        to: Option<String>,
+    },
+    /// Profili gerçek klavyeyle dene (Android'e enjeksiyon YOK)
+    Test {
+        /// Profil dosyası (.toml)
+        profile: std::path::PathBuf,
+        /// Belirli bir cihaz kullan (varsayılan: ilk klavye)
+        #[arg(short, long)]
+        device: Option<std::path::PathBuf>,
+        /// Cihazı kilitle — tuşlar masaüstüne gitmez
+        #[arg(short, long)]
+        grab: bool,
+        /// Ekran genişliği (piksel dönüşümü için)
+        #[arg(long, default_value_t = 1920)]
+        width: u32,
+        /// Ekran yüksekliği
+        #[arg(long, default_value_t = 1080)]
+        height: u32,
+        /// Dokunuşları GERÇEKTEN enjekte et (sanal dokunmatik ekran)
+        #[arg(short, long)]
+        inject: bool,
     },
 }
 
@@ -52,7 +100,27 @@ async fn manager() -> Option<zbus::Proxy<'static>> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let Cmd::Session { action } = cli.cmd;
+    let action = match cli.cmd {
+        Cmd::Keymap { action } => {
+            return match action {
+                KeymapAction::Devices => keymap::list_devices(),
+                KeymapAction::Poke { x, y, hold, to } => {
+                    let drag = match to {
+                        Some(s) => {
+                            let (a, b) = s.split_once(',')
+                                .context("--to biçimi: X,Y  (örn: 0.2,0.5)")?;
+                            Some((a.trim().parse()?, b.trim().parse()?))
+                        }
+                        None => None,
+                    };
+                    keymap::poke(x, y, hold, drag).await
+                }
+                KeymapAction::Test { profile, device, grab, width, height, inject } =>
+                    keymap::test_profile(profile, device, grab, (width, height), inject).await,
+            };
+        }
+        Cmd::Session { action } => action,
+    };
     let proxy = manager().await;
     if proxy.is_none() {
         eprintln!("uyarı: liwd çalışmıyor — doğrudan kipte, otomatik kurtarma yok");
