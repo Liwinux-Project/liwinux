@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
         .init();
 
     let cfg = SupervisorConfig::default();
-    let sup = Arc::new(Supervisor::new(cfg.clone()));
+    let sup = Arc::new(Supervisor::new(cfg.clone()).with_helper().await);
     let state = Arc::new(RwLock::new(SessionState::Stopped));
 
     let _conn = connection::Builder::session()?

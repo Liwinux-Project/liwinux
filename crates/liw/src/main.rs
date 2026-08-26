@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
     if proxy.is_none() {
         eprintln!("uyarı: liwd çalışmıyor — doğrudan kipte, otomatik kurtarma yok");
     }
-    let sup = Supervisor::new(SupervisorConfig::default());
+    let sup = Supervisor::new(SupervisorConfig::default()).with_helper().await;
 
     match action {
         SessionAction::Start => {

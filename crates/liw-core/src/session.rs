@@ -17,6 +17,7 @@
 //!
 //! Bu yüzden session asla bir terminale bağlı olmamalı ve sahibi `liwd` olmalı.
 
+use crate::helper::HelperClient;
 use crate::waydroid::{Status, Waydroid, WaydroidError};
 use std::process::Stdio;
 use std::time::Duration;
@@ -102,12 +103,26 @@ impl Default for SupervisorConfig {
 pub struct Supervisor {
     wd: Waydroid,
     cfg: SupervisorConfig,
+    /// Ayrıcalıklı okumalar için. Yoksa boot durumu ÖLÇÜLEMEZ, çıkarsanır.
+    helper: Option<HelperClient>,
 }
 
 impl Supervisor {
     pub fn new(cfg: SupervisorConfig) -> Self {
-        Self { wd: Waydroid::new(), cfg }
+        Self { wd: Waydroid::new(), cfg, helper: None }
     }
+
+    /// liwd-helper'a bağlanmayı dener. Başarısızlık ölümcül değildir:
+    /// süpervizör helper'sız da çalışır, yalnızca boot durumu ölçülemez.
+    pub async fn with_helper(mut self) -> Self {
+        match HelperClient::connect().await {
+            Ok(h) => { tracing::info!("liwd-helper bağlandı — boot durumu ölçülecek"); self.helper = Some(h); }
+            Err(e) => tracing::warn!(hata = %e, "liwd-helper yok — boot durumu çıkarsanacak"),
+        }
+        self
+    }
+
+    pub fn has_helper(&self) -> bool { self.helper.is_some() }
 
     pub fn config(&self) -> &SupervisorConfig { &self.cfg }
 
@@ -158,11 +173,22 @@ impl Supervisor {
     pub async fn health(&self) -> Health {
         let st = self.wd.status().await.unwrap_or_default();
         let composer = self.composer_alive().await;
-        // boot_completed sorgusu root ister; erişemezsek session RUNNING ise
-        // iyimser davranıyoruz - yanlış negatif, gereksiz yeniden başlatmaya yol açar.
-        let boot = match self.wd.getprop("sys.boot_completed").await {
-            Ok(v) => v.trim() == "1",
-            Err(_) => st.session_running(),
+        // boot_completed root ister. Önce helper'a sor (GERÇEK ölçüm);
+        // helper yoksa doğrudan dene (liwd root çalışmadığı için genelde
+        // başarısız); o da olmazsa session durumundan ÇIKARSA.
+        // Çıkarsama son çare: yanlış negatif gereksiz yeniden başlatma yapar.
+        let boot = match &self.helper {
+            Some(h) => match h.boot_completed().await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(hata = %e, "helper boot sorgusu başarısız — çıkarsanıyor");
+                    st.session_running()
+                }
+            },
+            None => match self.wd.getprop("sys.boot_completed").await {
+                Ok(v) => v.trim() == "1",
+                Err(_) => st.session_running(),
+            },
         };
         Health {
             session_running: st.session_running(),
