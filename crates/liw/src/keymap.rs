@@ -442,6 +442,15 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
     let mut runner = Runner::new(
         RunnerConfig { device, grab, screen_map: ScreenMap::default() }, store);
 
+    // Hata ayıklama kipinde host odak kapısı YOK: KWin bildirimi liwd'ye
+    // gider, bu süreç onu alamaz. Bu yüzden kapı sürekli açık kabul edilir
+    // ve kullanıcı uyarılır — oyunu alt taba alırsa tuşlar masaüstüne
+    // dokunuş enjekte eder.
+    eprintln!("UYARI: bu kip host odak kapısını UYGULAMAZ.");
+    eprintln!("       Oyunu alt taba alırsan tuşlar masaüstüne dokunur.");
+    eprintln!("       Günlük kullanım için: liw keymap start");
+    eprintln!();
+    let (_focus_tx, focus_rx) = tokio::sync::watch::channel(true);
     let (fg_tx, fg_rx) = tokio::sync::mpsc::channel::<String>(4);
     let (ev_tx, mut ev_rx) = tokio::sync::mpsc::channel::<RunnerEvent>(16);
     let (sd_tx, sd_rx) = tokio::sync::watch::channel(false);
@@ -468,6 +477,8 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
                     println!("[{package}] profil yok — eşleme kapalı"),
                 RunnerEvent::Grabbed => println!("  kilit alındı"),
                 RunnerEvent::Ungrabbed => println!("  kilit bırakıldı"),
+                RunnerEvent::FocusGained => println!("  Waydroid odakta"),
+                RunnerEvent::FocusLost => println!("  Waydroid odakta değil"),
                 RunnerEvent::EscapeRequested => println!("ESC ×3 — çıkılıyor"),
             }
         }
@@ -481,7 +492,7 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
         let _ = sd.send(true);
     });
 
-    let lat = runner.run(fg_rx, sd_rx, Some(ev_tx)).await
+    let lat = runner.run(fg_rx, focus_rx, sd_rx, Some(ev_tx)).await
         .context("keymapper hatayla durdu")?;
     poll.abort();
     printer.abort();
@@ -541,6 +552,7 @@ pub async fn daemon_status() -> Result<()> {
     println!("Çalışıyor    : {}", if st.running { "evet" } else { "hayır" });
     println!("Ön plan      : {}", st.foreground.as_deref().unwrap_or("-"));
     println!("Etkin profil : {}", st.active_profile.as_deref().unwrap_or("yok"));
+    println!("Host odağı   : {}", if st.host_focused { "Waydroid" } else { "başka pencere" });
     println!("Kilit        : {}", if st.grabbed { "açık" } else { "kapalı" });
     if st.latency_p50_us > 0 || st.latency_p99_us > 0 {
         println!("Gecikme      : p50 {:.2} ms   p99 {:.2} ms  (yalnızca liwinux katmanı)",

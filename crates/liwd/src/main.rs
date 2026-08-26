@@ -66,6 +66,15 @@ impl Manager {
         Ok(())
     }
 
+    /// KWin script'inin çağırdığı geri bildirim: hangi pencere odakta.
+    ///
+    /// Android pencerenin küçültüldüğünü bilmez; bu bilgi olmadan oyun alt
+    /// tabdayken bile eşleme sürer ve dokunuşlar masaüstüne düşer.
+    async fn set_active_window(&self, class: &str) -> zbus::fdo::Result<()> {
+        self.km.set_active_window(class).await;
+        Ok(())
+    }
+
     /// Keymapper durumu (JSON): çalışıyor mu, ön plan, etkin profil, gecikme.
     async fn keymapper_status(&self) -> zbus::fdo::Result<String> {
         let st = self.km.state().await;

@@ -54,6 +54,8 @@ pub struct RunnerState {
     /// Etkin profilin adı; profil yoksa `None`.
     pub active_profile: Option<String>,
     pub grabbed: bool,
+    /// Waydroid penceresi host'ta odakta mı. Değilse eşleme durur.
+    pub host_focused: bool,
     /// Bizim katmanımızın gecikmesi (mikrosaniye, p50/p99).
     pub latency_p50_us: u64,
     pub latency_p99_us: u64,
@@ -66,6 +68,8 @@ pub enum RunnerEvent {
     ProfileCleared { package: String },
     Grabbed,
     Ungrabbed,
+    FocusGained,
+    FocusLost,
     EscapeRequested,
 }
 
@@ -89,9 +93,15 @@ impl Runner {
     /// Çıkışta parmaklar HER ZAMAN kaldırılır ve kilit bırakılır — süreç
     /// çökse bile çekirdek fd kapanışında kilidi bırakır, ama temiz çıkışta
     /// beklemeye gerek yok.
+    /// `host_focused`: Waydroid penceresi host'ta odakta mı.
+    ///
+    /// Bu kapı ŞART: Android pencerenin küçültüldüğünü bilmez, oyun alt
+    /// tabdayken bile kendini ön planda sanar. Kapı olmadan dokunuşlar
+    /// kullanıcının gerçek masaüstüne düşer.
     pub async fn run(
         &mut self,
         mut foreground: mpsc::Receiver<String>,
+        mut host_focused: tokio::sync::watch::Receiver<bool>,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
         events: Option<mpsc::Sender<RunnerEvent>>,
     ) -> Result<LatencyStats, RunnerError> {
@@ -103,6 +113,10 @@ impl Runner {
         let mut stream = dev.into_stream()?;
 
         let mut engine: Option<Engine> = None;
+        // Etkin profil, motordan AYRI tutulur: odak kaybolunca motoru
+        // söküyoruz ama profili unutmuyoruz ki odak dönünce geri kuralım.
+        let mut profile: Option<super::profile::Profile> = None;
+        let mut focused = *host_focused.borrow();
         let mut current: Option<String> = None;
         let mut grabbed = false;
         let mut esc = 0u8;
@@ -136,21 +150,26 @@ impl Runner {
 
                     match self.store.for_package(&pkg) {
                         Some(entry) => {
-                            engine = Some(Engine::new(entry.profile.clone()));
+                            profile = Some(entry.profile.clone());
                             emit(RunnerEvent::ProfileActivated {
                                 package: pkg.clone(),
                                 profile: entry.profile.name.clone(),
                             });
-                            if self.cfg.grab && !grabbed
-                                && stream.device_mut().grab().is_ok()
-                            {
-                                grabbed = true;
-                                emit(RunnerEvent::Grabbed);
+                            // Motor yalnızca host odaktayken kurulur.
+                            if focused {
+                                engine = Some(Engine::new(entry.profile.clone()));
+                                if self.cfg.grab && !grabbed
+                                    && stream.device_mut().grab().is_ok()
+                                {
+                                    grabbed = true;
+                                    emit(RunnerEvent::Grabbed);
+                                }
                             }
                             let mut s = self.state.write().await;
                             s.active_profile = Some(entry.profile.name.clone());
                         }
                         None => {
+                            profile = None;
                             engine = None;
                             emit(RunnerEvent::ProfileCleared { package: pkg.clone() });
                             if grabbed {
@@ -165,6 +184,44 @@ impl Runner {
                     current = Some(pkg.clone());
                     let mut s = self.state.write().await;
                     s.foreground = Some(pkg);
+                    s.grabbed = grabbed;
+                }
+
+                // --- host odak değişimi ---
+                _ = host_focused.changed() => {
+                    let now_focused = *host_focused.borrow();
+                    if now_focused == focused { continue; }
+                    focused = now_focused;
+                    if focused {
+                        if let Some(p) = &profile {
+                            engine = Some(Engine::new(p.clone()));
+                            if self.cfg.grab && !grabbed
+                                && stream.device_mut().grab().is_ok()
+                            {
+                                grabbed = true;
+                                emit(RunnerEvent::Grabbed);
+                            }
+                        }
+                        emit(RunnerEvent::FocusGained);
+                    } else {
+                        // Odak kaybında parmakları BIRAK ve kilidi çöz:
+                        // aksi halde tuşlar kullanıcının masaüstüne dokunuş
+                        // enjekte etmeye devam eder.
+                        if let Some(e) = engine.as_mut() {
+                            let acts = e.set_enabled(false);
+                            let _ = backend.dispatch(&acts);
+                        }
+                        engine = None;
+                        let _ = backend.release_all();
+                        if grabbed {
+                            let _ = stream.device_mut().ungrab();
+                            grabbed = false;
+                            emit(RunnerEvent::Ungrabbed);
+                        }
+                        emit(RunnerEvent::FocusLost);
+                    }
+                    let mut s = self.state.write().await;
+                    s.host_focused = focused;
                     s.grabbed = grabbed;
                 }
 
