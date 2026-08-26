@@ -116,6 +116,13 @@ fn write_back(path: &PathBuf, marks: &[Mark]) -> Result<()> {
         t.insert("x", toml_edit::value(r(m.x)).into_value().unwrap());
         t.insert("y", toml_edit::value(r(m.y)).into_value().unwrap());
         *target = toml_edit::Item::Value(toml_edit::Value::InlineTable(t));
+
+        // Yarıçap ayrı bir alan; joystick'te merkez kadar önemli.
+        if let Some(rad) = m.radius {
+            if let Some(slot) = b.get_mut("radius") {
+                *slot = toml_edit::value(r(rad));
+            }
+        }
     }
     std::fs::write(path, doc.to_string())?;
     Ok(())
@@ -185,19 +192,22 @@ async fn serve(
         } else if line.starts_with("GET /shot.png") {
             ("200 OK", "image/png", std::fs::read(shot).unwrap_or_default())
         } else if line.starts_with("POST /save") {
-            match serde_json::from_str::<Vec<Mark>>(body)
-                .map_err(anyhow::Error::from)
-                .and_then(|m| { let r = write_back(path, &m); *futures_lock(&marks) = m; r })
-            {
-                Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
-                Err(e) => ("500 Internal Server Error", "text/plain",
-                           e.to_string().into_bytes()),
+            // Kilit ASENKRON beklenmeli: blocking_lock() tokio çalışma
+            // zamanı içinden çağrılırsa panikler.
+            match serde_json::from_str::<Vec<Mark>>(body) {
+                Ok(m) => match write_back(path, &m) {
+                    Ok(()) => { *marks.lock().await = m;
+                                ("200 OK", "text/plain", b"ok".to_vec()) }
+                    Err(e) => ("500 Internal Server Error", "text/plain",
+                               e.to_string().into_bytes()),
+                },
+                Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
             }
         } else if line.starts_with("POST /poke") {
             let name = line.split("b=").nth(1)
                 .and_then(|s| s.split_whitespace().next())
-                .map(|s| percent_decode(s)).unwrap_or_default();
-            let m = futures_lock(&marks).iter().find(|m| m.name == name).cloned();
+                .map(percent_decode).unwrap_or_default();
+            let m = marks.lock().await.iter().find(|m| m.name == name).cloned();
             match m {
                 Some(m) => {
                     tokio::spawn(async move {
@@ -220,13 +230,6 @@ async fn serve(
     sock.write_all(&payload).await?;
     sock.flush().await?;
     Ok(())
-}
-
-/// Basit blocking kilit: bu sunucu tek kullanıcılıdır, çekişme yok.
-fn futures_lock<T>(m: &std::sync::Arc<tokio::sync::Mutex<T>>)
-    -> tokio::sync::MutexGuard<'_, T>
-{
-    m.blocking_lock()
 }
 
 fn percent_decode(s: &str) -> String {
