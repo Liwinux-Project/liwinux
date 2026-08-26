@@ -4,8 +4,10 @@
 //! olarak kullanır. Bu modül o sürecin etrafındaki tüm bilgi birikimini
 //! (argüman tuzakları, sağlık göstergeleri, çökme zincirleri) tek yerde tutar.
 
+pub mod polkit;
 pub mod session;
 pub mod waydroid;
 
+pub use polkit::{check as polkit_check, valid_prop_key, PolkitError};
 pub use session::{Health, SessionState, Supervisor, SupervisorConfig};
 pub use waydroid::{Status, Waydroid, WaydroidError};

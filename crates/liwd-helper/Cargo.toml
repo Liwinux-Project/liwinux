@@ -1,0 +1,16 @@
+[package]
+name = "liwd-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+liw-core = { version = "0.1.0", path = "../liw-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "process", "fs"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }

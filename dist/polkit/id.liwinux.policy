@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>liwinux</vendor>
+  <vendor_url>https://github.com/wintone01/liwinux</vendor_url>
+
+  <!-- Salt okunur. Aktif oturumdaki kullanıcıya izin verilir; sistemi
+       değiştirmez ve parola sormak teşhisi gereksiz yere zorlaştırır. -->
+  <action id="id.liwinux.helper.read-property">
+    <description>Android sistem özelliğini oku</description>
+    <description xml:lang="tr">Android sistem özelliğini oku</description>
+    <message>liwinux'un Android konteynerinin durumunu okuması gerekiyor</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <action id="id.liwinux.helper.net-diagnose">
+    <description>Ağ yapılandırmasını incele</description>
+    <message>liwinux'un ağ teşhisi yapması gerekiyor</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <!-- Güvenlik duvarını DEĞİŞTİRİR: yönetici kimlik doğrulaması şart.
+       auth_admin_keep, arka arkaya onarım adımlarında tekrar tekrar
+       parola sormayı önler ama yetkiyi kalıcı kılmaz. -->
+  <action id="id.liwinux.helper.net-repair">
+    <description>Waydroid için güvenlik duvarı kurallarını onar</description>
+    <message>liwinux'un güvenlik duvarı kurallarını değiştirmesi için yetki gerekiyor</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

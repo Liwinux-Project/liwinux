@@ -1,0 +1,33 @@
+[Unit]
+Description=liwinux privileged helper
+Documentation=https://github.com/wintone01/liwinux
+After=dbus.service polkit.service
+Wants=polkit.service
+
+[Service]
+Type=exec
+BusName=id.liwinux.Helper1
+ExecStart=/usr/local/bin/liwd-helper
+Restart=on-failure
+RestartSec=5
+Environment=LIWD_LOG=info
+
+# Root çalıştığı için yüzeyi daraltıyoruz.
+NoNewPrivileges=yes
+ProtectHome=read-only
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# CapabilityBoundingSet BİLEREK ayarlanmadı.
+# `waydroid shell` altta `lxc-attach` çalıştırır; konteynere girmek için
+# CAP_SYS_CHROOT, CAP_SETUID, CAP_SETGID, CAP_SYS_PTRACE ve daha fazlası
+# gerekir. Daraltılmış bir küme komutu SESSİZCE başarısız kılar (boş çıktı).
+# Yetenek kısıtlaması yerine arayüz yüzeyini dar tutuyoruz: bu servis
+# genel amaçlı bir kabuk sunmaz, yalnızca adı konmuş işlemler sunar.
+
+[Install]
+WantedBy=multi-user.target

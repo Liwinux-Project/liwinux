@@ -389,6 +389,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "zbus",
 ]
 
 [[package]]
@@ -397,6 +398,20 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "liw-core",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
+name = "liwd-helper"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "liw-core",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
