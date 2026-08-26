@@ -57,13 +57,21 @@ pub struct Health {
     pub boot_completed: bool,
     /// Waydroid composer HAL süreci yaşıyor mu. Ölürse çökme zinciri başlar.
     pub composer_alive: bool,
+    /// composer, session'dan SONRA yeniden başlamış mı.
+    ///
+    /// Bu durumda session'ın binder bağlantısı bayattır: süreçler ayakta
+    /// görünür, IP vardır, boot tamamlanmıştır — ama pencere oluşmaz ve
+    /// `waydroid app launch` "Sending reply failed" der. Yani "her şey
+    /// yolunda" diyen bir sağlık kontrolü yanıltıcı olur.
+    pub composer_stale: bool,
 }
 
 impl Health {
     /// Oyun oynanabilir mi? Tüm göstergeler gerekli.
     pub fn is_healthy(&self) -> bool {
         self.session_running && self.container_running
-            && self.has_ip && self.boot_completed && self.composer_alive
+            && self.has_ip && self.boot_completed
+            && self.composer_alive && !self.composer_stale
     }
     /// Neyin eksik olduğunu insan okuyabilsin diye.
     pub fn failures(&self) -> Vec<&'static str> {
@@ -71,6 +79,9 @@ impl Health {
         if !self.session_running { v.push("session çalışmıyor"); }
         if !self.container_running { v.push("konteyner çalışmıyor"); }
         if !self.composer_alive { v.push("composer HAL ölü (çökme zinciri riski)"); }
+        if self.composer_stale {
+            v.push("composer session'dan sonra yeniden başlamış — bayat binder bağlantısı                     (pencere açılmaz, app launch 'Sending reply failed' der)");
+        }
         if !self.boot_completed { v.push("Android boot tamamlanmadı"); }
         if !self.has_ip { v.push("IP atanmamış"); }
         v
@@ -170,9 +181,45 @@ impl Supervisor {
             .map(|s| s.success()).unwrap_or(false)
     }
 
+    /// Süreç başlangıç zamanını jiffy cinsinden okur (/proc/PID/stat, 22. alan).
+    async fn start_time(pid: &str) -> Option<u64> {
+        let stat = tokio::fs::read_to_string(format!("/proc/{pid}/stat")).await.ok()?;
+        // comm alanı boşluk içerebilir; ')' sonrasından say.
+        let rest = stat.rsplit_once(')')?.1;
+        rest.split_whitespace().nth(19)?.parse().ok()
+    }
+
+    async fn newest_start(pattern: &str) -> Option<u64> {
+        let out = Command::new("pgrep").args(["-f", pattern])
+            .stderr(Stdio::null()).output().await.ok()?;
+        let mut newest = None;
+        for pid in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+            if let Some(t) = Self::start_time(pid).await {
+                newest = Some(newest.map_or(t, |n: u64| n.max(t)));
+            }
+        }
+        newest
+    }
+
+    /// composer, session sürecinden belirgin şekilde sonra mı başlamış?
+    ///
+    /// Eşik gerekli: normal başlatmada composer session'dan birkaç saniye
+    /// sonra doğar. Sorun, ARADAN UZUN ZAMAN GEÇTİKTEN sonra yeniden
+    /// doğmasıdır. 60 saniye, normal başlatma gecikmesinin çok üstünde.
+    async fn composer_stale(&self) -> bool {
+        const HZ: u64 = 100; // çekirdek USER_HZ
+        const THRESHOLD_SEC: u64 = 60;
+        let (Some(sess), Some(comp)) = (
+            Self::newest_start("waydroid session start").await,
+            Self::newest_start("hardware.graphics.composer").await,
+        ) else { return false };
+        comp.saturating_sub(sess) > THRESHOLD_SEC * HZ
+    }
+
     pub async fn health(&self) -> Health {
         let st = self.wd.status().await.unwrap_or_default();
         let composer = self.composer_alive().await;
+        let stale = composer && self.composer_stale().await;
         // boot_completed root ister. Önce helper'a sor (GERÇEK ölçüm);
         // helper yoksa doğrudan dene (liwd root çalışmadığı için genelde
         // başarısız); o da olmazsa session durumundan ÇIKARSA.
@@ -196,6 +243,7 @@ impl Supervisor {
             has_ip: st.has_ip(),
             boot_completed: boot,
             composer_alive: composer,
+            composer_stale: stale,
         }
     }
 
@@ -225,7 +273,8 @@ mod tests {
     fn healthy_needs_every_signal() {
         let full = Health {
             session_running: true, container_running: true,
-            has_ip: true, boot_completed: true, composer_alive: true,
+            has_ip: true, boot_completed: true,
+            composer_alive: true, composer_stale: false,
         };
         assert!(full.is_healthy());
         assert!(full.failures().is_empty());
@@ -236,7 +285,8 @@ mod tests {
     fn missing_ip_is_degraded_not_healthy() {
         let h = Health { has_ip: false, ..Health {
             session_running: true, container_running: true,
-            has_ip: true, boot_completed: true, composer_alive: true } };
+            has_ip: true, boot_completed: true,
+            composer_alive: true, composer_stale: false } };
         assert!(!h.is_healthy());
         assert_eq!(h.failures(), vec!["IP atanmamış"]);
     }
@@ -246,10 +296,25 @@ mod tests {
     fn dead_composer_is_reported_explicitly() {
         let h = Health {
             session_running: true, container_running: true,
-            has_ip: true, boot_completed: true, composer_alive: false,
+            has_ip: true, boot_completed: true,
+            composer_alive: false, composer_stale: false,
         };
         assert!(!h.is_healthy());
         assert!(h.failures().iter().any(|f| f.contains("composer")));
+    }
+
+    /// Gerçek vaka: her şey ayakta ama composer session'dan sonra yeniden
+    /// başlamış. Pencere oluşmuyor, app launch "Sending reply failed" diyor.
+    /// Sağlık kontrolü bunu YAKALAMALI, yoksa "sağlıklı" diyerek yanıltır.
+    #[test]
+    fn stale_composer_is_not_healthy() {
+        let h = Health {
+            session_running: true, container_running: true,
+            has_ip: true, boot_completed: true,
+            composer_alive: true, composer_stale: true,
+        };
+        assert!(!h.is_healthy(), "bayat composer sağlıklı sayılmamalı");
+        assert!(h.failures().iter().any(|f| f.contains("bayat")), "{:?}", h.failures());
     }
 
     #[test]

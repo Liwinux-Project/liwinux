@@ -399,3 +399,153 @@ pub async fn sweep(axis: char, count: u32, gap_ms: u64) -> Result<()> {
     println!("Görünen ilk ve son numarayı söyle — eşlemeyi ondan hesaplayacağım.");
     Ok(())
 }
+
+/// Ön plandaki oyunu izler, profilini otomatik yükler ve tuşları eşler.
+///
+/// # Kilit politikası
+///
+/// Cihaz **yalnızca bir profil etkinken** kilitlenir. Oyundan çıkınca kilit
+/// hemen bırakılır; masaüstünde klavyenin çalışmaması kabul edilemez ve
+/// kullanıcıyı bir kaçış tuşuna mahkûm etmek kötü tasarımdır.
+pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
+    use liw_core::input::store::Store;
+
+    let helper = liw_core::HelperClient::connect().await
+        .context("liwd-helper'a bağlanılamadı — çalışıyor mu? \
+                  (systemctl status liwd-helper)")?;
+
+    let devs = capture::discover();
+    let cfg = liw_core::Config::load();
+    let target = cfg.keyboard.clone()
+        .or_else(|| capture::best_keyboard(&devs).map(|d| d.path.clone()))
+        .context("klavye yok — 'liw keymap detect --save' ile kalibre et")?;
+    let dev_name = devs.iter().find(|d| d.path == target)
+        .map(|d| d.name.clone()).unwrap_or_default();
+
+    let store = Store::discover();
+    println!("Klavye  : {} ({})", target.display(), dev_name);
+    println!("Profil  : {} adet yüklü", store.len());
+    for p in &store.problems {
+        eprintln!("  uyarı: {} — {}", p.path.display(), p.error);
+    }
+    println!("Kilit   : {}", if grab { "profil etkinken açılacak" } else { "kapalı" });
+    println!("Yoklama : {poll_ms}ms");
+    println!();
+
+    let mut backend = UinputBackend::new(ScreenMap::default())
+        .context("sanal dokunmatik ekran oluşturulamadı")?;
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    println!("Dokunmatik: {}", backend.dev_nodes().join(", "));
+    println!("Ctrl+C ile çık. Kilitliyken çıkış: ESC ×3");
+    println!();
+
+    // Cihaz başta KİLİTSİZ açılır; kilit profil etkinleşince alınır.
+    let dev = GrabbedDevice::open(&target, false)?;
+    let mut stream = dev.into_stream()?;
+
+    let mut engine: Option<Engine> = None;
+    let mut current: Option<String> = None;
+    let mut grabbed = false;
+    let mut esc_streak = 0u8;
+
+    let t0 = std::time::Instant::now();
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(4));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut poller = tokio::time::interval(std::time::Duration::from_millis(poll_ms));
+
+    loop {
+        tokio::select! {
+            // --- ön plan yoklaması ---
+            _ = poller.tick() => {
+                let pkg = match helper.foreground_package().await {
+                    Ok(p) => p,
+                    Err(e) => { eprintln!("ön plan sorgulanamadı: {e}"); continue; }
+                };
+                if pkg.is_empty() || current.as_deref() == Some(pkg.as_str()) { continue; }
+
+                // Uygulama değişti: eski profili KAPAT ve parmakları bırak.
+                // Aksi halde oyun değişince ekranda asılı parmak kalır.
+                if let Some(e) = engine.as_mut() {
+                    let acts = e.set_enabled(false);
+                    let _ = backend.dispatch(&acts);
+                }
+                let _ = backend.release_all();
+
+                match store.for_package(&pkg) {
+                    Some(entry) => {
+                        println!("[{pkg}] profil ETKİN: {}", entry.profile.name);
+                        engine = Some(Engine::new(entry.profile.clone()));
+                        if grab && !grabbed {
+                            match stream.device_mut().grab() {
+                                Ok(()) => { grabbed = true; println!("  kilit alındı"); }
+                                Err(e) => eprintln!("  kilit alınamadı: {e}"),
+                            }
+                        }
+                    }
+                    None => {
+                        println!("[{pkg}] profil yok — eşleme kapalı");
+                        engine = None;
+                        if grabbed {
+                            let _ = stream.device_mut().ungrab();
+                            grabbed = false;
+                            println!("  kilit bırakıldı");
+                        }
+                    }
+                }
+                current = Some(pkg);
+            }
+
+            // --- jest saati ---
+            _ = ticker.tick(), if engine.as_ref().is_some_and(|e| e.has_pending()) => {
+                if let Some(e) = engine.as_mut() {
+                    let acts = e.tick(t0.elapsed().as_millis() as u64);
+                    let _ = backend.dispatch(&acts);
+                }
+            }
+
+            // --- girdi ---
+            ev = stream.next_event() => {
+                let ev = ev.context("olay akışı koptu")?;
+                let Some(input) = translate(&ev) else { continue };
+
+                if grabbed {
+                    match input {
+                        InputEvent::Press(TriggerKind::Key(1)) => {   // ESC
+                            esc_streak += 1;
+                            if esc_streak >= 3 {
+                                println!("ESC ×3 — çıkılıyor");
+                                break;
+                            }
+                            println!("  (ESC {esc_streak}/3)");
+                            continue;
+                        }
+                        InputEvent::Press(_) => esc_streak = 0,
+                        _ => {}
+                    }
+                }
+
+                if let Some(e) = engine.as_mut() {
+                    e.tick(t0.elapsed().as_millis() as u64);
+                    let acts = e.handle(input);
+                    if !acts.is_empty() {
+                        if let Err(err) = backend.dispatch(&acts) {
+                            eprintln!("enjeksiyon hatası: {err}");
+                        }
+                    }
+                }
+            }
+
+            _ = tokio::signal::ctrl_c() => { println!(); println!("çıkılıyor"); break; }
+        }
+    }
+
+    // Çıkışta: parmakları kaldır, kilidi bırak.
+    if let Some(e) = engine.as_mut() {
+        let acts = e.set_enabled(false);
+        let _ = backend.dispatch(&acts);
+    }
+    let _ = backend.release_all();
+    if grabbed { let _ = stream.device_mut().ungrab(); }
+    println!("bitti");
+    Ok(())
+}

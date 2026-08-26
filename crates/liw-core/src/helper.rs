@@ -43,6 +43,12 @@ impl HelperClient {
             .await.map_err(|e| HelperError::Call(e.to_string()))
     }
 
+    /// Ön plandaki paket adı. Boş dize = tespit edilemedi.
+    pub async fn foreground_package(&self) -> Result<String, HelperError> {
+        self.proxy.call("ForegroundPackage", &())
+            .await.map_err(|e| HelperError::Call(e.to_string()))
+    }
+
     pub async fn set_pointer_location(&self, enabled: bool) -> Result<(), HelperError> {
         self.proxy.call("SetPointerLocation", &(enabled,))
             .await.map_err(|e| HelperError::Call(e.to_string()))

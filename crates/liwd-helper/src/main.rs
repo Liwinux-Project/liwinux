@@ -23,6 +23,7 @@ const ACT_PROP: &str = "id.liwinux.helper.read-property";
 const ACT_DIAG: &str = "id.liwinux.helper.net-diagnose";
 const ACT_REPAIR: &str = "id.liwinux.helper.net-repair";
 const ACT_OVERLAY: &str = "id.liwinux.helper.debug-overlay";
+const ACT_FOREGROUND: &str = "id.liwinux.helper.foreground-app";
 
 struct Helper {
     conn: Connection,
@@ -94,6 +95,29 @@ impl Helper {
         #[zbus(header)] hdr: Header<'_>,
     ) -> zbus::fdo::Result<bool> {
         Ok(self.get_prop("sys.boot_completed", hdr).await?.trim() == "1")
+    }
+
+    /// Ön plandaki Android uygulamasının paket adını döner.
+    ///
+    /// Profilin otomatik seçilmesi buna bağlı. `dumpsys activity` çıktısı
+    /// Android sürümleri arasında değişebildiği için birden fazla desen
+    /// denenir; hiçbiri tutmazsa boş dize döner (uydurma yapmaz).
+    async fn foreground_package(
+        &self,
+        #[zbus(header)] hdr: Header<'_>,
+    ) -> zbus::fdo::Result<String> {
+        self.authorize(&hdr, ACT_FOREGROUND, false).await?;
+        let out = Command::new("waydroid")
+            .args(["--details-to-stdout", "shell", "--",
+                   "dumpsys", "activity", "activities"])
+            .stdin(Stdio::null())
+            .output().await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(zbus::fdo::Error::Failed(format!("dumpsys başarısız: {err}")));
+        }
+        Ok(parse_foreground(&String::from_utf8_lossy(&out.stdout)).unwrap_or_default())
     }
 
     /// Android'in dokunuş göstergesini (pointer location) açar/kapatır.
@@ -180,6 +204,63 @@ impl Helper {
         }
         if done.is_empty() { done.push("yapılacak bir şey bulunamadı".into()); }
         Ok(done.join("\n"))
+    }
+}
+
+/// `dumpsys activity activities` çıktısından ön plan paketini çıkarır.
+///
+/// Ayrı fonksiyon ki gerçek çıktılara karşı test edilebilsin — Android
+/// sürümleri bu çıktının biçimini değiştiriyor ve sessizce yanlış paket
+/// döndürmek yanlış profili yükler.
+fn parse_foreground(dump: &str) -> Option<String> {
+    // Sırayla dene: en güvenilir desen önce.
+    for line in dump.lines() {
+        let t = line.trim();
+        for key in ["mResumedActivity:", "topResumedActivity=", "mFocusedActivity:"] {
+            if let Some(rest) = t.split_once(key).map(|(_, r)| r) {
+                if let Some(pkg) = extract_pkg(rest) { return Some(pkg); }
+            }
+        }
+    }
+    None
+}
+
+/// "... u0 com.kiloo.subwaysurf/com.sybogames...Activity t42}" içinden
+/// paket adını ayıklar.
+fn extract_pkg(s: &str) -> Option<String> {
+    s.split_whitespace()
+        .find(|tok| tok.contains('/') && tok.contains('.'))
+        .and_then(|tok| tok.split('/').next())
+        .map(|p| p.trim_start_matches('{').to_string())
+        .filter(|p| p.contains('.') && !p.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_pkg, parse_foreground};
+
+    const REAL: &str = "  mResumedActivity: ActivityRecord{ef108a1 u0 com.kiloo.subwaysurf/com.sybogames.chili.multidex.ChiliMultidexSupportActivity t42}";
+
+    #[test]
+    fn parses_resumed_activity() {
+        assert_eq!(parse_foreground(REAL).as_deref(), Some("com.kiloo.subwaysurf"));
+    }
+
+    #[test]
+    fn parses_top_resumed_variant() {
+        let s = "topResumedActivity=ActivityRecord{abc u0 com.android.vending/.AssistActivity t9}";
+        assert_eq!(parse_foreground(s).as_deref(), Some("com.android.vending"));
+    }
+
+    /// Tanınmayan biçimde paket UYDURMAMALI.
+    #[test]
+    fn unknown_format_yields_none() {
+        assert!(parse_foreground("alakasız çıktı\nbaşka satır").is_none());
+    }
+
+    #[test]
+    fn ignores_tokens_without_package_shape() {
+        assert!(extract_pkg(" u0 t42}").is_none());
     }
 }
 

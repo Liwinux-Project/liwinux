@@ -1,6 +1,7 @@
 //! liw — liwinux komut satırı istemcisi.
 
 mod keymap;
+mod profile;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -24,6 +25,11 @@ enum Cmd {
         #[command(subcommand)]
         action: SessionAction,
     },
+    /// Profil yönetimi
+    Profile {
+        #[command(subcommand)]
+        action: ProfileAction,
+    },
     /// Tuş eşleme
     Keymap {
         #[command(subcommand)]
@@ -32,9 +38,31 @@ enum Cmd {
 }
 
 #[derive(Subcommand)]
+enum ProfileAction {
+    /// Bulunan tüm profilleri listele
+    List,
+    /// Bir profilin ayrıntısını göster
+    Show {
+        /// Android paket adı
+        package: String,
+    },
+    /// Ön plandaki uygulama için hangi profil geçerli
+    Which,
+}
+
+#[derive(Subcommand)]
 enum KeymapAction {
     /// Kullanılabilir girdi cihazlarını listele
     Devices,
+    /// Ön plandaki oyunun profilini otomatik yükle ve tuşları eşle
+    Run {
+        /// Profil etkinken cihazı kilitle (tuşlar masaüstüne gitmez)
+        #[arg(short, long)]
+        grab: bool,
+        /// Ön plan yoklama aralığı (ms)
+        #[arg(long, default_value_t = 1000)]
+        poll: u64,
+    },
     /// Android dokunuş göstergesini aç/kapat (kalibrasyon görsel yardımı)
     Overlay {
         /// kapat
@@ -140,9 +168,17 @@ async fn manager() -> Option<zbus::Proxy<'static>> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let action = match cli.cmd {
+        Cmd::Profile { action } => {
+            return match action {
+                ProfileAction::List => profile::list(),
+                ProfileAction::Show { package } => profile::show(&package),
+                ProfileAction::Which => profile::which().await,
+            };
+        }
         Cmd::Keymap { action } => {
             return match action {
                 KeymapAction::Devices => keymap::list_devices(),
+                KeymapAction::Run { grab, poll } => keymap::run(grab, poll).await,
                 KeymapAction::Overlay { off } => keymap::overlay(!off).await,
                 KeymapAction::Sweep { axis, count, gap } => keymap::sweep(axis, count, gap).await,
                 KeymapAction::Detect { save } => keymap::detect(save).await,
@@ -229,6 +265,7 @@ async fn main() -> Result<()> {
             println!("  {} session çalışıyor", mark(h.session_running));
             println!("  {} konteyner çalışıyor", mark(h.container_running));
             println!("  {} composer HAL canlı", mark(h.composer_alive));
+            println!("  {} composer bağlantısı taze", mark(!h.composer_stale));
             println!("  {} Android boot tamamlandı", mark(h.boot_completed));
             println!("  {} IP atanmış", mark(h.has_ip));
             println!();
@@ -237,6 +274,13 @@ async fn main() -> Result<()> {
             } else {
                 println!("SORUNLAR:");
                 for f in h.failures() { println!("  - {f}"); }
+                if h.composer_stale {
+                    println!();
+                    println!("composer session'dan sonra yeniden başlamış. Süreçler ayakta");
+                    println!("görünür ama binder bağlantısı bayattır: pencere açılmaz,");
+                    println!("'waydroid app launch' 'Sending reply failed' döner.");
+                    println!("Kurtarmak için: liw session restart");
+                }
                 if !h.composer_alive {
                     println!();
                     println!("composer ölümü çökme zincirinin köküdür:");

@@ -29,6 +29,16 @@
     </defaults>
   </action>
 
+  <action id="id.liwinux.helper.foreground-app">
+    <description>Ön plandaki Android uygulamasını sorgula</description>
+    <message>liwinux'un doğru profili seçmek için ön plandaki uygulamayı bilmesi gerekiyor</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
   <!-- Geliştirici görsel yardımı; sistem güvenliğini etkilemez. -->
   <action id="id.liwinux.helper.debug-overlay">
     <description>Android dokunuş göstergesini aç/kapat</description>
