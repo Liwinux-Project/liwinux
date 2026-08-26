@@ -5,6 +5,7 @@
 //! (argüman tuzakları, sağlık göstergeleri, çökme zincirleri) tek yerde tutar.
 
 pub mod helper;
+pub mod input;
 pub mod polkit;
 pub mod session;
 pub mod waydroid;
