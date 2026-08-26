@@ -11,7 +11,7 @@
 # easing = "ease_out": mesafenin %75'i sürenin ilk yarısında katedilir.
 # Oyun kaydırma eşiğini daha erken aşar, yani daha erken tepki verir.
 # Seçenekler: "linear" (varsayılan), "ease_out", "ease_out_strong".
-name = "Subway Surfers (WASD, ease_out)"
+name = "Subway Surfers (ease_out_strong)"
 package = "com.kiloo.subwaysurf"
 
 [bindings.sol]
@@ -21,7 +21,7 @@ from = { x = 0.50, y = 0.55 }
 to   = { x = 0.22, y = 0.55 }
 duration_ms = 45
 group = "hareket"
-easing = "ease_out"
+easing = "ease_out_strong"
 
 [bindings.sag]
 type = "swipe"
@@ -30,7 +30,7 @@ from = { x = 0.50, y = 0.55 }
 to   = { x = 0.78, y = 0.55 }
 duration_ms = 45
 group = "hareket"
-easing = "ease_out"
+easing = "ease_out_strong"
 
 [bindings.zipla]
 type = "swipe"
@@ -39,7 +39,7 @@ from = { x = 0.50, y = 0.62 }
 to   = { x = 0.50, y = 0.32 }
 duration_ms = 45
 group = "hareket"
-easing = "ease_out"
+easing = "ease_out_strong"
 
 [bindings.kay]
 type = "swipe"
@@ -48,4 +48,4 @@ from = { x = 0.50, y = 0.38 }
 to   = { x = 0.50, y = 0.68 }
 duration_ms = 45
 group = "hareket"
-easing = "ease_out"
+easing = "ease_out_strong"

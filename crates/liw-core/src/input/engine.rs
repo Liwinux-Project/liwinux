@@ -5,7 +5,7 @@
 //! keymapper'da "his" hatalarının çoğu durum makinesinde saklanır ve
 //! elle denemekle yakalanamaz.
 
-use super::profile::{Binding, Profile, Trigger};
+use super::profile::{Binding, Easing, Profile, Trigger};
 use super::touch::{Norm, PointerPool, TouchAction};
 use std::collections::HashSet;
 
@@ -53,6 +53,7 @@ impl From<&Trigger> for TriggerKind {
 struct ActiveSwipe {
     binding: String,
     group: Option<String>,
+    easing: Easing,
     id: u8,
     from: Norm,
     to: Norm,
@@ -60,7 +61,15 @@ struct ActiveSwipe {
     duration_ms: u64,
     /// Son gönderilen ara adım; aynı konumu tekrar göndermemek için.
     last_step: u32,
+    /// Son GÖNDERİLEN konum. Öne yüklü eğrilerde sondaki adımlar birkaç
+    /// piksel oynar; bunlar bilgi taşımaz ve parmağın "takıldığı" izlenimi
+    /// vererek jestin basılı tutma sanılmasına yol açabilir.
+    last_sent: Norm,
 }
+
+/// Ardışık iki adım bundan daha yakınsa ara adım gönderilmez.
+/// 0.002 normalize ≈ 2540 piksel genişlikte ~5 piksel.
+const MIN_STEP_DELTA: f32 = 0.002;
 
 /// Kaydırma kaç ara adıma bölünsün. Az olursa jest tanınmaz, çok olursa
 /// gereksiz olay üretilir. 12 adım 80ms'de ~7ms aralık demek — 144Hz'de bile yeterli.
@@ -127,13 +136,23 @@ impl Engine {
             };
             if step == sw.last_step { continue; }
             sw.last_step = step;
-            let t = step as f32 / SWIPE_STEPS as f32;
+            // Eğri, ZAMAN ilerlemesini MESAFE oranına çevirir. Adım sayısı
+            // değişmez; değişen, her adımda ne kadar yol katedildiğidir.
+            let t = sw.easing.apply(step as f32 / SWIPE_STEPS as f32);
             let at = Norm::new(
                 sw.from.x + (sw.to.x - sw.from.x) * t,
                 sw.from.y + (sw.to.y - sw.from.y) * t,
             );
-            acts.push(TouchAction::Move { id: sw.id, at });
-            if step >= SWIPE_STEPS {
+            // Son adım HER ZAMAN gönderilir: jest hedefe varmalı.
+            let is_final = step >= SWIPE_STEPS;
+            let dx = at.x - sw.last_sent.x;
+            let dy = at.y - sw.last_sent.y;
+            let moved_enough = (dx * dx + dy * dy).sqrt() >= MIN_STEP_DELTA;
+            if is_final || moved_enough {
+                acts.push(TouchAction::Move { id: sw.id, at });
+                sw.last_sent = at;
+            }
+            if is_final {
                 acts.push(TouchAction::Up { id: sw.id });
                 finished.push(sw.binding.clone());
             }
@@ -180,7 +199,7 @@ impl Engine {
                     None => Vec::new(),
                 }
             }
-            Binding::Swipe { from, to, duration_ms, ref group, .. } => {
+            Binding::Swipe { from, to, duration_ms, ref group, easing, .. } => {
                 // Aynı kaydırma zaten oynuyorsa yenisini başlatma.
                 if self.swipes.iter().any(|s| s.binding == name) { return Vec::new(); }
 
@@ -204,10 +223,11 @@ impl Engine {
                 match self.pool.acquire(&name) {
                     Some(id) => {
                         self.swipes.push(ActiveSwipe {
-                            binding: name.clone(), group: group.clone(), id, from, to,
+                            binding: name.clone(), group: group.clone(), easing, id, from, to,
                             start_ms: self.now_ms,
                             duration_ms: duration_ms as u64,
                             last_step: 0,
+                            last_sent: from,
                         });
                         acts.push(TouchAction::Down { id, at: from });
                         acts
@@ -467,7 +487,7 @@ mod tests {
         b.insert("sol".into(), Binding::Swipe {
             trigger: Trigger::Key(A),
             from: Norm::new(0.5, 0.5), to: Norm::new(0.2, 0.5), duration_ms: 80,
-            group: None,
+            group: None, easing: Easing::Linear,
         });
         Engine::new(Profile { name: "t".into(), package: "p".into(), bindings: b })
     }
@@ -480,17 +500,17 @@ mod tests {
         b.insert("sol".into(), Binding::Swipe {
             trigger: Trigger::Key(A),
             from: Norm::new(0.5, 0.5), to: Norm::new(0.2, 0.5), duration_ms: 80,
-            group: Some("hareket".into()),
+            group: Some("hareket".into()), easing: Easing::Linear,
         });
         b.insert("zipla".into(), Binding::Swipe {
             trigger: Trigger::Key(W),
             from: Norm::new(0.5, 0.6), to: Norm::new(0.5, 0.3), duration_ms: 80,
-            group: Some("hareket".into()),
+            group: Some("hareket".into()), easing: Easing::Linear,
         });
         b.insert("ates".into(), Binding::Swipe {
             trigger: Trigger::Key(SPACE),
             from: Norm::new(0.9, 0.8), to: Norm::new(0.9, 0.7), duration_ms: 80,
-            group: None,
+            group: None, easing: Easing::Linear,
         });
         Engine::new(Profile { name: "t".into(), package: "p".into(), bindings: b })
     }
@@ -608,6 +628,43 @@ mod tests {
         e.handle(InputEvent::Release(key(A)));
         let a = e.handle(InputEvent::Press(key(A)));
         assert!(a.is_empty(), "ikinci jest başlamamalı: {a:?}");
+    }
+
+    /// Öne yüklü eğride sondaki mikro adımlar elenmeli, ama jest yine
+    /// hedefe VARMALI ve parmak kalkmalı.
+    #[test]
+    fn tiny_tail_steps_are_dropped_but_target_is_reached() {
+        use crate::input::profile::Easing;
+        let mut b = BTreeMap::new();
+        b.insert("sol".into(), Binding::Swipe {
+            trigger: Trigger::Key(A),
+            from: Norm::new(0.5, 0.5), to: Norm::new(0.2, 0.5), duration_ms: 80,
+            group: None, easing: Easing::EaseOutStrong,
+        });
+        let mut e = Engine::new(Profile { name: "t".into(), package: "p".into(), bindings: b });
+        e.handle(InputEvent::Press(key(A)));
+
+        let mut moves: Vec<Norm> = Vec::new();
+        let mut lifted = false;
+        for ms in (0..=100).step_by(2) {
+            for act in e.tick(ms) {
+                match act {
+                    TouchAction::Move { at, .. } => moves.push(at),
+                    TouchAction::Up { .. } => lifted = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(lifted, "parmak kalkmalı");
+        let last = moves.last().expect("hareket yok");
+        assert!((last.x - 0.2).abs() < 1e-4, "hedefe varmalı: {last:?}");
+
+        // Ardışık adımlar arasında (son hariç) anlamsız mesafe kalmamalı.
+        for w in moves.windows(2).take(moves.len().saturating_sub(2)) {
+            let d = ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2)).sqrt();
+            assert!(d >= MIN_STEP_DELTA * 0.99,
+                "anlamsız ara adım kaldı: {d} < {MIN_STEP_DELTA}");
+        }
     }
 
     #[test]

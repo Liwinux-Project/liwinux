@@ -20,6 +20,46 @@ pub enum Trigger {
     WheelDown,
 }
 
+/// Kaydırmanın hız eğrisi.
+///
+/// Oyunlar kaydırma yönünü belirli bir mesafe eşiği aşılınca anlar. Doğrusal
+/// eğride bu eşik jestin ortalarında aşılır; öne yüklenmiş eğride çok daha
+/// erken. Yani eğri, oyunun tepki verme anını doğrudan etkiler.
+///
+/// Varsayılan `Linear` — hangi eğrinin hangi oyunda iyi hissettireceği
+/// ölçülmeden bilinemez, o yüzden davranışı sessizce değiştirmiyoruz.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Easing {
+    /// Sabit hız.
+    #[default]
+    Linear,
+    /// Hızlı başlar, yavaşlar (quadratic ease-out). Mesafenin %75'i
+    /// sürenin yarısında katedilir.
+    EaseOut,
+    /// Daha da öne yüklü (cubic). Mesafenin %87.5'i sürenin yarısında.
+    /// Çok agresif olursa jest "ışınlanma" gibi görünüp tanınmayabilir.
+    EaseOutStrong,
+}
+
+impl Easing {
+    /// Normalize ilerlemeyi (0..1) katedilen mesafe oranına çevirir.
+    ///
+    /// Uç noktalar korunur: f(0)=0, f(1)=1. Aksi halde jest hedefe
+    /// varmaz veya başlangıçtan sıçrar.
+    pub fn apply(self, t: f32) -> f32 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            Easing::Linear => t,
+            Easing::EaseOut => 1.0 - (1.0 - t) * (1.0 - t),
+            Easing::EaseOutStrong => {
+                let inv = 1.0 - t;
+                1.0 - inv * inv * inv
+            }
+        }
+    }
+}
+
 /// Bir bağlantının davranışı.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -62,6 +102,8 @@ pub enum Binding {
         duration_ms: u32,
         #[serde(default)]
         group: Option<String>,
+        #[serde(default)]
+        easing: Easing,
     },
 }
 
@@ -198,6 +240,49 @@ radius = 0.9
 "#;
         let err = Profile::from_toml(t).unwrap_err();
         assert!(err.to_string().contains("yarıçapı"), "{err}");
+    }
+
+    #[test]
+    fn easing_preserves_endpoints() {
+        for e in [Easing::Linear, Easing::EaseOut, Easing::EaseOutStrong] {
+            assert!((e.apply(0.0) - 0.0).abs() < 1e-6, "{e:?} f(0) != 0");
+            assert!((e.apply(1.0) - 1.0).abs() < 1e-6, "{e:?} f(1) != 1");
+        }
+    }
+
+    /// Öne yüklü eğri, doğrusaldan DAHA ERKEN mesafe katetmeli —
+    /// oyunun kaydırma eşiğini daha çabuk aşması bunun tek amacı.
+    #[test]
+    fn ease_out_is_front_loaded() {
+        for t in [0.1f32, 0.25, 0.5, 0.75] {
+            let lin = Easing::Linear.apply(t);
+            let eo = Easing::EaseOut.apply(t);
+            let eos = Easing::EaseOutStrong.apply(t);
+            assert!(eo > lin, "t={t}: ease_out {eo} > linear {lin} olmalı");
+            assert!(eos > eo, "t={t}: strong {eos} > ease_out {eo} olmalı");
+        }
+    }
+
+    #[test]
+    fn ease_out_half_time_covers_three_quarters() {
+        assert!((Easing::EaseOut.apply(0.5) - 0.75).abs() < 1e-5);
+        assert!((Easing::EaseOutStrong.apply(0.5) - 0.875).abs() < 1e-5);
+    }
+
+    #[test]
+    fn easing_clamps_out_of_range_progress() {
+        assert_eq!(Easing::EaseOut.apply(-1.0), 0.0);
+        assert_eq!(Easing::EaseOut.apply(2.0), 1.0);
+    }
+
+    /// Profilde belirtilmezse doğrusal olmalı — davranış sessizce değişmesin.
+    #[test]
+    fn easing_defaults_to_linear_when_absent() {
+        let p = Profile::from_toml(SAMPLE).unwrap();
+        match p.bindings.get("sol").unwrap() {
+            Binding::Swipe { easing, .. } => assert_eq!(*easing, Easing::Linear),
+            other => panic!("swipe bekleniyordu: {other:?}"),
+        }
     }
 
     #[test]

@@ -11,7 +11,7 @@
 # easing = "ease_out": mesafenin %75'i sürenin ilk yarısında katedilir.
 # Oyun kaydırma eşiğini daha erken aşar, yani daha erken tepki verir.
 # Seçenekler: "linear" (varsayılan), "ease_out", "ease_out_strong".
-name = "Subway Surfers (WASD, ease_out)"
+name = "Subway Surfers (ease_out)"
 package = "com.kiloo.subwaysurf"
 
 [bindings.sol]
