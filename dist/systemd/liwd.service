@@ -1,0 +1,20 @@
+[Unit]
+Description=liwinux session daemon
+Documentation=https://github.com/wintone01/liwinux
+# Kullanıcı servisi: Waydroid session Wayland görüntüsüne erişmek zorunda,
+# bu yüzden root'ta değil kullanıcı bağlamında çalışır.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/liwd
+Restart=on-failure
+RestartSec=5
+Environment=LIWD_LOG=info
+# Daemon'un yeniden başlaması çalışan Android'i ÖLDÜRMEMELİ:
+# yalnızca ana süreci durdur, alt süreçleri (session) bırak.
+KillMode=process
+
+[Install]
+WantedBy=graphical-session.target

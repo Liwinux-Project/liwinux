@@ -1,0 +1,4 @@
+/target
+/results/*.txt
+/tools/
+*.log

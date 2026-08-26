@@ -1,0 +1,12 @@
+[package]
+name = "liw-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt", "process", "time", "macros", "fs"] }
+tracing = "0.1.44"

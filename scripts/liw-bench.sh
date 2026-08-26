@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# liw bench — Waydroid oyun performans olcumu (liwinux prototipi)
+#
+#   sudo bash liw-bench.sh <paket.adi> [saniye]
+#   sudo bash liw-bench.sh --list
+#
+# YONTEM NOTU:
+#   SurfaceFlinger 128 karelik YUVARLANAN tampon tutar. Ornekleme araligi bu
+#   tamponun dolma suresinden uzunsa kare kaybedilir ve pencereler arasinda
+#   yapay "uzun aralik"lar olusur. Bu surum:
+#     1) once refresh periyodunu olcup ornekleme araligini ADAPTIF secer
+#     2) frame time araliklarini SADECE ayni anlik goruntu icindeki ardisik
+#        karelerden hesaplar -> pencere siniri artefakti imkansiz hale gelir
+#     3) yakalama kapsamini (coverage) raporlar, boylece sayilarin ne kadar
+#        temsili oldugu gorulur
+set -u
+PKG="${1:-}"; DUR="${2:-60}"
+OUT=/tmp/liw-bench-$$; mkdir -p "$OUT"
+W() { waydroid --details-to-stdout shell -- "$@" 2>/dev/null | tr -d '\r'; }
+
+[ "$(id -u)" = 0 ] || { echo "root gerekiyor: sudo bash $0 $*"; exit 1; }
+waydroid status 2>/dev/null | grep -qi "Session.*RUNNING" || { echo "waydroid session calismiyor"; exit 1; }
+
+if [ "$PKG" = "--list" ] || [ -z "$PKG" ]; then
+  echo "== Ekrandaki katmanlar =="
+  W dumpsys SurfaceFlinger --list | grep -viE "^$|Dim|ColorLayer|Wallpaper|StatusBar|NavigationBar|InputMethod"
+  echo; echo "Kullanim: sudo bash $0 <paket.adi> [saniye]"; exit 0
+fi
+
+# --- katman secimi: adaylari yokla, veri doneni al ---
+probe() { W dumpsys SurfaceFlinger --latency "$1" 2>/dev/null \
+          | awk 'NR>1 && NF==3 && $2!=0 && $2<9223372036854775807' | wc -l; }
+echo "Katman araniyor..."
+LAYER=""
+W dumpsys SurfaceFlinger --list 2>/dev/null | grep -i "$PKG" \
+  | grep -viE "ActivityRecord|Dim|Blur|Wallpaper|Splash" > "$OUT/cand"
+{ grep -i "SurfaceView\|BLAST" "$OUT/cand"; grep -vi "SurfaceView\|BLAST" "$OUT/cand"; } | awk '!seen[$0]++' > "$OUT/cand2"
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
+  n=$(probe "$c")
+  echo "  aday: $(echo "$c" | cut -c1-64) -> $n kare"
+  [ "${n:-0}" -gt 5 ] && { LAYER="$c"; break; }
+done < "$OUT/cand2"
+[ -n "$LAYER" ] || { echo; echo "HATA: kare verisi doneN katman yok. Oyun on planda mi?"; \
+  W dumpsys SurfaceFlinger --list | grep -i "$PKG" | sed 's/^/  /'; exit 1; }
+echo "Katman : $LAYER"
+
+# --- refresh periyodunu olc, ornekleme araligini ADAPTIF sec ---
+REFRESH_NS=$(W dumpsys SurfaceFlinger --latency "$LAYER" 2>/dev/null | head -1 | tr -dc '0-9')
+[ -n "${REFRESH_NS:-}" ] && [ "$REFRESH_NS" -gt 1000 ] || REFRESH_NS=16666667
+# 128 karelik tampon suresi (sn) x 0.45 guvenlik payi
+INTERVAL=$(awk -v r="$REFRESH_NS" 'BEGIN{v=128*(r/1e9)*0.45; if(v>1)v=1; if(v<0.08)v=0.08; printf "%.3f", v}')
+HZ=$(awk -v r="$REFRESH_NS" 'BEGIN{printf "%.1f", 1e9/r}')
+echo "Refresh: ${HZ} Hz  ->  ornekleme araligi: ${INTERVAL}s (tampon: 128 kare)"
+echo "Sure   : ${DUR}s"
+echo "Olcum basliyor - GERCEKTEN OYNA (menu/durgun ekran sayilari bozar)..."
+echo
+
+# --- ABI / ceviri ---
+PKGNAME=$(echo "$PKG" | grep -oE "[a-z0-9_]+\.[a-z0-9_.]+" | head -1)
+if [ -n "${PKGNAME:-}" ]; then
+  abi=$(W dumpsys package "$PKGNAME" | grep -oE "primaryCpuAbi=[a-z0-9_-]+" | head -1)
+  gp=$(W pidof "$PKGNAME" | tail -1)
+  hou="hayir"
+  [ -n "${gp:-}" ] && [ "$(W sh -c "grep -c houdini /proc/$gp/maps" | tail -1)" != "0" ] 2>/dev/null && hou="EVET"
+  echo "  ABI: ${abi:-?}   houdini ceviri: $hou"; echo
+fi
+
+# --- ornekleme ---
+: > "$OUT/latency.raw"
+echo "t,gpu_util,vram_mb,cpu_pct,mem_used_mb,psi_some_avg10" > "$OUT/host.csv"
+T0=$(date +%s.%N); prev_idle=0; prev_total=0; host_next=0; n=0
+while :; do
+  now=$(date +%s.%N)
+  el=$(awk -v a="$now" -v b="$T0" 'BEGIN{print a-b}')
+  awk -v e="$el" -v d="$DUR" 'BEGIN{exit !(e<d)}' || break
+  { echo "---SAMPLE---"; W dumpsys SurfaceFlinger --latency "$LAYER"; } >> "$OUT/latency.raw"
+  n=$((n+1))
+  # host ornegi saniyede bir
+  if awk -v e="$el" -v h="$host_next" 'BEGIN{exit !(e>=h)}'; then
+    read -r g v < <(nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | tr ',' ' ')
+    read -r _ u nn sy id rest < /proc/stat
+    total=$((u+nn+sy+id)); dt=$((total-prev_total)); di=$((id-prev_idle))
+    cpu=0; [ "$dt" -gt 0 ] && cpu=$(( (dt-di)*100/dt )); prev_total=$total; prev_idle=$id
+    mem=$(awk '/MemAvailable/{a=$2}/MemTotal/{t=$2}END{print int((t-a)/1024)}' /proc/meminfo)
+    psi=$(awk -F'[= ]' '/^some/{print $3}' /proc/pressure/memory 2>/dev/null)
+    printf "%.1f,%s,%s,%s,%s,%s\n" "$el" "${g:-0}" "${v:-0}" "$cpu" "$mem" "${psi:-0}" >> "$OUT/host.csv"
+    host_next=$(awk -v h="$host_next" 'BEGIN{print h+1}')
+  fi
+  sleep "$INTERVAL"
+done
+echo "  $n anlik goruntu alindi"
+
+# --- analiz ---
+python3 - "$OUT" "$REFRESH_NS" "$DUR" <<'PY'
+import sys, statistics as st, csv
+d, refresh_ns, dur = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+rf = refresh_ns/1e6
+
+pairs, allframes = set(), set()
+for block in open(f"{d}/latency.raw").read().split("---SAMPLE---"):
+    fr = []
+    for l in block.strip().splitlines()[1:]:
+        p = l.split()
+        if len(p) == 3:
+            try: a = int(p[1])
+            except ValueError: continue
+            if a == 0 or a > 2**62: continue
+            fr.append(a)
+    fr = sorted(set(fr)); allframes.update(fr)
+    # SADECE ayni anlik goruntu icindeki ardisik kareler
+    for x, y in zip(fr, fr[1:]):
+        pairs.add((x, y))
+
+dt = sorted((b-a)/1e6 for a, b in pairs)
+dt = [x for x in dt if 0.05 < x < 1000]
+
+print("="*58)
+if len(dt) < 30:
+    print(f"Yeterli veri yok ({len(dt)} aralik). Oyun on planda ve hareketli miydi?")
+else:
+    def pct(p): return dt[min(int(len(dt)*p/100), len(dt)-1)]
+    avg = sum(dt)/len(dt)
+    span = (max(allframes)-min(allframes))/1e9 if len(allframes) > 1 else 0
+    exp = span/(refresh_ns/1e9) if span else 0
+    cov = 100*len(allframes)/exp if exp else 0
+    print(f"KARE ZAMANLAMASI   ({len(dt)} pencere-ici aralik, {len(allframes)} tekil kare)")
+    print(f"  p50            : {pct(50):7.2f} ms   -> {1000/pct(50):6.1f} FPS")
+    print(f"  p95            : {pct(95):7.2f} ms")
+    print(f"  p99            : {pct(99):7.2f} ms")
+    print(f"  p99.9          : {pct(99.9):7.2f} ms")
+    print(f"  en kotu        : {dt[-1]:7.2f} ms")
+    print(f"  ortalama       : {avg:7.2f} ms   -> {1000/avg:6.1f} FPS")
+    print(f"  refresh        : {rf:7.2f} ms   -> {1000/rf:6.1f} Hz")
+    jank = sum(1 for x in dt if x > rf*1.5)
+    j2   = sum(1 for x in dt if x > rf*2.0)
+    print(f"  jank >1.5x     : {jank:5d}  (%{100*jank/len(dt):.2f})")
+    print(f"  jank >2x       : {j2:5d}  (%{100*j2/len(dt):.2f})")
+    print(f"  yakalama kapsami: %{cov:.0f}  ({len(allframes)} / ~{exp:.0f} kare)")
+    if cov < 60:
+        print("  UYARI: kapsam dusuk - ornekleme araligini kucult veya yuku azalt")
+
+rows = list(csv.DictReader(open(f"{d}/host.csv")))
+if rows:
+    def col(k):
+        out=[]
+        for r in rows:
+            try: out.append(float(r[k]))
+            except (TypeError, ValueError): pass
+        return out
+    print()
+    print("HOST KAYNAK KULLANIMI")
+    for lab, k, u in [("GPU","gpu_util","%"), ("VRAM","vram_mb","MB"),
+                      ("CPU (sistem)","cpu_pct","%"), ("RAM","mem_used_mb","MB"),
+                      ("mem.pressure","psi_some_avg10","")]:
+        c = col(k)
+        if c: print(f"  {lab:<14}: ort {st.mean(c):8.1f}{u}   tepe {max(c):8.1f}{u}")
+print("="*58)
+print(f"Ham veri: {d}/latency.raw , {d}/host.csv")
+PY
