@@ -39,8 +39,16 @@ pub enum RunnerError {
 pub struct RunnerConfig {
     /// Dinlenecek klavye.
     pub device: PathBuf,
-    /// Profil etkinken cihazı kilitle.
+    /// Dinlenecek fare. Yoksa fare eşlemesi (Aim, fare tuşları) çalışmaz.
+    pub mouse: Option<PathBuf>,
+    /// Kilitleme özelliği açık mı.
+    ///
+    /// Açıkken kilit OTOMATİK alınmaz: kullanıcı `hotkey` ile oyun kipine
+    /// geçer. Profil etkinleşir etkinleşmez kilitlemek menülerde sıkışmaya
+    /// yol açıyordu.
     pub grab: bool,
+    /// Oyun kipini açıp kapatan evdev tuş kodu.
+    pub hotkey: Option<u16>,
     /// Dokunmatik koordinat eşlemesi.
     pub screen_map: ScreenMap,
 }
@@ -54,6 +62,8 @@ pub struct RunnerState {
     /// Etkin profilin adı; profil yoksa `None`.
     pub active_profile: Option<String>,
     pub grabbed: bool,
+    /// Oyun kipi açık mı (kilit + eşleme). Kapalıyken fare serbest.
+    pub game_mode: bool,
     /// Waydroid penceresi host'ta odakta mı. Değilse eşleme durur.
     pub host_focused: bool,
     /// Bizim katmanımızın gecikmesi (mikrosaniye, p50/p99).
@@ -68,6 +78,8 @@ pub enum RunnerEvent {
     ProfileCleared { package: String },
     Grabbed,
     Ungrabbed,
+    GameModeOn,
+    GameModeOff,
     FocusGained,
     FocusLost,
     EscapeRequested,
@@ -112,11 +124,27 @@ impl Runner {
         let dev = GrabbedDevice::open(&self.cfg.device, false)?;
         let mut stream = dev.into_stream()?;
 
+        // Fare AYRI bir cihaz. Klavyeyle aynı akışta gelmez; ikisini de
+        // dinlemek zorundayız yoksa Aim ve fare tuşları hiç tetiklenmez.
+        let mut mouse_stream = match &self.cfg.mouse {
+            Some(p) => match GrabbedDevice::open(p, false) {
+                Ok(d) => match d.into_stream() {
+                    Ok(s) => Some(s),
+                    Err(e) => { tracing::warn!(hata = %e, "fare akışı kurulamadı"); None }
+                },
+                Err(e) => { tracing::warn!(hata = %e, "fare açılamadı"); None }
+            },
+            None => None,
+        };
+
         let mut engine: Option<Engine> = None;
         // Etkin profil, motordan AYRI tutulur: odak kaybolunca motoru
         // söküyoruz ama profili unutmuyoruz ki odak dönünce geri kuralım.
         let mut profile: Option<super::profile::Profile> = None;
         let mut focused = *host_focused.borrow();
+        // Kısayol tanımlıysa oyun kipi KAPALI başlar; kullanıcı hazır
+        // olduğunda açar. Tanımlı değilse eski davranış: profil varsa açık.
+        let mut game_mode = self.cfg.hotkey.is_none();
         let mut current: Option<String> = None;
         let mut grabbed = false;
         let mut esc = 0u8;
@@ -156,11 +184,16 @@ impl Runner {
                                 profile: entry.profile.name.clone(),
                             });
                             // Motor yalnızca host odaktayken kurulur.
-                            if focused {
+                            if focused && game_mode {
                                 engine = Some(Engine::new(entry.profile.clone()));
                                 if self.cfg.grab && !grabbed
                                     && stream.device_mut().grab().is_ok()
                                 {
+                                    // Fare de kilitlenmeli: yoksa imleç host'ta
+                                    // gezinir ve tıklamalar masaüstüne gider.
+                                    if let Some(m) = mouse_stream.as_mut() {
+                                        let _ = m.device_mut().grab();
+                                    }
                                     grabbed = true;
                                     emit(RunnerEvent::Grabbed);
                                 }
@@ -174,6 +207,9 @@ impl Runner {
                             emit(RunnerEvent::ProfileCleared { package: pkg.clone() });
                             if grabbed {
                                 let _ = stream.device_mut().ungrab();
+                                if let Some(m) = mouse_stream.as_mut() {
+                                    let _ = m.device_mut().ungrab();
+                                }
                                 grabbed = false;
                                 emit(RunnerEvent::Ungrabbed);
                             }
@@ -193,11 +229,14 @@ impl Runner {
                     if now_focused == focused { continue; }
                     focused = now_focused;
                     if focused {
-                        if let Some(p) = &profile {
+                        if let Some(p) = &profile.clone().filter(|_| game_mode) {
                             engine = Some(Engine::new(p.clone()));
                             if self.cfg.grab && !grabbed
                                 && stream.device_mut().grab().is_ok()
                             {
+                                if let Some(m) = mouse_stream.as_mut() {
+                                    let _ = m.device_mut().grab();
+                                }
                                 grabbed = true;
                                 emit(RunnerEvent::Grabbed);
                             }
@@ -215,6 +254,9 @@ impl Runner {
                         let _ = backend.release_all();
                         if grabbed {
                             let _ = stream.device_mut().ungrab();
+                            if let Some(m) = mouse_stream.as_mut() {
+                                let _ = m.device_mut().ungrab();
+                            }
                             grabbed = false;
                             emit(RunnerEvent::Ungrabbed);
                         }
@@ -238,6 +280,55 @@ impl Runner {
                     let ev = ev.map_err(RunnerError::Stream)?;
                     let ev_time = ev.timestamp();
                     let Some(input) = translate(&ev) else { continue };
+
+                    // Kısayol HER ZAMAN dinlenir — kilitli olsun olmasın.
+                    // Kilitliyken dinlenmezse oyun kipinden çıkılamaz.
+                    if let (Some(hk), InputEvent::Press(TriggerKind::Key(k))) =
+                        (self.cfg.hotkey, input)
+                    {
+                        if k == hk {
+                            game_mode = !game_mode;
+                            if game_mode {
+                                if let Some(p) = &profile {
+                                    if focused {
+                                        engine = Some(Engine::new(p.clone()));
+                                        if self.cfg.grab && !grabbed
+                                            && stream.device_mut().grab().is_ok()
+                                        {
+                                            if let Some(m) = mouse_stream.as_mut() {
+                                                let _ = m.device_mut().grab();
+                                            }
+                                            grabbed = true;
+                                            emit(RunnerEvent::Grabbed);
+                                        }
+                                    }
+                                }
+                                emit(RunnerEvent::GameModeOn);
+                            } else {
+                                // Kipten çıkarken parmakları BIRAK: yoksa
+                                // menüye dönüldüğünde ekranda asılı kalır.
+                                if let Some(e) = engine.as_mut() {
+                                    let acts = e.set_enabled(false);
+                                    let _ = backend.dispatch(&acts);
+                                }
+                                engine = None;
+                                let _ = backend.release_all();
+                                if grabbed {
+                                    let _ = stream.device_mut().ungrab();
+                                    if let Some(m) = mouse_stream.as_mut() {
+                                        let _ = m.device_mut().ungrab();
+                                    }
+                                    grabbed = false;
+                                    emit(RunnerEvent::Ungrabbed);
+                                }
+                                emit(RunnerEvent::GameModeOff);
+                            }
+                            let mut s = self.state.write().await;
+                            s.game_mode = game_mode;
+                            s.grabbed = grabbed;
+                            continue;
+                        }
+                    }
 
                     if grabbed {
                         match input {
@@ -264,6 +355,25 @@ impl Runner {
                     }
                 }
 
+                // --- fare girdisi ---
+                ev = async {
+                    match mouse_stream.as_mut() {
+                        Some(m) => m.next_event().await,
+                        // Fare yoksa bu kol asla hazır olmamalı.
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let ev = ev.map_err(RunnerError::Stream)?;
+                    let ev_time = ev.timestamp();
+                    if let (Some(input), Some(e)) = (translate(&ev), engine.as_mut()) {
+                        let mut acts = e.tick(t0.elapsed().as_millis() as u64);
+                        acts.extend(e.handle(input));
+                        if !acts.is_empty() && backend.dispatch(&acts).is_ok() {
+                            lat.record(ev_time);
+                        }
+                    }
+                }
+
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() { break; }
                 }
@@ -276,7 +386,10 @@ impl Runner {
             let _ = backend.dispatch(&acts);
         }
         let _ = backend.release_all();
-        if grabbed { let _ = stream.device_mut().ungrab(); }
+        if grabbed {
+            let _ = stream.device_mut().ungrab();
+            if let Some(m) = mouse_stream.as_mut() { let _ = m.device_mut().ungrab(); }
+        }
 
         let (p50, _, p99, _) = lat.percentiles();
         let mut s = self.state.write().await;
@@ -299,6 +412,7 @@ mod tests {
         assert!(!s.running);
         assert!(s.active_profile.is_none());
         assert!(!s.grabbed);
+        assert!(!s.game_mode);
         // Odak varsayılanı KAPALI: bilinmezken açık saymak masaüstüne
         // dokunuş enjekte etme riski demek.
         assert!(!s.host_focused);
@@ -314,7 +428,7 @@ mod tests {
     fn state_is_serialisable_for_dbus() {
         let s = RunnerState { running: true, foreground: Some("com.x".into()),
             active_profile: Some("P".into()), grabbed: true, host_focused: true,
-            latency_p50_us: 80, latency_p99_us: 170 };
+            game_mode: true, latency_p50_us: 80, latency_p99_us: 170 };
         let j = serde_json::to_string(&s).unwrap();
         let back: RunnerState = serde_json::from_str(&j).unwrap();
         assert_eq!(back.active_profile.as_deref(), Some("P"));

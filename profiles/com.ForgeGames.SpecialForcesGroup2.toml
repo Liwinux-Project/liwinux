@@ -1,0 +1,81 @@
+# Special Forces Group 2 — FPS eşlemesi.
+#
+# Koordinatlar oyun ekran görüntüsünden ölçüldü (2560x1440 tam ekran).
+# Düğmelerin İŞLEVLERİ tahmin — hangi ikonun ne yaptığı doğrulanmalı.
+#
+# ÖNEMLİ: bu profil `--grab` ile kullanılmalı.
+# persist.waydroid.fake_touch bu paket için AÇIK; kilit olmadan fare hem
+# Waydroid'e (dokunma olarak) hem bize gider ve iki kez iş yapılır.
+#   liw keymap start --grab
+name = "Special Forces Group 2"
+package = "com.ForgeGames.SpecialForcesGroup2"
+
+# --- hareket: sol alttaki yön pedi ---
+[bindings.hareket]
+type = "joystick"
+up    = { Key = 17 }             # W
+down  = { Key = 31 }             # S
+left  = { Key = 30 }             # A
+right = { Key = 32 }             # D
+center = { x = 0.148, y = 0.738 }
+radius = 0.085
+
+# --- bakış: fare (sürekli, kenarda yeniden ortalanır) ---
+[bindings.bakis]
+type = "aim"
+origin = { x = 0.50, y = 0.45 }
+sensitivity = 0.0012
+deadzone = 0.4
+recenter_margin = 0.05
+
+# --- ateş: sağ üstteki nişangah dairesi ---
+[bindings.ates]
+type = "tap"
+trigger = "MouseLeft"
+at = { x = 0.938, y = 0.231 }
+
+# --- ikinci nişangah (sol kenar) — muhtemelen alternatif ateş/nişan ---
+[bindings.nisan]
+type = "tap"
+trigger = "MouseRight"
+at = { x = 0.060, y = 0.396 }
+
+# --- yan eğilme (hilal ikonlar) ---
+[bindings.egil_sol]
+type = "tap"
+trigger = { Key = 16 }           # Q
+at = { x = 0.273, y = 0.551 }
+
+[bindings.egil_sag]
+type = "tap"
+trigger = { Key = 18 }           # E
+at = { x = 0.783, y = 0.551 }
+
+# --- silah değiştir (sağdaki oklu tüfek ikonu) ---
+[bindings.silah]
+type = "tap"
+trigger = { Key = 19 }           # R
+at = { x = 0.958, y = 0.662 }
+
+# --- duruş: sağ alttaki iki asker ikonu (çömel / yat) ---
+[bindings.comel]
+type = "tap"
+trigger = { Key = 29 }           # LEFTCTRL
+at = { x = 0.833, y = 0.924 }
+
+[bindings.yat]
+type = "tap"
+trigger = { Key = 42 }           # LEFTSHIFT
+at = { x = 0.950, y = 0.924 }
+
+# --- market (sol üst alışveriş sepeti) ---
+[bindings.market]
+type = "tap"
+trigger = { Key = 33 }           # F
+at = { x = 0.151, y = 0.264 }
+
+# --- skor tablosu (alt orta liste ikonu) ---
+[bindings.skor]
+type = "tap"
+trigger = { Key = 15 }           # TAB
+at = { x = 0.325, y = 0.920 }

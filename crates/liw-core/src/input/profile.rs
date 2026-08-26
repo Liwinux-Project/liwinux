@@ -79,13 +79,25 @@ pub enum Binding {
     },
 
     /// FPS nişan alma: bağıl fare hareketi → sürekli sürükleme.
-    /// `sensitivity` fare piksel'ini normalize mesafeye çevirir.
+    ///
+    /// `toggle` YOKSA nişan her zaman etkindir — FPS'te fare bakışı
+    /// sürekli olmalı, tuşa basılı tutmak gerekmemeli.
     Aim {
+        #[serde(default)]
         toggle: Option<Trigger>,
         origin: Norm,
+        /// Fare pikselini normalize mesafeye çevirir.
         sensitivity: f32,
         /// Bu eşiğin altındaki hareket yok sayılır (fare gürültüsü).
         deadzone: f32,
+        /// Parmak ekran kenarına bu kadar yaklaşınca kaldırılıp merkeze
+        /// geri konur.
+        ///
+        /// Bu ŞART: parmak sonsuza kadar sürüklenemez. Yeniden ortalama
+        /// olmadan sınırlı açıdan fazla dönemezsin. Gerçek oyuncular da
+        /// aynı şeyi yapar, oyunlar bunu bekler.
+        #[serde(default = "default_recenter_margin")]
+        recenter_margin: f32,
     },
 
     /// Kaydırma jesti (Subway Surfers gibi oyunlar için).
@@ -122,6 +134,8 @@ impl Binding {
     }
 }
 
+fn default_recenter_margin() -> f32 { 0.12 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub name: String,
@@ -150,17 +164,18 @@ impl Profile {
 
     /// Profili yüklemeden önce tutarlılığını dener.
     ///
+    /// NOT: bağlantı SAYISINA sınır konmaz. `MAX_POINTERS` eşzamanlı
+    /// parmak sınırıdır; bir profilde 20 düğme olabilir ve aynı anda
+    /// yalnızca birkaçı basılır. İkisini karıştırmak geçerli profilleri
+    /// reddeder — gerçekte oldu: 11 düğmeli bir FPS profili reddedildi.
+    /// Havuz tükenirse motor çalışma zamanında uyarır.
+    ///
     /// En önemlisi: **aynı tetikleyici birden fazla bağlantıda kullanılamaz.**
     /// Kullanılırsa hangi bağlantının çalışacağı belirsizleşir ve kullanıcı
     /// bunu "bazen çalışıyor" diye yaşar — teşhisi en zor hata türü.
     pub fn validate(&self) -> Result<(), ProfileError> {
         if self.bindings.is_empty() {
             return Err(ProfileError::Invalid("profilde hiç bağlantı yok".into()));
-        }
-        if self.bindings.len() > super::touch::MAX_POINTERS {
-            return Err(ProfileError::Invalid(format!(
-                "{} bağlantı var ama Android en fazla {} eşzamanlı işaretçi destekler",
-                self.bindings.len(), super::touch::MAX_POINTERS)));
         }
         let mut seen: std::collections::HashMap<Trigger, &str> = Default::default();
         for (name, b) in &self.bindings {
@@ -216,6 +231,20 @@ duration_ms = 80
         let dup = SAMPLE.replace("trigger = { Key = 57 }", "trigger = { Key = 30 }");
         let err = Profile::from_toml(&dup).unwrap_err();
         assert!(err.to_string().contains("aynı tetikleyici"), "{err}");
+    }
+
+    /// Çok düğmeli profil KABUL EDİLMELİ: eşzamanlı parmak sınırı
+    /// toplam bağlantı sayısıyla aynı şey değil.
+    #[test]
+    fn accepts_profile_with_more_bindings_than_pointers() {
+        let mut t = String::from("name = \"çok\"\npackage = \"p\"\n");
+        for i in 0..15u16 {
+            t.push_str(&format!(
+                "[bindings.b{i}]\ntype = \"tap\"\ntrigger = {{ Key = {} }}\n\
+                 at = {{ x = 0.5, y = 0.5 }}\n", 100 + i));
+        }
+        let p = Profile::from_toml(&t).expect("15 bağlantı reddedilmemeli");
+        assert_eq!(p.bindings.len(), 15);
     }
 
     #[test]

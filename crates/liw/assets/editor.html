@@ -1,0 +1,142 @@
+<!doctype html><html lang="tr"><head><meta charset="utf-8">
+<title>liwinux — profil düzenleyici</title>
+<style>
+:root { --bg:#14161a; --fg:#e6e8ec; --mut:#9aa3af; --acc:#4da3ff; --ok:#2ecc71; }
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);
+  font:14px/1.5 system-ui,sans-serif;display:flex;height:100vh}
+#side{width:300px;flex:none;overflow-y:auto;padding:14px;border-right:1px solid #2a2f37}
+#stage{flex:1;position:relative;overflow:auto;background:#0b0d10}
+#wrap{position:relative;display:inline-block}
+img{display:block;max-width:none}
+.m{position:absolute;transform:translate(-50%,-50%);cursor:grab;user-select:none}
+.m .dot{width:22px;height:22px;border-radius:50%;border:2px solid #fff;
+  background:rgba(77,163,255,.55);box-shadow:0 0 0 2px rgba(0,0,0,.6)}
+.m.sel .dot{background:rgba(46,204,113,.65);border-color:var(--ok)}
+.m .lbl{position:absolute;left:16px;top:-4px;white-space:nowrap;font-size:12px;
+  background:rgba(0,0,0,.75);padding:1px 6px;border-radius:3px}
+.m.rad{pointer-events:none}
+.m.rad .ring{border:2px dashed rgba(77,163,255,.6);border-radius:50%;
+  transform:translate(-50%,-50%);position:absolute}
+h1{font-size:15px;margin:0 0 4px} .sub{color:var(--mut);font-size:12px;margin-bottom:12px}
+.b{padding:7px 8px;border-radius:6px;cursor:pointer;margin-bottom:4px;border:1px solid #262b33}
+.b:hover{background:#1b1f26} .b.sel{background:#1e2a38;border-color:var(--acc)}
+.b .n{font-weight:600} .b .c{color:var(--mut);font-size:12px;font-family:ui-monospace,monospace}
+button{width:100%;padding:9px;margin-top:10px;border:0;border-radius:6px;
+  background:var(--acc);color:#08121e;font-weight:700;cursor:pointer;font-size:14px}
+button.sec{background:#2a2f37;color:var(--fg)}
+#msg{margin-top:8px;font-size:12px;color:var(--ok);min-height:18px}
+kbd{background:#242a33;border:1px solid #333b46;border-radius:4px;padding:0 5px;font-size:12px}
+</style></head><body>
+<div id="side">
+  <h1 id="pname">profil</h1>
+  <div class="sub" id="ppkg"></div>
+  <div class="sub">İşaretçiyi <b>sürükle</b> ya da listeden seçip görüntüye <b>tıkla</b>.
+    Seçiliyken <kbd>ok tuşları</kbd> ince ayar yapar (<kbd>Shift</kbd> = 10×).</div>
+  <div id="list"></div>
+  <button id="save">Kaydet</button>
+  <button class="sec" id="test">Seçiliye dokun (3 sn sonra)</button>
+  <div id="msg"></div>
+</div>
+<div id="stage"><div id="wrap"><img id="shot" src="/shot.png" alt=""></div></div>
+<script>
+const S = JSON.parse(document.getElementById('data').textContent);
+let sel = null, marks = {};
+document.getElementById('pname').textContent = S.name;
+document.getElementById('ppkg').textContent = S.package;
+
+const wrap = document.getElementById('wrap');
+const img  = document.getElementById('shot');
+const list = document.getElementById('list');
+const msg  = document.getElementById('msg');
+
+function render() {
+  list.innerHTML = '';
+  for (const b of S.bindings) {
+    const d = document.createElement('div');
+    d.className = 'b' + (b.name === sel ? ' sel' : '');
+    d.innerHTML = `<div class="n">${b.name} <span class="c">${b.kind}</span></div>
+      <div class="c">${b.x.toFixed(3)}, ${b.y.toFixed(3)}${
+        b.radius != null ? '  r=' + b.radius.toFixed(3) : ''}</div>`;
+    d.onclick = () => { sel = b.name; render(); place(); };
+    list.appendChild(d);
+  }
+  place();
+}
+
+function place() {
+  for (const k in marks) marks[k].remove();
+  marks = {};
+  for (const b of S.bindings) {
+    if (b.radius != null) {
+      const r = document.createElement('div');
+      r.className = 'm rad';
+      const ring = document.createElement('div');
+      ring.className = 'ring';
+      const px = b.radius * img.clientWidth * 2;
+      ring.style.width = px + 'px'; ring.style.height = px + 'px';
+      r.appendChild(ring);
+      r.style.left = (b.x * img.clientWidth) + 'px';
+      r.style.top  = (b.y * img.clientHeight) + 'px';
+      wrap.appendChild(r); marks[b.name + '_r'] = r;
+    }
+    const m = document.createElement('div');
+    m.className = 'm' + (b.name === sel ? ' sel' : '');
+    m.innerHTML = `<div class="dot"></div><div class="lbl">${b.name}</div>`;
+    m.style.left = (b.x * img.clientWidth) + 'px';
+    m.style.top  = (b.y * img.clientHeight) + 'px';
+    m.onpointerdown = e => {
+      e.preventDefault(); sel = b.name; render();
+      m.setPointerCapture(e.pointerId);
+      const move = ev => {
+        const r = img.getBoundingClientRect();
+        b.x = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
+        b.y = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height));
+        render();
+      };
+      const up = () => { m.removeEventListener('pointermove', move);
+                         m.removeEventListener('pointerup', up); };
+      m.addEventListener('pointermove', move);
+      m.addEventListener('pointerup', up);
+    };
+    wrap.appendChild(m); marks[b.name] = m;
+  }
+}
+
+img.onclick = e => {
+  if (!sel) return;
+  const b = S.bindings.find(x => x.name === sel);
+  const r = img.getBoundingClientRect();
+  b.x = (e.clientX - r.left) / r.width;
+  b.y = (e.clientY - r.top) / r.height;
+  render();
+};
+
+addEventListener('keydown', e => {
+  if (!sel) return;
+  const b = S.bindings.find(x => x.name === sel);
+  const step = (e.shiftKey ? 0.01 : 0.001);
+  if (e.key === 'ArrowLeft')  b.x -= step; else if (e.key === 'ArrowRight') b.x += step;
+  else if (e.key === 'ArrowUp') b.y -= step; else if (e.key === 'ArrowDown') b.y += step;
+  else return;
+  e.preventDefault();
+  b.x = Math.min(1, Math.max(0, b.x)); b.y = Math.min(1, Math.max(0, b.y));
+  render();
+});
+
+document.getElementById('save').onclick = async () => {
+  msg.textContent = 'kaydediliyor...';
+  const r = await fetch('/save', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(S.bindings) });
+  msg.textContent = r.ok ? 'kaydedildi — keymapper yeniden başlatılmalı'
+                         : 'HATA: ' + await r.text();
+};
+document.getElementById('test').onclick = async () => {
+  if (!sel) { msg.textContent = 'önce bir bağlantı seç'; return; }
+  msg.textContent = '3 sn içinde oyun penceresine geç...';
+  const r = await fetch('/poke?b=' + encodeURIComponent(sel), { method: 'POST' });
+  msg.textContent = r.ok ? 'dokunuldu' : 'HATA: ' + await r.text();
+};
+render();
+addEventListener('resize', render);
+</script></body></html>

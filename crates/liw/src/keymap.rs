@@ -196,7 +196,7 @@ fn print_action(act: &TouchAction, (w, h): (u32, u32)) {
 /// yoksa enjeksiyon yolunda mı olduğunu bilmek gerekir.
 pub async fn poke(
     x: f32, y: f32, hold_ms: u64, drag_to: Option<(f32, f32)>,
-    map: ScreenMap,
+    map: ScreenMap, delay_s: u64,
 ) -> Result<()> {
     use liw_core::input::Norm;
 
@@ -207,6 +207,21 @@ pub async fn poke(
         map.origin_x, map.origin_y, map.scale_x, map.scale_y, map.invert_x, map.invert_y);
     println!("KWin/libinput'un cihazı tanıması bekleniyor...");
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+    // Dokunuşlar KONUMA göre yönlendirilir, odağa göre değil. Komut
+    // terminalden çalıştırıldığında terminal penceresi hedefin üstündeyse
+    // dokunuş ORAYA gider ve test sessizce yanlış sonuç verir.
+    if delay_s > 0 {
+        println!();
+        println!("{delay_s} saniye içinde hedef pencereyi ÖNE GETİR:");
+        for i in (1..=delay_s).rev() {
+            print!("  {i}... ");
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        println!();
+    }
 
     let from = Norm::new(x, y);
     println!("DOWN  ({x:.3}, {y:.3})");
@@ -313,17 +328,30 @@ pub async fn watch(device: Option<PathBuf>) -> Result<()> {
 /// Otomatik tespit yerine ölçüm. Çoklu arayüzlü klavyelerde yetenek listesi
 /// ayırt edici DEĞİL — bu makinede aynı klavyenin iki arayüzü de tam tuş
 /// aralığını bildiriyor ama olayları yalnızca biri üretiyor.
-pub async fn detect(save: bool) -> Result<()> {
+pub async fn detect(save: bool, mouse_mode: bool, hotkey_mode: bool) -> Result<()> {
     let devs = capture::discover();
     let cands: Vec<_> = devs.iter()
         .filter(|d| !d.virtual_device)
-        .filter(|d| !matches!(d.kind, capture::DeviceKind::Pointer))
+        .filter(|d| if mouse_mode {
+            // Fare kalibrasyonunda işaretçi ve combo cihazlar aday.
+            matches!(d.kind, capture::DeviceKind::Pointer | capture::DeviceKind::Combo)
+        } else {
+            !matches!(d.kind, capture::DeviceKind::Pointer)
+        })
         .collect();
     if cands.is_empty() {
         println!("Aday klavye yok. 'input' grubunda mısın?  ->  groups");
         return Ok(());
     }
-    println!("{} aday dinleniyor. ŞİMDİ BİR TUŞA BAS...", cands.len());
+    if mouse_mode {
+        println!("{} aday dinleniyor. ŞİMDİ FARENİ HAREKET ETTİR...", cands.len());
+    } else if hotkey_mode {
+        println!("{} aday dinleniyor.", cands.len());
+        println!("ŞİMDİ OYUN KİPİ KISAYOLU OLARAK KULLANMAK İSTEDİĞİN TUŞA BAS...");
+        println!("(oyunda kullanmadığın bir tuş seç)");
+    } else {
+        println!("{} aday dinleniyor. ŞİMDİ BİR TUŞA BAS...", cands.len());
+    }
     println!();
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<(PathBuf, String, u16)>(8);
@@ -334,9 +362,20 @@ pub async fn detect(save: bool) -> Result<()> {
         let Ok(mut stream) = dev.into_stream() else { continue };
         set.spawn(async move {
             while let Ok(ev) = stream.next_event().await {
-                if let Some(InputEvent::Press(TriggerKind::Key(k))) = translate(&ev) {
-                    let _ = tx.send((path.clone(), name.clone(), k)).await;
-                    return;
+                match translate(&ev) {
+                    // Fare kipinde HAREKET aranır: tuşa basmak fareyi
+                    // ayırt etmez, çoğu klavyede de tuş vardır.
+                    Some(InputEvent::MouseMove { dx, dy }) if mouse_mode
+                        && (dx.abs() + dy.abs()) > 2.0 =>
+                    {
+                        let _ = tx.send((path.clone(), name.clone(), 0)).await;
+                        return;
+                    }
+                    Some(InputEvent::Press(TriggerKind::Key(k))) if !mouse_mode => {
+                        let _ = tx.send((path.clone(), name.clone(), k)).await;
+                        return;
+                    }
+                    _ => {}
                 }
             }
         });
@@ -353,15 +392,23 @@ pub async fn detect(save: bool) -> Result<()> {
     set.abort_all();
 
     let Some((path, name, code)) = found else { return Ok(()) };
-    println!("Klavye : {}  ({})", path.display(), name);
-    println!("İlk tuş kodu: {code}");
+    if mouse_mode {
+        println!("Fare   : {}  ({})", path.display(), name);
+    } else if hotkey_mode {
+        println!("Kısayol tuşu kodu: {code}   (cihaz: {})", path.display());
+    } else {
+        println!("Klavye : {}  ({})", path.display(), name);
+        println!("İlk tuş kodu: {code}");
+    }
 
     if save {
         let mut cfg = liw_core::Config::load();
-        cfg.keyboard = Some(path);
+        if mouse_mode { cfg.mouse = Some(path); }
+        else if hotkey_mode { cfg.hotkey_game_mode = Some(code); }
+        else { cfg.keyboard = Some(path); }
         let p = cfg.save().context("yapılandırma kaydedilemedi")?;
         println!("Kaydedildi: {}", p.display());
-        println!("Artık 'liw keymap test' bu cihazı varsayılan kullanacak.");
+        println!("Artık keymapper bu cihazı kullanacak.");
     } else {
         println!("(kaydetmek için: liw keymap detect --save)");
     }
@@ -440,7 +487,10 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
     println!();
 
     let mut runner = Runner::new(
-        RunnerConfig { device, grab, screen_map: ScreenMap::default() }, store);
+        RunnerConfig {
+            device, mouse: cfg.mouse.clone(), grab,
+            hotkey: cfg.hotkey_game_mode, screen_map: ScreenMap::default(),
+        }, store);
 
     // Hata ayıklama kipinde host odak kapısı YOK: KWin bildirimi liwd'ye
     // gider, bu süreç onu alamaz. Bu yüzden kapı sürekli açık kabul edilir
@@ -477,6 +527,8 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
                     println!("[{package}] profil yok — eşleme kapalı"),
                 RunnerEvent::Grabbed => println!("  kilit alındı"),
                 RunnerEvent::Ungrabbed => println!("  kilit bırakıldı"),
+                RunnerEvent::GameModeOn => println!("  OYUN KİPİ AÇIK (kilit + eşleme)"),
+                RunnerEvent::GameModeOff => println!("  oyun kipi kapalı (fare serbest)"),
                 RunnerEvent::FocusGained => println!("  Waydroid odakta"),
                 RunnerEvent::FocusLost => println!("  Waydroid odakta değil"),
                 RunnerEvent::EscapeRequested => println!("ESC ×3 — çıkılıyor"),
@@ -552,6 +604,7 @@ pub async fn daemon_status() -> Result<()> {
     println!("Çalışıyor    : {}", if st.running { "evet" } else { "hayır" });
     println!("Ön plan      : {}", st.foreground.as_deref().unwrap_or("-"));
     println!("Etkin profil : {}", st.active_profile.as_deref().unwrap_or("yok"));
+    println!("Oyun kipi    : {}", if st.game_mode { "AÇIK" } else { "kapalı (fare serbest)" });
     println!("Host odağı   : {}", if st.host_focused { "Waydroid" } else { "başka pencere" });
     println!("Kilit        : {}", if st.grabbed { "açık" } else { "kapalı" });
     if st.latency_p50_us > 0 || st.latency_p99_us > 0 {

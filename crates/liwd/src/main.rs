@@ -84,6 +84,12 @@ impl Manager {
             self.win.clone(), 5, std::time::Duration::from_millis(700)).await)
     }
 
+    /// Waydroid penceresini öne getirir ve odaklar.
+    async fn activate_window(&self) -> zbus::fdo::Result<()> {
+        window::activate().await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+
     /// Pencere geometrisi (JSON).
     async fn window_geometry(&self) -> zbus::fdo::Result<String> {
         let g = self.win.get().await;
@@ -149,7 +155,7 @@ async fn main() -> Result<()> {
     let km = Arc::new(keymapper::Handle::new());
     let win = window::WindowState::new();
 
-    let _conn = connection::Builder::session()?
+    let conn = connection::Builder::session()?
         .name(BUS_NAME)?
         .serve_at(OBJ_PATH, Manager {
             sup: sup.clone(), state: state.clone(),
@@ -158,6 +164,15 @@ async fn main() -> Result<()> {
         .build()
         .await?;
     tracing::info!("liwd hazır — {BUS_NAME} {OBJ_PATH}");
+
+    // Adımızı kaybedersek ÇIKMALIYIZ.
+    //
+    // Gerçekte oldu: eski bir liwd adını kaybetti ama çalışmaya devam etti.
+    // Ulaşılamaz bir daemon hâlâ cihaz kilitleyip dokunuş enjekte edebilir —
+    // kullanıcının klavyesi çalışmaz ve nedenini bulamaz. systemd zaten
+    // yeniden başlatacak; zombi kalmaktansa ölmek doğru.
+    let dbus = zbus::fdo::DBusProxy::new(&conn).await?;
+    let own_id = conn.unique_name().map(|n| n.to_string());
 
     // --- gözetim döngüsü ---
     let mut unhealthy = 0u32;
@@ -220,6 +235,23 @@ async fn main() -> Result<()> {
                 }
             }
             _ = sigterm.recv() => { tracing::info!("SIGTERM — çıkılıyor"); break; }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
+                // Sahiplik yoklaması. Sinyal dinlemek yerine yoklama:
+                // basit, ve 10 saniyelik gecikme zombi riskini kapatmaya yeter.
+                match dbus.get_name_owner(BUS_NAME.try_into().unwrap()).await {
+                    Ok(owner) if Some(owner.to_string()) == own_id => {}
+                    Ok(other) => {
+                        tracing::error!(
+                            sahip = %other, bizim = ?own_id,
+                            "D-Bus adı başkasına geçti — çıkılıyor (zombi kalmamak için)");
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::error!(hata = %e, "D-Bus adı sorgulanamadı — çıkılıyor");
+                        break;
+                    }
+                }
+            }
             _ = tokio::signal::ctrl_c() => { tracing::info!("SIGINT — çıkılıyor"); break; }
         }
     }

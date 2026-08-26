@@ -1,6 +1,7 @@
 //! liw — liwinux komut satırı istemcisi.
 
 mod bench;
+mod editor;
 mod keymap;
 mod profile;
 
@@ -57,6 +58,36 @@ enum ProfileAction {
     },
     /// Ön plandaki uygulama için hangi profil geçerli
     Which,
+    /// GÖRSEL düzenleyiciyi aç (ekran görüntüsü üstünde sürükle-bırak)
+    Edit {
+        /// Android paket adı
+        package: String,
+        /// Sunucu portu (0 = rastgele)
+        #[arg(long, default_value_t = 8731)]
+        port: u16,
+    },
+    /// Bir bağlantının koordinatını değiştir
+    Set {
+        /// Android paket adı
+        package: String,
+        /// Bağlantı adı (liw profile show ile bak)
+        binding: String,
+        /// X (0..1)
+        x: f64,
+        /// Y (0..1)
+        y: f64,
+        /// Değiştirilecek alan: at | center | origin | from | to
+        #[arg(long, default_value = "at")]
+        field: String,
+    },
+    /// Bir bağlantının koordinatına dokun — yerleşimi görsel doğrula
+    Poke {
+        package: String,
+        binding: String,
+        /// Dokunmadan önce bekle (hedef pencereyi öne getirmek için)
+        #[arg(long, default_value_t = 5)]
+        delay: u64,
+    },
     /// Depoyla gelen profilleri kullanıcı dizinine kopyala
     Install {
         /// Var olanların üzerine yaz
@@ -114,6 +145,12 @@ enum KeymapAction {
         /// Bulunan cihazı yapılandırmaya kaydet
         #[arg(short, long)]
         save: bool,
+        /// Klavye yerine FAREYİ kalibre et (hareket ettirerek)
+        #[arg(short, long)]
+        mouse: bool,
+        /// Oyun kipi KISAYOL tuşunu belirle
+        #[arg(long)]
+        hotkey: bool,
     },
     /// Hangi cihazın hangi tuş kodunu ürettiğini izle (teşhis)
     Watch {
@@ -144,6 +181,9 @@ enum KeymapAction {
         /// Y eksenini aynala
         #[arg(long)]
         invert_y: bool,
+        /// Dokunmadan önce bekle (saniye) — hedef pencereyi öne getirmek için
+        #[arg(long, default_value_t = 0)]
+        delay: u64,
     },
     /// Profili gerçek klavyeyle dene (Android'e enjeksiyon YOK)
     Test {
@@ -204,6 +244,11 @@ async fn main() -> Result<()> {
                 ProfileAction::List => profile::list(),
                 ProfileAction::Show { package } => profile::show(&package),
                 ProfileAction::Which => profile::which().await,
+                ProfileAction::Edit { package, port } => editor::run(&package, port).await,
+                ProfileAction::Set { package, binding, x, y, field } =>
+                    profile::set_coord(&package, &binding, &field, x, y),
+                ProfileAction::Poke { package, binding, delay } =>
+                    profile::poke_binding(&package, &binding, delay).await,
                 ProfileAction::Install { force, from } => profile::install(force, from),
             };
         }
@@ -216,9 +261,10 @@ async fn main() -> Result<()> {
                 KeymapAction::Run { grab, poll } => keymap::run(grab, poll).await,
                 KeymapAction::Overlay { off } => keymap::overlay(!off).await,
                 KeymapAction::Sweep { axis, count, gap } => keymap::sweep(axis, count, gap).await,
-                KeymapAction::Detect { save } => keymap::detect(save).await,
+                KeymapAction::Detect { save, mouse, hotkey } =>
+                    keymap::detect(save, mouse, hotkey).await,
                 KeymapAction::Watch { device } => keymap::watch(device).await,
-                KeymapAction::Poke { x, y, hold, to, region, invert_x, invert_y } => {
+                KeymapAction::Poke { x, y, hold, to, region, invert_x, invert_y, delay } => {
                     let drag = match to {
                         Some(s) => {
                             let (a, b) = s.split_once(',')
@@ -239,7 +285,7 @@ async fn main() -> Result<()> {
                     }
                     map.invert_x = invert_x;
                     map.invert_y = invert_y;
-                    keymap::poke(x, y, hold, drag, map).await
+                    keymap::poke(x, y, hold, drag, map, delay).await
                 }
                 KeymapAction::Test { profile, device, grab, width, height, inject } =>
                     keymap::test_profile(profile, device, grab, (width, height), inject).await,

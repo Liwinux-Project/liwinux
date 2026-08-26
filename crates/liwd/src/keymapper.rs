@@ -70,11 +70,24 @@ impl Handle {
             tracing::warn!(dosya = %p.path.display(), hata = %p.error, "profil yüklenemedi");
         }
         tracing::info!(
-            cihaz = %device.display(), profil = store.len(), grab,
+            klavye = %device.display(),
+            fare = ?cfg.mouse.as_ref().map(|p| p.display().to_string()),
+            profil = store.len(), grab,
+            kısayol = ?cfg.hotkey_game_mode,
             "keymapper başlatılıyor");
+        if grab && cfg.hotkey_game_mode.is_none() {
+            tracing::warn!(
+                "kilit açık ama oyun kipi kısayolu tanımlı değil — profil \
+                 etkinleşir etkinleşmez kilitlenecek. 'liw keymap detect \
+                 --hotkey --save' ile bir tuş belirle.");
+        }
 
         let mut runner = Runner::new(
-            RunnerConfig { device, grab, screen_map: ScreenMap::default() },
+            RunnerConfig {
+                device, mouse: cfg.mouse.clone(), grab,
+                hotkey: cfg.hotkey_game_mode,
+                screen_map: ScreenMap::default(),
+            },
             store,
         );
         let state = runner.state();
@@ -111,6 +124,10 @@ impl Handle {
                         tracing::info!(paket = %package, "profil yok — eşleme kapalı"),
                     RunnerEvent::Grabbed => tracing::info!("cihaz kilitlendi"),
                     RunnerEvent::Ungrabbed => tracing::info!("cihaz kilidi bırakıldı"),
+                    RunnerEvent::GameModeOn =>
+                        tracing::info!("oyun kipi AÇIK — kilit + eşleme"),
+                    RunnerEvent::GameModeOff =>
+                        tracing::info!("oyun kipi kapalı — fare serbest"),
                     RunnerEvent::FocusGained =>
                         tracing::info!("Waydroid odakta — eşleme açık"),
                     RunnerEvent::FocusLost =>

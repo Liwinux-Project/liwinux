@@ -6,7 +6,7 @@
 //! elle denemekle yakalanamaz.
 
 use super::profile::{Binding, Easing, Profile, Trigger};
-use super::touch::{Norm, PointerPool, TouchAction};
+use super::touch::{Norm, PointerPool, TouchAction, MAX_POINTERS};
 use std::collections::HashSet;
 
 /// Motora gelen ham girdi olayı.
@@ -191,7 +191,13 @@ impl Engine {
             Binding::Tap { at, .. } | Binding::Toggle { at, .. } => {
                 match self.pool.acquire(&name) {
                     Some(id) => vec![TouchAction::Down { id, at }],
-                    None => Vec::new(),
+                    None => {
+                        // Sessizce yutmak "tuş bazen çalışmıyor" hatası
+                        // üretir ve kullanıcı nedenini bulamaz.
+                        tracing::warn!(bağlantı = %name, sınır = MAX_POINTERS,
+                            "işaretçi havuzu dolu — bu dokunuş atlandı");
+                        Vec::new()
+                    }
                 }
             }
             Binding::Joystick { .. } => self.recompute_joystick(&name),
@@ -294,21 +300,59 @@ impl Engine {
     }
 
     fn on_mouse(&mut self, dx: f32, dy: f32) -> Vec<TouchAction> {
-        let Some((name, Binding::Aim { sensitivity, deadzone, .. })) =
-            self.profile.bindings.iter()
+        let Some((name, Binding::Aim {
+            toggle, origin, sensitivity, deadzone, recenter_margin,
+        })) = self.profile.bindings.iter()
                 .find(|(_, b)| matches!(b, Binding::Aim { .. }))
                 .map(|(n, b)| (n.clone(), b.clone()))
         else { return Vec::new() };
 
-        let Some(pos) = self.aim_pos else { return Vec::new() };
         if (dx * dx + dy * dy).sqrt() < deadzone { return Vec::new(); }
 
-        let next = Norm::new(pos.x + dx * sensitivity, pos.y + dy * sensitivity);
-        self.aim_pos = Some(next);
-        match self.pool.get(&name) {
-            Some(id) => vec![TouchAction::Move { id, at: next }],
-            None => Vec::new(),
+        // toggle yoksa nişan HER ZAMAN etkin: ilk fare hareketinde parmağı
+        // indir. FPS'te bakış için tuşa basılı tutmak gerekmemeli.
+        let mut acts = Vec::new();
+        if self.aim_pos.is_none() {
+            if toggle.is_some() { return acts; }
+            let Some(id) = self.pool.acquire(&name) else { return acts };
+            self.aim_pos = Some(origin);
+            acts.push(TouchAction::Down { id, at: origin });
         }
+        let pos = self.aim_pos.expect("yukarıda kuruldu");
+        let Some(id) = self.pool.get(&name) else { return acts };
+
+        let nx = pos.x + dx * sensitivity;
+        let ny = pos.y + dy * sensitivity;
+        let m = recenter_margin.clamp(0.01, 0.45);
+
+        if nx < m || nx > 1.0 - m || ny < m || ny > 1.0 - m {
+            // Kenara gelindi: parmağı kaldır, merkeze koy VE bu karenin
+            // hareketini merkezden uygula.
+            //
+            // Hareketi atmak birikimli kaymaya yol açıyor: her ortalamada
+            // bir miktar dönüş kayboluyor ve fare ile görüş birbirinden
+            // ayrılıyor. Oyun `Down`'da referansı sıfırladığı için
+            // `origin + delta` doğru dönüşü verir — hiçbir şey kaybolmaz.
+            acts.push(TouchAction::Up { id });
+            self.pool.release(&name);
+            let Some(id2) = self.pool.acquire(&name) else {
+                self.aim_pos = None;
+                return acts;
+            };
+            acts.push(TouchAction::Down { id: id2, at: origin });
+            let after = Norm::new(
+                (origin.x + dx * sensitivity).clamp(m, 1.0 - m),
+                (origin.y + dy * sensitivity).clamp(m, 1.0 - m),
+            );
+            self.aim_pos = Some(after);
+            acts.push(TouchAction::Move { id: id2, at: after });
+            return acts;
+        }
+
+        let next = Norm::new(nx, ny);
+        self.aim_pos = Some(next);
+        acts.push(TouchAction::Move { id, at: next });
+        acts
     }
 }
 
@@ -341,6 +385,7 @@ mod tests {
             origin: Norm::new(0.5, 0.5),
             sensitivity: 0.001,
             deadzone: 0.5,
+            recenter_margin: 0.12,
         });
         Profile { name: "t".into(), package: "p".into(), bindings: b }
     }
@@ -453,11 +498,132 @@ mod tests {
         assert!(e.handle(InputEvent::MouseMove { dx: 0.2, dy: 0.1 }).is_empty());
     }
 
-    /// Aim etkin değilken fare hareketi dokunuş üretmemeli.
+    /// toggle TANIMLIYKEN, basılmadan fare hareketi dokunuş üretmemeli.
     #[test]
     fn mouse_move_without_aim_active_does_nothing() {
         let mut e = Engine::new(aim_profile());
         assert!(e.handle(InputEvent::MouseMove { dx: 100.0, dy: 0.0 }).is_empty());
+    }
+
+    /// toggle YOKSA nişan her zaman etkin: ilk fare hareketi parmağı indirir.
+    /// FPS'te bakış için tuşa basılı tutmak gerekmemeli.
+    fn always_on_aim() -> Engine {
+        let mut b = BTreeMap::new();
+        b.insert("bakis".into(), Binding::Aim {
+            toggle: None,
+            origin: Norm::new(0.5, 0.5),
+            sensitivity: 0.001,
+            deadzone: 0.5,
+            recenter_margin: 0.12,
+        });
+        Engine::new(Profile { name: "t".into(), package: "p".into(), bindings: b })
+    }
+
+    /// İlk hareket parmağı indirir VE aynı çağrıda hareket ettirir:
+    /// bir kare beklemek gereksiz gecikme olurdu.
+    #[test]
+    fn aim_without_toggle_activates_on_first_motion() {
+        let mut e = always_on_aim();
+        let a = e.handle(InputEvent::MouseMove { dx: 50.0, dy: 0.0 });
+        match a[..] {
+            [TouchAction::Down { at: d, .. }, TouchAction::Move { at: m, .. }] => {
+                assert!((d.x - 0.5).abs() < 1e-5, "merkezde başlamalı: {d:?}");
+                assert!((m.x - 0.55).abs() < 1e-5, "0.5 + 50*0.001: {m:?}");
+            }
+            _ => panic!("Down+Move bekleniyordu: {a:?}"),
+        }
+    }
+
+    /// Kenara gelince parmak KALDIRILIP merkeze konmalı; yoksa sınırlı
+    /// açıdan fazla dönülemez.
+    #[test]
+    fn aim_recenters_at_edge() {
+        let mut e = always_on_aim();
+        e.handle(InputEvent::MouseMove { dx: 10.0, dy: 0.0 });   // -> 0.51
+        // 0.51 + 400*0.001 = 0.91 > 1 - 0.12 = 0.88  -> yeniden ortala
+        let a = e.handle(InputEvent::MouseMove { dx: 400.0, dy: 0.0 });
+        match a[..] {
+            [TouchAction::Up { .. }, TouchAction::Down { at: d, .. },
+             TouchAction::Move { .. }] =>
+                assert!((d.x - 0.5).abs() < 1e-5, "merkeze dönmeli: {d:?}"),
+            _ => panic!("Up+Down+Move bekleniyordu: {a:?}"),
+        }
+    }
+
+    /// Yeniden ortalama HAREKET KAYBETMEMELİ.
+    ///
+    /// Kaybederse her ortalamada bir miktar dönüş yok olur ve fare ile
+    /// görüş birbirinden ayrılır — kullanıcı bunu "aimde kayma" diye yaşar.
+    #[test]
+    fn recentering_preserves_the_frames_motion() {
+        let mut e = always_on_aim();
+        e.handle(InputEvent::MouseMove { dx: 10.0, dy: 0.0 });   // -> 0.51
+        let a = e.handle(InputEvent::MouseMove { dx: 400.0, dy: 0.0 });
+        let moved = a.iter().find_map(|x| match x {
+            TouchAction::Move { at, .. } => Some(*at), _ => None,
+        }).expect("ortalama sonrası hareket uygulanmalı");
+        // origin 0.5 + 400*0.001 = 0.9 -> güvenli alana kırpılır (0.88)
+        assert!(moved.x > 0.5 + 1e-6,
+            "merkezden ileri gitmeli, {} bulundu", moved.x);
+    }
+
+    /// Toplam dönüş, ortalama olsun olmasın fare mesafesiyle ORANTILI kalmalı.
+    #[test]
+    fn total_rotation_survives_many_recenters() {
+        let mut e = always_on_aim();
+        let mut moves = 0usize;
+        let mut recenters = 0usize;
+        for _ in 0..40 {
+            for act in e.handle(InputEvent::MouseMove { dx: 300.0, dy: 0.0 }) {
+                match act {
+                    TouchAction::Move { .. } => moves += 1,
+                    TouchAction::Down { .. } => recenters += 1,
+                    _ => {}
+                }
+            }
+        }
+        assert!(recenters > 3, "bu mesafede birden çok ortalama olmalı");
+        // Her karede bir hareket üretilmeli; hiçbiri atlanmamalı.
+        assert_eq!(moves, 40, "her karede hareket uygulanmalı, {moves} bulundu");
+    }
+
+    /// Yeniden ortalama sonrası dönüş DEVAM etmeli.
+    #[test]
+    fn aim_continues_after_recenter() {
+        let mut e = always_on_aim();
+        e.handle(InputEvent::MouseMove { dx: 10.0, dy: 0.0 });
+        e.handle(InputEvent::MouseMove { dx: 400.0, dy: 0.0 });  // yeniden ortalar
+        // Küçük bir hareket: ortalama sonrası normal Move üretmeli.
+        let a = e.handle(InputEvent::MouseMove { dx: -100.0, dy: 0.0 });
+        match a[..] {
+            [TouchAction::Move { at, .. }] =>
+                assert!(at.x < 0.88, "geriye hareket etmeli: {at:?}"),
+            _ => panic!("tek Move bekleniyordu: {a:?}"),
+        }
+    }
+
+    /// Dikey kenar da yeniden ortalamalı.
+    #[test]
+    fn aim_recenters_on_vertical_edge() {
+        let mut e = always_on_aim();
+        e.handle(InputEvent::MouseMove { dx: 0.0, dy: 10.0 });   // -> 0.51
+        // 0.51 - 450*0.001 = 0.06 < 0.12  -> yeniden ortala
+        let a = e.handle(InputEvent::MouseMove { dx: 0.0, dy: -450.0 });
+        assert!(matches!(a[..], [TouchAction::Up { .. }, TouchAction::Down { .. },
+                                 TouchAction::Move { .. }]), "{a:?}");
+    }
+
+    /// Yeniden ortalama işaretçi kimliğini tüketmemeli.
+    #[test]
+    fn recentering_does_not_leak_pointers() {
+        let mut e = always_on_aim();
+        e.handle(InputEvent::MouseMove { dx: 10.0, dy: 0.0 });
+        for _ in 0..50 {
+            e.handle(InputEvent::MouseMove { dx: 400.0, dy: 0.0 });
+        }
+        // Hâlâ çalışıyor olmalı: havuz tükenmiş olsaydı boş dönerdi.
+        let a = e.handle(InputEvent::MouseMove { dx: 20.0, dy: 0.0 });
+        assert!(!a.is_empty(), "havuz sızdırmış olabilir");
     }
 
     /// Motor kapatılınca takılı parmak kalmamalı.

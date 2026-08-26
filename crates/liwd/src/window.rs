@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const SCRIPT_NAME: &str = "liwinux-fullscreen";
+const ACTIVATE_SCRIPT: &str = "liwinux-activate";
 
 /// KWin script'inin bildirdiği pencere geometrisi.
 #[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
@@ -66,6 +67,22 @@ pub async fn request_fullscreen() -> Result<()> {
     Ok(())
 }
 
+/// Waydroid penceresini öne getirir ve odaklar.
+///
+/// Ekran görüntüsü almadan önce şart: `spectacle -a` AKTİF pencereyi
+/// yakalar. Aktif pencere terminal olursa terminalin görüntüsü alınır.
+pub async fn activate() -> Result<()> {
+    let path = script_path_named("activate.js").context("activate.js bulunamadı")?;
+    let conn = zbus::Connection::session().await?;
+    let p = zbus::Proxy::new(&conn, "org.kde.KWin", "/Scripting",
+                             "org.kde.kwin.Scripting").await?;
+    let _: Result<bool, _> = p.call("unloadScript", &(ACTIVATE_SCRIPT,)).await;
+    let _id: i32 = p.call("loadScript",
+        &(path.to_string_lossy().as_ref(), ACTIVATE_SCRIPT)).await?;
+    let _: () = p.call("start", &()).await?;
+    Ok(())
+}
+
 /// Pencere görünene kadar birkaç kez dener.
 ///
 /// Boot tamamlandığında pencere HENÜZ OLMAYABİLİR: `show-full-ui` ayrı bir
@@ -102,24 +119,26 @@ pub async fn fullscreen_with_retry(
 
 /// `fullscreen.js` arar. Çalışma dizinine BAKILMAZ (profil deposundaki
 /// aynı ders: dizine bağlı davranış teşhis edilemeyen hatalar üretir).
-fn script_path() -> Option<std::path::PathBuf> {
+fn script_path() -> Option<std::path::PathBuf> { script_path_named("fullscreen.js") }
+
+fn script_path_named(name: &str) -> Option<std::path::PathBuf> {
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if let Some(data) = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME")
             .map(|h| std::path::PathBuf::from(h).join(".local").join("share")))
     {
-        candidates.push(data.join("liwinux").join("kwin").join("fullscreen.js"));
+        candidates.push(data.join("liwinux").join("kwin").join(name));
     }
-    candidates.push("/usr/share/liwinux/kwin/fullscreen.js".into());
-    candidates.push("/usr/local/share/liwinux/kwin/fullscreen.js".into());
+    candidates.push(format!("/usr/share/liwinux/kwin/{name}").into());
+    candidates.push(format!("/usr/local/share/liwinux/kwin/{name}").into());
     for c in candidates {
         if c.is_file() { return Some(c); }
     }
     let exe = std::env::current_exe().ok()?;
     let mut dir = exe.parent()?;
     for _ in 0..4 {
-        let cand = dir.join("scripts").join("kwin").join("fullscreen.js");
+        let cand = dir.join("scripts").join("kwin").join(name);
         if cand.is_file() { return Some(cand); }
         dir = dir.parent()?;
     }

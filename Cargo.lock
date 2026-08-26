@@ -413,8 +413,10 @@ dependencies = [
  "anyhow",
  "clap",
  "liw-core",
+ "serde",
  "serde_json",
  "tokio",
+ "toml_edit",
  "zbus",
 ]
 
@@ -872,6 +874,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

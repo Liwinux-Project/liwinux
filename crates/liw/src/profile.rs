@@ -147,3 +147,63 @@ pub fn install(force: bool, from: Option<std::path::PathBuf>) -> Result<()> {
     if skipped > 0 { println!("Üzerine yazmak için: liw profile install --force"); }
     Ok(())
 }
+
+/// Bir bağlantının koordinatını değiştirir.
+///
+/// `toml_edit` kullanılıyor: normal serileştirme profildeki YORUMLARI ve
+/// biçimi siler. Profiller elle okunup düzenlenen dosyalar; onları bozmak
+/// kullanıcının işini zorlaştırır.
+pub fn set_coord(package: &str, binding: &str, field: &str, x: f64, y: f64) -> Result<()> {
+    let s = Store::discover();
+    let entry = s.for_package(package)
+        .with_context(|| format!("'{package}' için profil yok"))?;
+    let path = entry.path.clone();
+
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("okunamadı: {}", path.display()))?;
+    let mut doc: toml_edit::DocumentMut = text.parse()
+        .with_context(|| format!("TOML ayrıştırılamadı: {}", path.display()))?;
+
+    let b = doc.get_mut("bindings")
+        .and_then(|t| t.get_mut(binding))
+        .with_context(|| format!("'{binding}' adlı bağlantı yok"))?;
+    let target = b.get_mut(field)
+        .with_context(|| format!("'{binding}' bağlantısında '{field}' alanı yok"))?;
+
+    let mut tbl = toml_edit::InlineTable::new();
+    tbl.insert("x", toml_edit::value(x).into_value().unwrap());
+    tbl.insert("y", toml_edit::value(y).into_value().unwrap());
+    *target = toml_edit::Item::Value(toml_edit::Value::InlineTable(tbl));
+
+    std::fs::write(&path, doc.to_string())
+        .with_context(|| format!("yazılamadı: {}", path.display()))?;
+    println!("{binding}.{field} = ({x:.3}, {y:.3})");
+    println!("dosya: {}", path.display());
+    println!();
+    println!("Değişikliğin etkili olması için keymapper yeniden başlatılmalı:");
+    println!("  liw keymap stop && liw keymap start --grab");
+    Ok(())
+}
+
+/// Bir bağlantının koordinatına dokunur — yerleşimi görsel doğrulamak için.
+pub async fn poke_binding(package: &str, binding: &str, delay_s: u64) -> Result<()> {
+    use liw_core::input::Binding;
+    let s = Store::discover();
+    let entry = s.for_package(package)
+        .with_context(|| format!("'{package}' için profil yok"))?;
+    let b = entry.profile.bindings.get(binding)
+        .with_context(|| format!("'{binding}' adlı bağlantı yok"))?;
+
+    let (x, y, to) = match b {
+        Binding::Tap { at, .. } | Binding::Toggle { at, .. } => (at.x, at.y, None),
+        Binding::Aim { origin, .. } => (origin.x, origin.y, None),
+        Binding::Joystick { center, radius, .. } =>
+            // Joystick'te merkezden yukarı doğru sürükle: hem merkezi hem
+            // yarıçapı aynı anda görürsün.
+            (center.x, center.y, Some((center.x, center.y - radius))),
+        Binding::Swipe { from, to, .. } => (from.x, from.y, Some((to.x, to.y))),
+    };
+    println!("{binding}: ({x:.3}, {y:.3})");
+    crate::keymap::poke(x, y, 250, to.map(|(a, b)| (a, b)),
+                        liw_core::input::ScreenMap::default(), delay_s).await
+}

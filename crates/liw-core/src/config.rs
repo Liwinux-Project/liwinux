@@ -17,13 +17,24 @@ pub struct Config {
     /// tercih meselesi — kullanıcı pencere modunda çalışmak isteyebilir.
     #[serde(default = "default_true")]
     pub fullscreen_on_start: bool,
+    /// Oyun kipini açıp kapatan tuşun evdev kodu.
+    ///
+    /// Oyun kipi = cihazlar kilitli + eşleme etkin. Kapalıyken fare
+    /// serbesttir ve menülerde doğal çalışır. Profil etkinleşir etkinleşmez
+    /// kilitlemek yanlış: maç başlamadan fare kilitleniyor ve kullanıcı
+    /// menüde sıkışıyor.
+    #[serde(default)]
+    pub hotkey_game_mode: Option<u16>,
 }
 
 fn default_true() -> bool { true }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { keyboard: None, mouse: None, fullscreen_on_start: true }
+        Self {
+            keyboard: None, mouse: None,
+            fullscreen_on_start: true, hotkey_game_mode: None,
+        }
     }
 }
 
@@ -84,10 +95,12 @@ mod tests {
             keyboard: Some(PathBuf::from("/dev/input/event23")),
             mouse: None,
             fullscreen_on_start: true,
+            hotkey_game_mode: Some(40),
         };
         let s = toml::to_string(&c).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
         assert_eq!(back.keyboard, c.keyboard);
+        assert_eq!(back.hotkey_game_mode, Some(40));
     }
 
     /// Bozuk yapılandırma çökmemeli, varsayılana dönmeli.
