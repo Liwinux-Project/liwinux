@@ -52,6 +52,7 @@ impl From<&Trigger> for TriggerKind {
 #[derive(Debug, Clone)]
 struct ActiveSwipe {
     binding: String,
+    group: Option<String>,
     id: u8,
     from: Norm,
     to: Norm,
@@ -147,6 +148,9 @@ impl Engine {
     /// Devam eden bir jest var mı? Varsa çağıran `tick`i sık çağırmalı.
     pub fn has_pending(&self) -> bool { !self.swipes.is_empty() }
 
+    /// Devam eden jest sayısı (test ve teşhis için).
+    pub fn swipe_count(&self) -> usize { self.swipes.len() }
+
     pub fn handle(&mut self, ev: InputEvent) -> Vec<TouchAction> {
         if !self.enabled { return Vec::new(); }
         match ev {
@@ -176,20 +180,39 @@ impl Engine {
                     None => Vec::new(),
                 }
             }
-            Binding::Swipe { from, to, duration_ms, .. } => {
+            Binding::Swipe { from, to, duration_ms, ref group, .. } => {
                 // Aynı kaydırma zaten oynuyorsa yenisini başlatma.
                 if self.swipes.iter().any(|s| s.binding == name) { return Vec::new(); }
+
+                // Aynı gruptaki devam eden jestleri İPTAL ET: parmağı
+                // bulunduğu yerden kaldır, jesti tamamlama. Kullanıcı fikrini
+                // değiştirmiştir; yarım kalan kaydırma oyunda çoğu zaman
+                // eşiğin altında kalır ve yanlış hareket üretmez.
+                let mut acts = Vec::new();
+                if let Some(g) = group {
+                    let cancelled: Vec<(String, u8)> = self.swipes.iter()
+                        .filter(|s| s.group.as_deref() == Some(g.as_str()))
+                        .map(|s| (s.binding.clone(), s.id))
+                        .collect();
+                    for (b, id) in cancelled {
+                        acts.push(TouchAction::Up { id });
+                        self.pool.release(&b);
+                        self.swipes.retain(|s| s.binding != b);
+                    }
+                }
+
                 match self.pool.acquire(&name) {
                     Some(id) => {
                         self.swipes.push(ActiveSwipe {
-                            binding: name.clone(), id, from, to,
+                            binding: name.clone(), group: group.clone(), id, from, to,
                             start_ms: self.now_ms,
                             duration_ms: duration_ms as u64,
                             last_step: 0,
                         });
-                        vec![TouchAction::Down { id, at: from }]
+                        acts.push(TouchAction::Down { id, at: from });
+                        acts
                     }
-                    None => Vec::new(),
+                    None => acts,
                 }
             }
         }
@@ -444,8 +467,80 @@ mod tests {
         b.insert("sol".into(), Binding::Swipe {
             trigger: Trigger::Key(A),
             from: Norm::new(0.5, 0.5), to: Norm::new(0.2, 0.5), duration_ms: 80,
+            group: None,
         });
         Engine::new(Profile { name: "t".into(), package: "p".into(), bindings: b })
+    }
+
+    /// Aynı grupta iki kaydırma: ikincisi birincisini İPTAL etmeli.
+    /// Gerçek oyun geri bildirimi: A'ya sonra hızlıca W'ye basınca
+    /// oyun iki ayrı parmak görüyordu ve hareketler karışıyordu.
+    fn grouped_engine() -> Engine {
+        let mut b = BTreeMap::new();
+        b.insert("sol".into(), Binding::Swipe {
+            trigger: Trigger::Key(A),
+            from: Norm::new(0.5, 0.5), to: Norm::new(0.2, 0.5), duration_ms: 80,
+            group: Some("hareket".into()),
+        });
+        b.insert("zipla".into(), Binding::Swipe {
+            trigger: Trigger::Key(W),
+            from: Norm::new(0.5, 0.6), to: Norm::new(0.5, 0.3), duration_ms: 80,
+            group: Some("hareket".into()),
+        });
+        b.insert("ates".into(), Binding::Swipe {
+            trigger: Trigger::Key(SPACE),
+            from: Norm::new(0.9, 0.8), to: Norm::new(0.9, 0.7), duration_ms: 80,
+            group: None,
+        });
+        Engine::new(Profile { name: "t".into(), package: "p".into(), bindings: b })
+    }
+
+    #[test]
+    fn second_gesture_in_group_cancels_the_first() {
+        let mut e = grouped_engine();
+        let a = e.handle(InputEvent::Press(key(A)));
+        let first_id = match a[..] { [TouchAction::Down { id, .. }] => id, _ => panic!("{a:?}") };
+        e.tick(20);
+        let w = e.handle(InputEvent::Press(key(W)));
+        // Önce iptal (Up), sonra yeni jest (Down).
+        match w[..] {
+            [TouchAction::Up { id }, TouchAction::Down { .. }] =>
+                assert_eq!(id, first_id, "iptal edilen parmak ilki olmalı"),
+            _ => panic!("Up sonra Down bekleniyordu: {w:?}"),
+        }
+        assert_eq!(e.swipe_count(), 1, "yalnızca yeni jest kalmalı");
+    }
+
+    /// İptal edilen jest artık ilerlememeli.
+    #[test]
+    fn cancelled_gesture_stops_ticking() {
+        let mut e = grouped_engine();
+        e.handle(InputEvent::Press(key(A)));
+        e.tick(20);
+        e.handle(InputEvent::Press(key(W)));
+        // Sonraki tick'ler yalnızca W'nin jestini ilerletmeli: dikey hareket.
+        let mut moves = Vec::new();
+        for ms in (25..=110).step_by(5) {
+            for act in e.tick(ms) {
+                if let TouchAction::Move { at, .. } = act { moves.push(at); }
+            }
+        }
+        assert!(!moves.is_empty());
+        assert!(moves.iter().all(|m| (m.x - 0.5).abs() < 1e-4),
+                "yalnızca dikey hareket olmalı, yatay iz kalmamalı");
+    }
+
+    /// Grupsuz jest gruptakilerden ETKİLENMEMELİ — nişancı oyunlarında
+    /// joystick + nişan + ateş eşzamanlı olmalı.
+    #[test]
+    fn ungrouped_gesture_is_not_cancelled() {
+        let mut e = grouped_engine();
+        e.handle(InputEvent::Press(key(SPACE)));
+        e.tick(10);
+        let a = e.handle(InputEvent::Press(key(A)));
+        assert!(matches!(a[..], [TouchAction::Down { .. }]),
+                "grupsuz jest iptal edilmemeli: {a:?}");
+        assert_eq!(e.swipe_count(), 2, "iki jest birlikte sürmeli");
     }
 
     #[test]

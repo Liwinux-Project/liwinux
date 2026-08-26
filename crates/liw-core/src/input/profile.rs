@@ -49,7 +49,20 @@ pub enum Binding {
     },
 
     /// Kaydırma jesti (Subway Surfers gibi oyunlar için).
-    Swipe { trigger: Trigger, from: Norm, to: Norm, duration_ms: u32 },
+    ///
+    /// `group` verilirse aynı gruptaki başka bir jest başlarken bu jest
+    /// İPTAL EDİLİR. Subway Surfers gibi tek parmakla oynanan oyunlarda
+    /// şart: A'ya sonra hızlıca W'ye basınca oyun iki ayrı parmak görmemeli.
+    /// Nişancı oyunlarında ise joystick + nişan + ateş eşzamanlı olmalı,
+    /// o yüzden dışlayıcılık varsayılan DEĞİL, açıkça istenir.
+    Swipe {
+        trigger: Trigger,
+        from: Norm,
+        to: Norm,
+        duration_ms: u32,
+        #[serde(default)]
+        group: Option<String>,
+    },
 }
 
 impl Binding {

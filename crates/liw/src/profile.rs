@@ -100,3 +100,50 @@ pub async fn which() -> Result<()> {
     }
     Ok(())
 }
+
+/// Depoyla gelen profilleri kullanıcı dizinine kopyalar.
+///
+/// Böylece profiller çalıştırma dizininden bağımsız bulunur ve kullanıcı
+/// bunları serbestçe düzenleyebilir.
+pub fn install(force: bool, from: Option<std::path::PathBuf>) -> Result<()> {
+    let dest = liw_core::input::store::user_profile_dir()
+        .context("kullanıcı yapılandırma dizini belirlenemedi")?;
+    std::fs::create_dir_all(&dest)
+        .with_context(|| format!("dizin oluşturulamadı: {}", dest.display()))?;
+
+    // Kaynak: açık --from > çalıştırılabilirin yanındaki depo.
+    // Kurulu binary'nin (~/.local/bin) yanında depo olmayacağı için
+    // --from çoğu zaman gerekli olur; bunu hata mesajında söylüyoruz.
+    let src = match from {
+        Some(p) => p,
+        None => liw_core::input::store::default_dirs()
+            .into_iter()
+            .find(|(_, o)| *o == Origin::Bundled)
+            .map(|(p, _)| p)
+            .context("depo profilleri bulunamadı — kaynak dizini --from ile verin \
+                      (örn: --from ~/Projects/liwinux/profiles)")?,
+    };
+    println!("Kaynak: {}", src.display());
+
+    let mut copied = 0;
+    let mut skipped = 0;
+    for e in std::fs::read_dir(&src).with_context(|| format!("okunamadı: {}", src.display()))? {
+        let p = e?.path();
+        if p.extension().is_none_or(|x| x != "toml") { continue; }
+        let name = p.file_name().context("dosya adı yok")?;
+        let target = dest.join(name);
+        if target.exists() && !force {
+            println!("  atlandı (zaten var): {}", name.to_string_lossy());
+            skipped += 1;
+            continue;
+        }
+        std::fs::copy(&p, &target)
+            .with_context(|| format!("kopyalanamadı: {}", p.display()))?;
+        println!("  kuruldu: {}", name.to_string_lossy());
+        copied += 1;
+    }
+    println!();
+    println!("{copied} profil kuruldu, {skipped} atlandı -> {}", dest.display());
+    if skipped > 0 { println!("Üzerine yazmak için: liw profile install --force"); }
+    Ok(())
+}

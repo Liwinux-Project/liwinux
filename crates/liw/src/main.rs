@@ -48,6 +48,15 @@ enum ProfileAction {
     },
     /// Ön plandaki uygulama için hangi profil geçerli
     Which,
+    /// Depoyla gelen profilleri kullanıcı dizinine kopyala
+    Install {
+        /// Var olanların üzerine yaz
+        #[arg(short, long)]
+        force: bool,
+        /// Kaynak profil dizini (kurulu binary'de gerekli)
+        #[arg(long)]
+        from: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -173,6 +182,7 @@ async fn main() -> Result<()> {
                 ProfileAction::List => profile::list(),
                 ProfileAction::Show { package } => profile::show(&package),
                 ProfileAction::Which => profile::which().await,
+                ProfileAction::Install { force, from } => profile::install(force, from),
             };
         }
         Cmd::Keymap { action } => {

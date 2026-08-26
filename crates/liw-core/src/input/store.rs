@@ -53,15 +53,7 @@ pub struct Store {
 impl Store {
     /// Varsayılan dizinleri tarar.
     pub fn discover() -> Self {
-        let mut dirs: Vec<(PathBuf, Origin)> = Vec::new();
-        if let Some(cfg) = user_profile_dir() {
-            dirs.push((cfg, Origin::User));
-        }
-        dirs.push((PathBuf::from("/usr/share/liwinux/profiles"), Origin::System));
-        if let Ok(cwd) = std::env::current_dir() {
-            dirs.push((cwd.join("profiles"), Origin::Bundled));
-        }
-        Self::from_dirs(&dirs)
+        Self::from_dirs(&default_dirs())
     }
 
     pub fn from_dirs(dirs: &[(PathBuf, Origin)]) -> Self {
@@ -127,6 +119,41 @@ impl Store {
 
     pub fn len(&self) -> usize { self.by_package.len() }
     pub fn is_empty(&self) -> bool { self.by_package.is_empty() }
+}
+
+/// Aranacak dizinler, öncelik sırasıyla.
+///
+/// ÇALIŞMA DİZİNİNE BAKILMAZ. Bakılırsa aynı komut farklı dizinlerden
+/// farklı davranır ve kullanıcı "profilim bazen bulunuyor" der — teşhisi
+/// zor, açıklaması utandırıcı bir hata sınıfı.
+pub fn default_dirs() -> Vec<(PathBuf, Origin)> {
+    let mut dirs: Vec<(PathBuf, Origin)> = Vec::new();
+    if let Some(cfg) = user_profile_dir() {
+        dirs.push((cfg, Origin::User));
+    }
+    dirs.push((PathBuf::from("/usr/share/liwinux/profiles"), Origin::System));
+    // Geliştirme kolaylığı: çalıştırılabilir dosyanın yanındaki depo.
+    // Çalışma dizini DEĞİL, binary'nin konumu esas alınır.
+    if let Some(d) = bundled_dir() {
+        dirs.push((d, Origin::Bundled));
+    }
+    if let Some(env) = std::env::var_os("LIWINUX_PROFILE_DIR") {
+        dirs.push((PathBuf::from(env), Origin::User));
+    }
+    dirs
+}
+
+/// `target/{debug,release}/liw` -> depo kökündeki `profiles/`.
+fn bundled_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.parent()?;
+    // En fazla dört seviye yukarı bak; daha fazlası alakasız dizinlere sapar.
+    for _ in 0..4 {
+        let cand = dir.join("profiles");
+        if cand.is_dir() { return Some(cand); }
+        dir = dir.parent()?;
+    }
+    None
 }
 
 pub fn user_profile_dir() -> Option<PathBuf> {
@@ -266,6 +293,26 @@ at = { x = 0.6, y = 0.6 }
         assert_eq!(s.len(), 1);
         assert!(s.problems.is_empty());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Varsayılan arama yolları çalışma dizinine BAĞLI OLMAMALI.
+    #[test]
+    fn default_dirs_never_depend_on_cwd() {
+        let dirs = default_dirs();
+        let cwd = std::env::current_dir().unwrap();
+        for (d, _) in &dirs {
+            assert_ne!(d, &cwd.join("profiles"),
+                "arama yolu çalışma dizinine bağlı olmamalı: {}", d.display());
+        }
+    }
+
+    #[test]
+    fn user_dir_has_highest_priority_in_defaults() {
+        let dirs = default_dirs();
+        if let Some(u) = user_profile_dir() {
+            assert_eq!(dirs.first().map(|(p, _)| p.clone()), Some(u),
+                "kullanıcı dizini ilk sırada olmalı");
+        }
     }
 
     #[test]

@@ -101,6 +101,7 @@ pub async fn test_profile(
     // jest başlar ama asla tamamlanmaz. 4ms ~ 250Hz: 144Hz ekranda bile
     // her kareye en az bir adım düşer.
     let t0 = std::time::Instant::now();
+    let mut lat = liw_core::input::LatencyStats::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(4));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -115,6 +116,7 @@ pub async fn test_profile(
         tokio::select! {
             ev = stream.next_event() => {
                 let ev = ev.context("olay akışı koptu")?;
+                let ev_time = ev.timestamp();
                 let Some(input) = translate(&ev) else { continue };
 
                 if grab {
@@ -142,6 +144,8 @@ pub async fn test_profile(
                 if let Some(b) = backend.as_mut() {
                     if let Err(e) = b.dispatch(&acts) {
                         eprintln!("  !! enjeksiyon hatası: {e}");
+                    } else if !acts.is_empty() {
+                        lat.record(ev_time);
                     }
                 }
             }
@@ -159,6 +163,8 @@ pub async fn test_profile(
                 let acts = engine.set_enabled(false);
                 for act in &acts { print!("[çıkış] "); print_action(act, screen); }
                 if let Some(b) = backend.as_mut() { let _ = b.dispatch(&acts); }
+                println!();
+                println!("{}", lat.report("tuş → dokunuş yazımı (yalnızca liwinux katmanı)"));
                 println!("bitti — kilit bırakıldı");
                 break;
             }
@@ -448,20 +454,43 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
     let mut grabbed = false;
     let mut esc_streak = 0u8;
 
+    // Gecikme ölçümü. Yalnızca BİZİM katmanımızı ölçer: çekirdeğin evdev
+    // olayına bastığı zaman damgasından, dokunuşu uinput'a yazdığımız ana
+    // kadar. Compositor, Waydroid ve oyun tarafı bu sayıya DAHİL DEĞİL.
+    let mut lat_key = liw_core::input::LatencyStats::new();
+    let mut lat_tick = liw_core::input::LatencyStats::new();
+
     let t0 = std::time::Instant::now();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(4));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut poller = tokio::time::interval(std::time::Duration::from_millis(poll_ms));
+
+    // Ön plan yoklaması AYRI GÖREVDE.
+    //
+    // `waydroid shell dumpsys` LXC'ye bağlanıp süreç başlatır; ölçüldü,
+    // 100-200 ms sürüyor. Bunu olay döngüsünde `await` etmek girdi hattını
+    // o süre boyunca durduruyordu: p50 0.08 ms iken p99 212 ms çıkıyordu.
+    // Girdi yolu hiçbir koşulda bloke edilmemeli.
+    let (fg_tx, mut fg_rx) = tokio::sync::mpsc::channel::<String>(4);
+    let poll_task = tokio::spawn(async move {
+        let mut poller = tokio::time::interval(std::time::Duration::from_millis(poll_ms));
+        loop {
+            poller.tick().await;
+            match helper.foreground_package().await {
+                Ok(p) if !p.is_empty() => {
+                    // Kanal doluysa eski değeri düşür: en güncel olan önemli.
+                    if fg_tx.try_send(p).is_err() { /* yoklama gecikmesi, sorun değil */ }
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("ön plan sorgulanamadı: {e}"),
+            }
+        }
+    });
 
     loop {
         tokio::select! {
-            // --- ön plan yoklaması ---
-            _ = poller.tick() => {
-                let pkg = match helper.foreground_package().await {
-                    Ok(p) => p,
-                    Err(e) => { eprintln!("ön plan sorgulanamadı: {e}"); continue; }
-                };
-                if pkg.is_empty() || current.as_deref() == Some(pkg.as_str()) { continue; }
+            // --- ön plan değişimi (arka plandaki görevden) ---
+            Some(pkg) = fg_rx.recv() => {
+                if current.as_deref() == Some(pkg.as_str()) { continue; }
 
                 // Uygulama değişti: eski profili KAPAT ve parmakları bırak.
                 // Aksi halde oyun değişince ekranda asılı parmak kalır.
@@ -498,14 +527,19 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
             // --- jest saati ---
             _ = ticker.tick(), if engine.as_ref().is_some_and(|e| e.has_pending()) => {
                 if let Some(e) = engine.as_mut() {
+                    let t = std::time::Instant::now();
                     let acts = e.tick(t0.elapsed().as_millis() as u64);
-                    let _ = backend.dispatch(&acts);
+                    if !acts.is_empty() {
+                        let _ = backend.dispatch(&acts);
+                        lat_tick.record_duration(t.elapsed());
+                    }
                 }
             }
 
             // --- girdi ---
             ev = stream.next_event() => {
                 let ev = ev.context("olay akışı koptu")?;
+                let ev_time = ev.timestamp();
                 let Some(input) = translate(&ev) else { continue };
 
                 if grabbed {
@@ -530,6 +564,9 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
                     if !acts.is_empty() {
                         if let Err(err) = backend.dispatch(&acts) {
                             eprintln!("enjeksiyon hatası: {err}");
+                        } else {
+                            // Tuşa basıldığı andan ilk dokunuşun yazıldığı ana kadar.
+                            lat_key.record(ev_time);
                         }
                     }
                 }
@@ -546,6 +583,19 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
     }
     let _ = backend.release_all();
     if grabbed { let _ = stream.device_mut().ungrab(); }
+    poll_task.abort();
+
+    println!();
+    println!("=== GECİKME (yalnızca liwinux katmanı) ===");
+    println!("{}", lat_key.report("tuş → dokunuş yazımı"));
+    println!("{}", lat_tick.report("jest adımı işleme"));
+    println!();
+    println!("KAPSAM: çekirdek evdev zaman damgasından uinput yazımına kadar.");
+    println!("DAHİL DEĞİL: libinput, KWin, wl_touch, Waydroid, Android girdi");
+    println!("hattı ve oyunun kendi tepki süresi. Hissedilen gecikmenin büyük");
+    println!("kısmı bu sayıdan sonraki katmanlarda olabilir.");
+    println!("Ayrıca profildeki duration_ms jestin tamamlanma süresidir:");
+    println!("oyun yönü anlamak için jestin bir kısmını görmeyi bekler.");
     println!("bitti");
     Ok(())
 }
