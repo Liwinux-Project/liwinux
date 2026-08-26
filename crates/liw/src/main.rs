@@ -63,7 +63,17 @@ enum ProfileAction {
 enum KeymapAction {
     /// Kullanılabilir girdi cihazlarını listele
     Devices,
-    /// Ön plandaki oyunun profilini otomatik yükle ve tuşları eşle
+    /// Keymapper'ı liwd içinde başlat (terminal kapansa da sürer)
+    Start {
+        /// Profil etkinken cihazı kilitle
+        #[arg(short, long)]
+        grab: bool,
+    },
+    /// liwd içindeki keymapper'ı durdur
+    Stop,
+    /// liwd içindeki keymapper'ın durumu
+    Status,
+    /// Keymapper'ı ÖN PLANDA çalıştır (hata ayıklama; Ctrl+C ile biter)
     Run {
         /// Profil etkinken cihazı kilitle (tuşlar masaüstüne gitmez)
         #[arg(short, long)]
@@ -188,6 +198,9 @@ async fn main() -> Result<()> {
         Cmd::Keymap { action } => {
             return match action {
                 KeymapAction::Devices => keymap::list_devices(),
+                KeymapAction::Start { grab } => keymap::daemon_start(grab).await,
+                KeymapAction::Stop => keymap::daemon_stop().await,
+                KeymapAction::Status => keymap::daemon_status().await,
                 KeymapAction::Run { grab, poll } => keymap::run(grab, poll).await,
                 KeymapAction::Overlay { off } => keymap::overlay(!off).await,
                 KeymapAction::Sweep { axis, count, gap } => keymap::sweep(axis, count, gap).await,

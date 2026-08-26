@@ -411,13 +411,10 @@ pub async fn sweep(axis: char, count: u32, gap_ms: u64) -> Result<()> {
 
 /// Ön plandaki oyunu izler, profilini otomatik yükler ve tuşları eşler.
 ///
-/// # Kilit politikası
-///
-/// Cihaz **yalnızca bir profil etkinken** kilitlenir. Oyundan çıkınca kilit
-/// hemen bırakılır; masaüstünde klavyenin çalışmaması kabul edilemez ve
-/// kullanıcıyı bir kaçış tuşuna mahkûm etmek kötü tasarımdır.
+/// Motor `liw_core::input::Runner`'da; `liwd` de aynısını kullanır. Buradaki
+/// tek fark ön planı kimin sağladığı ve çıktının nereye yazıldığı.
 pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
-    use liw_core::input::store::Store;
+    use liw_core::input::{Runner, RunnerConfig, RunnerEvent, ScreenMap, Store};
 
     let helper = liw_core::HelperClient::connect().await
         .context("liwd-helper'a bağlanılamadı — çalışıyor mu? \
@@ -425,181 +422,133 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
 
     let devs = capture::discover();
     let cfg = liw_core::Config::load();
-    let target = cfg.keyboard.clone()
+    let device = cfg.keyboard.clone()
         .or_else(|| capture::best_keyboard(&devs).map(|d| d.path.clone()))
         .context("klavye yok — 'liw keymap detect --save' ile kalibre et")?;
-    let dev_name = devs.iter().find(|d| d.path == target)
+    let dev_name = devs.iter().find(|d| d.path == device)
         .map(|d| d.name.clone()).unwrap_or_default();
 
     let store = Store::discover();
-    println!("Klavye  : {} ({})", target.display(), dev_name);
+    println!("Klavye  : {} ({})", device.display(), dev_name);
     println!("Profil  : {} adet yüklü", store.len());
     for p in &store.problems {
         eprintln!("  uyarı: {} — {}", p.path.display(), p.error);
     }
     println!("Kilit   : {}", if grab { "profil etkinken açılacak" } else { "kapalı" });
     println!("Yoklama : {poll_ms}ms");
-    println!();
-
-    let mut backend = UinputBackend::new(ScreenMap::default())
-        .context("sanal dokunmatik ekran oluşturulamadı")?;
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-    println!("Dokunmatik: {}", backend.dev_nodes().join(", "));
     println!("Ctrl+C ile çık. Kilitliyken çıkış: ESC ×3");
     println!();
 
-    // Cihaz başta KİLİTSİZ açılır; kilit profil etkinleşince alınır.
-    let dev = GrabbedDevice::open(&target, false)?;
-    let mut stream = dev.into_stream()?;
+    let mut runner = Runner::new(
+        RunnerConfig { device, grab, screen_map: ScreenMap::default() }, store);
 
-    let mut engine: Option<Engine> = None;
-    let mut current: Option<String> = None;
-    let mut grabbed = false;
-    let mut esc_streak = 0u8;
+    let (fg_tx, fg_rx) = tokio::sync::mpsc::channel::<String>(4);
+    let (ev_tx, mut ev_rx) = tokio::sync::mpsc::channel::<RunnerEvent>(16);
+    let (sd_tx, sd_rx) = tokio::sync::watch::channel(false);
 
-    // Gecikme ölçümü. Yalnızca BİZİM katmanımızı ölçer: çekirdeğin evdev
-    // olayına bastığı zaman damgasından, dokunuşu uinput'a yazdığımız ana
-    // kadar. Compositor, Waydroid ve oyun tarafı bu sayıya DAHİL DEĞİL.
-    let mut lat_key = liw_core::input::LatencyStats::new();
-    let mut lat_tick = liw_core::input::LatencyStats::new();
-
-    let t0 = std::time::Instant::now();
-    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(4));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    // Ön plan yoklaması AYRI GÖREVDE.
-    //
-    // `waydroid shell dumpsys` LXC'ye bağlanıp süreç başlatır; ölçüldü,
-    // 100-200 ms sürüyor. Bunu olay döngüsünde `await` etmek girdi hattını
-    // o süre boyunca durduruyordu: p50 0.08 ms iken p99 212 ms çıkıyordu.
-    // Girdi yolu hiçbir koşulda bloke edilmemeli.
-    let (fg_tx, mut fg_rx) = tokio::sync::mpsc::channel::<String>(4);
-    let poll_task = tokio::spawn(async move {
-        let mut poller = tokio::time::interval(std::time::Duration::from_millis(poll_ms));
+    // Ön plan yoklaması ayrı görevde: girdi yolu bloke edilmemeli.
+    let poll = tokio::spawn(async move {
+        let mut t = tokio::time::interval(std::time::Duration::from_millis(poll_ms));
         loop {
-            poller.tick().await;
+            t.tick().await;
             match helper.foreground_package().await {
-                Ok(p) if !p.is_empty() => {
-                    // Kanal doluysa eski değeri düşür: en güncel olan önemli.
-                    if fg_tx.try_send(p).is_err() { /* yoklama gecikmesi, sorun değil */ }
-                }
+                Ok(p) if !p.is_empty() => { let _ = fg_tx.try_send(p); }
                 Ok(_) => {}
                 Err(e) => eprintln!("ön plan sorgulanamadı: {e}"),
             }
         }
     });
 
-    loop {
-        tokio::select! {
-            // --- ön plan değişimi (arka plandaki görevden) ---
-            Some(pkg) = fg_rx.recv() => {
-                if current.as_deref() == Some(pkg.as_str()) { continue; }
-
-                // Uygulama değişti: eski profili KAPAT ve parmakları bırak.
-                // Aksi halde oyun değişince ekranda asılı parmak kalır.
-                if let Some(e) = engine.as_mut() {
-                    let acts = e.set_enabled(false);
-                    let _ = backend.dispatch(&acts);
-                }
-                let _ = backend.release_all();
-
-                match store.for_package(&pkg) {
-                    Some(entry) => {
-                        println!("[{pkg}] profil ETKİN: {}", entry.profile.name);
-                        engine = Some(Engine::new(entry.profile.clone()));
-                        if grab && !grabbed {
-                            match stream.device_mut().grab() {
-                                Ok(()) => { grabbed = true; println!("  kilit alındı"); }
-                                Err(e) => eprintln!("  kilit alınamadı: {e}"),
-                            }
-                        }
-                    }
-                    None => {
-                        println!("[{pkg}] profil yok — eşleme kapalı");
-                        engine = None;
-                        if grabbed {
-                            let _ = stream.device_mut().ungrab();
-                            grabbed = false;
-                            println!("  kilit bırakıldı");
-                        }
-                    }
-                }
-                current = Some(pkg);
+    let printer = tokio::spawn(async move {
+        while let Some(e) = ev_rx.recv().await {
+            match e {
+                RunnerEvent::ProfileActivated { package, profile } =>
+                    println!("[{package}] profil ETKİN: {profile}"),
+                RunnerEvent::ProfileCleared { package } =>
+                    println!("[{package}] profil yok — eşleme kapalı"),
+                RunnerEvent::Grabbed => println!("  kilit alındı"),
+                RunnerEvent::Ungrabbed => println!("  kilit bırakıldı"),
+                RunnerEvent::EscapeRequested => println!("ESC ×3 — çıkılıyor"),
             }
-
-            // --- jest saati ---
-            _ = ticker.tick(), if engine.as_ref().is_some_and(|e| e.has_pending()) => {
-                if let Some(e) = engine.as_mut() {
-                    let t = std::time::Instant::now();
-                    let acts = e.tick(t0.elapsed().as_millis() as u64);
-                    if !acts.is_empty() {
-                        let _ = backend.dispatch(&acts);
-                        lat_tick.record_duration(t.elapsed());
-                    }
-                }
-            }
-
-            // --- girdi ---
-            ev = stream.next_event() => {
-                let ev = ev.context("olay akışı koptu")?;
-                let ev_time = ev.timestamp();
-                let Some(input) = translate(&ev) else { continue };
-
-                if grabbed {
-                    match input {
-                        InputEvent::Press(TriggerKind::Key(1)) => {   // ESC
-                            esc_streak += 1;
-                            if esc_streak >= 3 {
-                                println!("ESC ×3 — çıkılıyor");
-                                break;
-                            }
-                            println!("  (ESC {esc_streak}/3)");
-                            continue;
-                        }
-                        InputEvent::Press(_) => esc_streak = 0,
-                        _ => {}
-                    }
-                }
-
-                if let Some(e) = engine.as_mut() {
-                    // Bkz. test_profile: tick eylemleri atılırsa parmak asılı kalır.
-                    let mut acts = e.tick(t0.elapsed().as_millis() as u64);
-                    acts.extend(e.handle(input));
-                    if !acts.is_empty() {
-                        if let Err(err) = backend.dispatch(&acts) {
-                            eprintln!("enjeksiyon hatası: {err}");
-                        } else {
-                            // Tuşa basıldığı andan ilk dokunuşun yazıldığı ana kadar.
-                            lat_key.record(ev_time);
-                        }
-                    }
-                }
-            }
-
-            _ = tokio::signal::ctrl_c() => { println!(); println!("çıkılıyor"); break; }
         }
-    }
+    });
 
-    // Çıkışta: parmakları kaldır, kilidi bırak.
-    if let Some(e) = engine.as_mut() {
-        let acts = e.set_enabled(false);
-        let _ = backend.dispatch(&acts);
-    }
-    let _ = backend.release_all();
-    if grabbed { let _ = stream.device_mut().ungrab(); }
-    poll_task.abort();
+    let sd = sd_tx.clone();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        println!();
+        println!("çıkılıyor");
+        let _ = sd.send(true);
+    });
+
+    let lat = runner.run(fg_rx, sd_rx, Some(ev_tx)).await
+        .context("keymapper hatayla durdu")?;
+    poll.abort();
+    printer.abort();
 
     println!();
     println!("=== GECİKME (yalnızca liwinux katmanı) ===");
-    println!("{}", lat_key.report("tuş → dokunuş yazımı"));
-    println!("{}", lat_tick.report("jest adımı işleme"));
+    println!("{}", lat.report("tuş → dokunuş yazımı"));
     println!();
     println!("KAPSAM: çekirdek evdev zaman damgasından uinput yazımına kadar.");
     println!("DAHİL DEĞİL: libinput, KWin, wl_touch, Waydroid, Android girdi");
-    println!("hattı ve oyunun kendi tepki süresi. Hissedilen gecikmenin büyük");
-    println!("kısmı bu sayıdan sonraki katmanlarda olabilir.");
-    println!("Ayrıca profildeki duration_ms jestin tamamlanma süresidir:");
-    println!("oyun yönü anlamak için jestin bir kısmını görmeyi bekler.");
+    println!("hattı ve oyunun kendi tepki süresi.");
     println!("bitti");
+    Ok(())
+}
+
+// --- liwd üzerinden keymapper kontrolü ---
+
+const BUS: &str = "id.liwinux.Manager1";
+const OBJ: &str = "/id/liwinux/Manager1";
+
+async fn daemon() -> Result<zbus::Proxy<'static>> {
+    let conn = zbus::Connection::session().await
+        .context("oturum veri yoluna bağlanılamadı")?;
+    let p = zbus::Proxy::new(&conn, BUS, OBJ, BUS).await
+        .context("liwd proxy'si kurulamadı")?;
+    p.introspect().await
+        .context("liwd çalışmıyor — systemctl --user status liwd")?;
+    Ok(p)
+}
+
+/// Keymapper'ı liwd içinde başlatır: terminal kapansa da çalışmaya devam eder.
+pub async fn daemon_start(grab: bool) -> Result<()> {
+    let p = daemon().await?;
+    p.call::<_, _, ()>("StartKeymapper", &(grab,)).await
+        .context("StartKeymapper başarısız")?;
+    println!("keymapper başlatıldı (liwd içinde){}",
+        if grab { ", profil etkinken kilitlenecek" } else { "" });
+    println!("Durum için: liw keymap status");
+    Ok(())
+}
+
+pub async fn daemon_stop() -> Result<()> {
+    let p = daemon().await?;
+    p.call::<_, _, ()>("StopKeymapper", &()).await
+        .context("StopKeymapper başarısız")?;
+    println!("keymapper durduruldu");
+    Ok(())
+}
+
+pub async fn daemon_status() -> Result<()> {
+    let p = daemon().await?;
+    let json: String = p.call("KeymapperStatus", &()).await
+        .context("KeymapperStatus başarısız")?;
+    let st: liw_core::input::RunnerState = serde_json::from_str(&json)
+        .context("durum çözümlenemedi")?;
+
+    println!("Çalışıyor    : {}", if st.running { "evet" } else { "hayır" });
+    println!("Ön plan      : {}", st.foreground.as_deref().unwrap_or("-"));
+    println!("Etkin profil : {}", st.active_profile.as_deref().unwrap_or("yok"));
+    println!("Kilit        : {}", if st.grabbed { "açık" } else { "kapalı" });
+    if st.latency_p50_us > 0 || st.latency_p99_us > 0 {
+        println!("Gecikme      : p50 {:.2} ms   p99 {:.2} ms  (yalnızca liwinux katmanı)",
+            st.latency_p50_us as f64 / 1000.0, st.latency_p99_us as f64 / 1000.0);
+    }
+    if !st.running {
+        println!();
+        println!("Başlatmak için: liw keymap start");
+    }
     Ok(())
 }
