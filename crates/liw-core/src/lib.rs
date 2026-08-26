@@ -4,7 +4,9 @@
 //! olarak kullanır. Bu modül o sürecin etrafındaki tüm bilgi birikimini
 //! (argüman tuzakları, sağlık göstergeleri, çökme zincirleri) tek yerde tutar.
 
+pub mod bench;
 pub mod config;
+pub mod hostsample;
 pub mod helper;
 pub mod input;
 pub mod polkit;

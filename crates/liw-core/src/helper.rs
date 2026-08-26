@@ -49,6 +49,16 @@ impl HelperClient {
             .await.map_err(|e| HelperError::Call(e.to_string()))
     }
 
+    pub async fn surface_layers(&self) -> Result<String, HelperError> {
+        self.proxy.call("SurfaceLayers", &())
+            .await.map_err(|e| HelperError::Call(e.to_string()))
+    }
+
+    pub async fn surface_latency(&self, layer: &str) -> Result<String, HelperError> {
+        self.proxy.call("SurfaceLatency", &(layer,))
+            .await.map_err(|e| HelperError::Call(e.to_string()))
+    }
+
     pub async fn set_pointer_location(&self, enabled: bool) -> Result<(), HelperError> {
         self.proxy.call("SetPointerLocation", &(enabled,))
             .await.map_err(|e| HelperError::Call(e.to_string()))

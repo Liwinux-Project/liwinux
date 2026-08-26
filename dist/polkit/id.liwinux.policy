@@ -39,6 +39,16 @@
     </defaults>
   </action>
 
+  <action id="id.liwinux.helper.performance">
+    <description>Kare zamanlama verisini oku</description>
+    <message>liwinux'un performans ölçümü yapması gerekiyor</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
   <!-- Geliştirici görsel yardımı; sistem güvenliğini etkilemez. -->
   <action id="id.liwinux.helper.debug-overlay">
     <description>Android dokunuş göstergesini aç/kapat</description>

@@ -24,6 +24,7 @@ const ACT_DIAG: &str = "id.liwinux.helper.net-diagnose";
 const ACT_REPAIR: &str = "id.liwinux.helper.net-repair";
 const ACT_OVERLAY: &str = "id.liwinux.helper.debug-overlay";
 const ACT_FOREGROUND: &str = "id.liwinux.helper.foreground-app";
+const ACT_PERF: &str = "id.liwinux.helper.performance";
 
 struct Helper {
     conn: Connection,
@@ -120,6 +121,34 @@ impl Helper {
         Ok(parse_foreground(&String::from_utf8_lossy(&out.stdout)).unwrap_or_default())
     }
 
+    /// SurfaceFlinger katman listesi (ölçüm için).
+    async fn surface_layers(
+        &self,
+        #[zbus(header)] hdr: Header<'_>,
+    ) -> zbus::fdo::Result<String> {
+        self.authorize(&hdr, ACT_PERF, false).await?;
+        run_dumpsys(&["dumpsys", "SurfaceFlinger", "--list"]).await
+    }
+
+    /// Bir katmanın kare zamanlama verisi.
+    ///
+    /// Katman adı doğrudan komuta gidiyor; kabuk kullanmıyoruz (exec, shell
+    /// değil) ama yine de kontrol karakterlerini eliyoruz — argüman
+    /// enjeksiyonu bu yolda mümkün olmasa da, girdiyi doğrulamak ucuz.
+    async fn surface_latency(
+        &self,
+        layer: &str,
+        #[zbus(header)] hdr: Header<'_>,
+    ) -> zbus::fdo::Result<String> {
+        if layer.is_empty() || layer.len() > 512
+            || layer.chars().any(|c| c.is_control())
+        {
+            return Err(zbus::fdo::Error::InvalidArgs("geçersiz katman adı".into()));
+        }
+        self.authorize(&hdr, ACT_PERF, false).await?;
+        run_dumpsys(&["dumpsys", "SurfaceFlinger", "--latency", layer]).await
+    }
+
     /// Android'in dokunuş göstergesini (pointer location) açar/kapatır.
     ///
     /// Kalibrasyon için şart: dokunuşun ekranda NEREYE düştüğü görülmeden
@@ -205,6 +234,28 @@ impl Helper {
         if done.is_empty() { done.push("yapılacak bir şey bulunamadı".into()); }
         Ok(done.join("\n"))
     }
+}
+
+/// `waydroid shell -- <argv>` çalıştırır ve stdout'u temizleyip döner.
+///
+/// "--" ayracı ŞART: waydroid shell argparse kullanır, tireli argümanları
+/// aksi halde yutar.
+async fn run_dumpsys(argv: &[&str]) -> zbus::fdo::Result<String> {
+    let mut args = vec!["--details-to-stdout", "shell", "--"];
+    args.extend_from_slice(argv);
+    let out = Command::new("waydroid").args(&args).stdin(Stdio::null())
+        .output().await
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(zbus::fdo::Error::Failed(format!(
+            "waydroid shell başarısız (kod {:?}): {}", out.status.code(), err)));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.contains("% lxc-info") && !l.trim_end().ends_with("] RUNNING"))
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 /// `dumpsys activity activities` çıktısından ön plan paketini çıkarır.

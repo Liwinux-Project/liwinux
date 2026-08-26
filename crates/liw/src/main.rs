@@ -1,5 +1,6 @@
 //! liw — liwinux komut satırı istemcisi.
 
+mod bench;
 mod keymap;
 mod profile;
 
@@ -24,6 +25,14 @@ enum Cmd {
     Session {
         #[command(subcommand)]
         action: SessionAction,
+    },
+    /// Performans ölçümü: kare zamanlaması ve kaynak kullanımı
+    Bench {
+        /// Android paket adı
+        package: String,
+        /// Ölçüm süresi (saniye)
+        #[arg(short, long, default_value_t = 60)]
+        duration: u64,
     },
     /// Profil yönetimi
     Profile {
@@ -189,6 +198,7 @@ async fn manager() -> Option<zbus::Proxy<'static>> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let action = match cli.cmd {
+        Cmd::Bench { package, duration } => return bench::run(package, duration).await,
         Cmd::Profile { action } => {
             return match action {
                 ProfileAction::List => profile::list(),
