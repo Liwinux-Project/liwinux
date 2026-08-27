@@ -27,10 +27,19 @@ struct Running {
 
 pub struct Handle {
     inner: Mutex<Option<Running>>,
+    /// Pencere boyutu; keymapper başlarken motora en-boy oranı olarak verilir.
+    screen_px: Mutex<(u32, u32)>,
 }
 
 impl Handle {
-    pub fn new() -> Self { Self { inner: Mutex::new(None) } }
+    pub fn new() -> Self {
+        Self { inner: Mutex::new(None), screen_px: Mutex::new((2560, 1440)) }
+    }
+
+    /// Pencere geometrisi değiştikçe güncellenir.
+    pub async fn set_screen_px(&self, w: u32, h: u32) {
+        if w > 0 && h > 0 { *self.screen_px.lock().await = (w, h); }
+    }
 
     /// KWin'den gelen odak bildirimi.
     pub async fn set_active_window(&self, class: &str) {
@@ -87,6 +96,7 @@ impl Handle {
                 device, mouse: cfg.mouse.clone(), grab,
                 hotkey: cfg.hotkey_game_mode,
                 screen_map: ScreenMap::default(),
+                screen_px: *self.screen_px.lock().await,
             },
             store,
         );

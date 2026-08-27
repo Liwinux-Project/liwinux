@@ -98,6 +98,32 @@ pub enum Binding {
         /// aynı şeyi yapar, oyunlar bunu bekler.
         #[serde(default = "default_recenter_margin")]
         recenter_margin: f32,
+        /// Devir teslimle yeniden ortalama.
+        ///
+        /// Açıkken ikinci parmak, birincisi kenara VARMADAN merkeze iner ve
+        /// ikisi birlikte hareket eder; birincisi ancak sonra bırakılır.
+        /// Böylece ekranda her an hareket eden bir parmak olur.
+        ///
+        /// Kapalıyken basit yol: kaldır, merkeze koy, devam et. O yolda
+        /// devir anında dönüş kesiliyor ve oyunun dokunuş yumuşatması
+        /// sıfırlandığı için "duruyor sonra devam ediyor" hissi oluşuyor.
+        #[serde(default = "default_true_handoff")]
+        handoff: bool,
+        /// Doğrusal olmayan ölçekleme.
+        ///
+        /// Parmak merkezden uzaklaştıkça hassasiyet `sqrt(min/uzaklık)` ile
+        /// düşer; parmak kenara asimptotik yaklaşır ve pratikte hiç varmaz.
+        /// Yeniden yerleşme ihtiyacı böylece BAŞTAN doğmaz.
+        ///
+        /// XtMapper'ın MouseAimHandler'ından alındı (GPL-3, aynı fikir).
+        #[serde(default = "default_true_nonlinear")]
+        nonlinear: bool,
+        /// Kalkış ile inişin arasına konan gecikme (ms).
+        ///
+        /// Aynı karede göndermek Android'in kalkışı gerçek bir dokunuş sonu
+        /// olarak işlemesine fırsat vermiyor; oyun ışınlanma görüyor.
+        #[serde(default = "default_reset_delay_ms")]
+        reset_delay_ms: u32,
     },
 
     /// Kaydırma jesti (Subway Surfers gibi oyunlar için).
@@ -135,6 +161,14 @@ impl Binding {
 }
 
 fn default_recenter_margin() -> f32 { 0.12 }
+/// Varsayılan KAPALI.
+///
+/// Denendi ve Special Forces Group 2'de çalışmadı: oyun iki parmağı ayrı
+/// ayrı takip edip ortalıyor, ekranda iki dokunuş izi beliriyor. Oyuna
+/// göre değişebilir, o yüzden seçenek duruyor ama varsayılan değil.
+fn default_true_handoff() -> bool { false }
+fn default_true_nonlinear() -> bool { true }
+fn default_reset_delay_ms() -> u32 { 12 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {

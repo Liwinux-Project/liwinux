@@ -490,6 +490,7 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
         RunnerConfig {
             device, mouse: cfg.mouse.clone(), grab,
             hotkey: cfg.hotkey_game_mode, screen_map: ScreenMap::default(),
+            screen_px: (2560, 1440),
         }, store);
 
     // Hata ayıklama kipinde host odak kapısı YOK: KWin bildirimi liwd'ye

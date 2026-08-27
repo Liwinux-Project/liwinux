@@ -137,6 +137,20 @@ pub fn install(force: bool, from: Option<std::path::PathBuf>) -> Result<()> {
             skipped += 1;
             continue;
         }
+        // Üzerine yazmadan ÖNCE yedekle.
+        //
+        // Kullanıcı profilleri düzenleyiciyle ayarlanmış koordinatlar
+        // içerir; --force onları geri dönüşsüz siliyordu. Gerçekte oldu:
+        // saatlerce ayarlanmış bir FPS profili tek komutla kayboldu.
+        if target.exists() {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs()).unwrap_or(0);
+            let bak = target.with_extension(format!("toml.bak-{stamp}"));
+            std::fs::copy(&target, &bak)
+                .with_context(|| format!("yedeklenemedi: {}", target.display()))?;
+            println!("  yedek: {}", bak.file_name().unwrap_or_default().to_string_lossy());
+        }
         std::fs::copy(&p, &target)
             .with_context(|| format!("kopyalanamadı: {}", p.display()))?;
         println!("  kuruldu: {}", name.to_string_lossy());

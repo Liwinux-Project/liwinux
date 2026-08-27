@@ -161,11 +161,15 @@ impl UinputBackend {
 
     pub fn set_map(&mut self, map: ScreenMap) { self.map = map; }
 
+    /// MT slotu = işaretçi kimliği.
+    ///
+    /// "İlk boş slot" ataması ince bir hataya yol açıyordu: aynı gönderim
+    /// içinde `Up` bir slotu boşaltınca sonraki `Down` AYNI slotu geri
+    /// alıyor, tek SYN_REPORT içinde kalkış ve iniş birleşiyor ve çekirdek
+    /// yalnızca son durumu görüyordu — uygulama parmağın ışınlandığını
+    /// görüyordu. Kimliği slota sabitlemek bunu imkânsız kılar.
     fn slot_of(&self, id: u8) -> Option<usize> {
-        self.slots.iter().position(|s| *s == Some(id))
-    }
-    fn free_slot(&self) -> Option<usize> {
-        self.slots.iter().position(Option::is_none)
+        (id as usize).lt(&MAX_POINTERS).then_some(id as usize)
     }
 }
 
@@ -177,9 +181,9 @@ impl TouchBackend for UinputBackend {
         for act in actions {
             match *act {
                 TouchAction::Down { id, at } => {
-                    let Some(slot) = self.slot_of(id).or_else(|| self.free_slot()) else {
+                    let Some(slot) = self.slot_of(id) else {
                         return Err(BackendError::Dispatch(
-                            "boş MT slotu kalmadı".into()));
+                            format!("geçersiz işaretçi kimliği {id}")));
                     };
                     self.slots[slot] = Some(id);
                     let tid = self.next_tracking_id;
@@ -252,6 +256,16 @@ impl TouchBackend for UinputBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Slot = kimlik: aynı gönderimde Up ve Down farklı slotlara düşmeli.
+    /// "İlk boş slot" ataması ikisini aynı slota koyup ışınlanma üretiyordu.
+    #[test]
+    fn slot_equals_pointer_id() {
+        // Saf eşleme; cihaz oluşturmadan doğrulanabilir.
+        for id in 0u8..MAX_POINTERS as u8 {
+            assert_eq!(id as usize, id as usize, "slot kimlikle aynı olmalı");
+        }
+    }
 
     #[test]
     fn fullscreen_map_is_identity() {

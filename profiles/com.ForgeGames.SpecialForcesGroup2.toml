@@ -21,12 +21,22 @@ center = { x = 0.148, y = 0.738 }
 radius = 0.085
 
 # --- bakış: fare (sürekli, kenarda yeniden ortalanır) ---
+# Nişan ayarları — XtMapper'ın MouseAimHandler'ından öğrenilen iki teknik:
+#
+# nonlinear: parmak merkezden uzaklaştıkça hassasiyet sqrt(min/uzaklık) ile
+#   düşer. Parmak kenara asimptotik yaklaşır, pratikte hiç varmaz; yeniden
+#   sıfırlama ihtiyacı BAŞTAN doğmaz. Asıl çözüm bu.
+# reset_delay_ms: kalkış ile iniş arasına gecikme. Aynı karede göndermek
+#   Android'in dokunuşu gerçekten bitirmesine fırsat vermiyor.
 [bindings.bakis]
 type = "aim"
-origin = { x = 0.50, y = 0.45 }
-sensitivity = 0.0012
+origin = { x = 0.50, y = 0.50 }
+sensitivity = 0.0006
 deadzone = 0.4
-recenter_margin = 0.05
+recenter_margin = 0.03
+handoff = false
+nonlinear = true
+reset_delay_ms = 12
 
 # --- ateş: sağ üstteki nişangah dairesi ---
 [bindings.ates]

@@ -51,6 +51,12 @@ pub struct RunnerConfig {
     pub hotkey: Option<u16>,
     /// Dokunmatik koordinat eşlemesi.
     pub screen_map: ScreenMap,
+    /// Hedef pencerenin piksel boyutu.
+    ///
+    /// Joystick dairesinin gerçekten daire olması buna bağlı: normalize
+    /// koordinat eksen başına ölçekli olduğu için 2560x1440'ta aynı
+    /// normalize yarıçap yatayda 1.78 kat uzağa gider.
+    pub screen_px: (u32, u32),
 }
 
 /// Dışarıdan gözlemlenebilir durum.
@@ -151,7 +157,10 @@ impl Runner {
         let mut lat = LatencyStats::new();
 
         let t0 = std::time::Instant::now();
-        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(4));
+        // Kare başına tek dokunuş hareketi göndermek için: gerçek
+        // dokunmatik ekranlar 60-240 Hz raporlar, 1000 Hz fare hızında
+        // değil. 5 ms ~ 200 Hz.
+        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(5));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         {
@@ -185,7 +194,11 @@ impl Runner {
                             });
                             // Motor yalnızca host odaktayken kurulur.
                             if focused && game_mode {
-                                engine = Some(Engine::new(entry.profile.clone()));
+                                engine = Some({
+                                    let mut e = Engine::new(entry.profile.clone());
+                                    e.set_aspect(self.cfg.screen_px.0, self.cfg.screen_px.1);
+                                    e
+                                });
                                 if self.cfg.grab && !grabbed
                                     && stream.device_mut().grab().is_ok()
                                 {
@@ -230,7 +243,11 @@ impl Runner {
                     focused = now_focused;
                     if focused {
                         if let Some(p) = &profile.clone().filter(|_| game_mode) {
-                            engine = Some(Engine::new(p.clone()));
+                            engine = Some({
+                                let mut e = Engine::new(p.clone());
+                                e.set_aspect(self.cfg.screen_px.0, self.cfg.screen_px.1);
+                                e
+                            });
                             if self.cfg.grab && !grabbed
                                 && stream.device_mut().grab().is_ok()
                             {
@@ -291,7 +308,11 @@ impl Runner {
                             if game_mode {
                                 if let Some(p) = &profile {
                                     if focused {
-                                        engine = Some(Engine::new(p.clone()));
+                                        engine = Some({
+                                let mut e = Engine::new(p.clone());
+                                e.set_aspect(self.cfg.screen_px.0, self.cfg.screen_px.1);
+                                e
+                            });
                                         if self.cfg.grab && !grabbed
                                             && stream.device_mut().grab().is_ok()
                                         {
@@ -366,8 +387,9 @@ impl Runner {
                     let ev = ev.map_err(RunnerError::Stream)?;
                     let ev_time = ev.timestamp();
                     if let (Some(input), Some(e)) = (translate(&ev), engine.as_mut()) {
-                        let mut acts = e.tick(t0.elapsed().as_millis() as u64);
-                        acts.extend(e.handle(input));
+                        // Fare hareketi motorda BİRİKİR; uygulama tick'te.
+                        // Tuş olayları (fare düğmeleri) anında işlenir.
+                        let acts = e.handle(input);
                         if !acts.is_empty() && backend.dispatch(&acts).is_ok() {
                             lat.record(ev_time);
                         }

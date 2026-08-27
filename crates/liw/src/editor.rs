@@ -25,22 +25,30 @@ struct Mark {
     y: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     radius: Option<f64>,
+    /// Nişan ayarları; his ile bulunur, hesapla değil.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sensitivity: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recenter_margin: Option<f64>,
     /// TOML'da hangi alan güncellenecek: at | center | origin | from
     field: String,
 }
 
 fn marks_of(p: &liw_core::input::Profile) -> Vec<Mark> {
     p.bindings.iter().map(|(name, b)| {
-        let (kind, x, y, radius, field) = match b {
-            Binding::Tap { at, .. } => ("tap", at.x, at.y, None, "at"),
-            Binding::Toggle { at, .. } => ("toggle", at.x, at.y, None, "at"),
-            Binding::Aim { origin, .. } => ("aim", origin.x, origin.y, None, "origin"),
+        let (kind, x, y, radius, field, sens, marg) = match b {
+            Binding::Tap { at, .. } => ("tap", at.x, at.y, None, "at", None, None),
+            Binding::Toggle { at, .. } => ("toggle", at.x, at.y, None, "at", None, None),
+            Binding::Aim { origin, sensitivity, recenter_margin, .. } =>
+                ("aim", origin.x, origin.y, None, "origin",
+                 Some(*sensitivity as f64), Some(*recenter_margin as f64)),
             Binding::Joystick { center, radius, .. } =>
-                ("joystick", center.x, center.y, Some(*radius as f64), "center"),
-            Binding::Swipe { from, .. } => ("swipe", from.x, from.y, None, "from"),
+                ("joystick", center.x, center.y, Some(*radius as f64), "center", None, None),
+            Binding::Swipe { from, .. } => ("swipe", from.x, from.y, None, "from", None, None),
         };
         Mark { name: name.clone(), kind: kind.into(),
-               x: x as f64, y: y as f64, radius, field: field.into() }
+               x: x as f64, y: y as f64, radius, field: field.into(),
+               sensitivity: sens, recenter_margin: marg }
     }).collect()
 }
 
@@ -121,6 +129,17 @@ fn write_back(path: &PathBuf, marks: &[Mark]) -> Result<()> {
         if let Some(rad) = m.radius {
             if let Some(slot) = b.get_mut("radius") {
                 *slot = toml_edit::value(r(rad));
+            }
+        }
+        // Nişan ayarları: hassasiyet 4 basamak (küçük değerler).
+        if let Some(v) = m.sensitivity {
+            if let Some(slot) = b.get_mut("sensitivity") {
+                *slot = toml_edit::value((v * 10000.0).round() / 10000.0);
+            }
+        }
+        if let Some(v) = m.recenter_margin {
+            if let Some(slot) = b.get_mut("recenter_margin") {
+                *slot = toml_edit::value(r(v));
             }
         }
     }

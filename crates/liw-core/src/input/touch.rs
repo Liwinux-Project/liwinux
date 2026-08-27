@@ -67,6 +67,38 @@ impl PointerPool {
         Some(id)
     }
 
+    /// Bağlantıya YENİ bir işaretçi verir, eskisini bırakır.
+    ///
+    /// Sıra önemli: yeni kimlik ESKİSİ HÂLÂ TUTULURKEN alınır, böylece
+    /// farklı bir kimlik (dolayısıyla farklı MT slotu) garanti edilir.
+    ///
+    /// Neden gerekli: aynı slotta tek bir SYN_REPORT içinde önce
+    /// `tracking_id = -1` sonra yeni kimlik yazılırsa çekirdek yalnızca son
+    /// durumu görür — kalkış kaybolur ve uygulama parmağın ışınlandığını
+    /// görür. Farklı slotlarda ise "A kalktı, B belirdi" ayrı ayrı görünür.
+    ///
+    /// Havuzda yer yoksa `None` döner ve ESKİ kimlik korunur; yarım
+    /// bırakmak parmağı ekranda asılı bırakırdı.
+    pub fn rotate(&mut self, binding: &str) -> Option<(u8, u8)> {
+        let old = self.assigned.get(binding).copied()?;
+        let fresh = self.in_use.iter().position(|&u| !u)? as u8;
+        self.in_use[fresh as usize] = true;
+        self.in_use[old as usize] = false;
+        self.assigned.insert(binding.to_string(), fresh);
+        Some((old, fresh))
+    }
+
+    /// Bir işaretçiyi başka bir bağlantı adına devreder.
+    ///
+    /// Devir teslimde ikinci parmak birincinin yerini alır; kimlik
+    /// (dolayısıyla MT slotu) DEĞİŞMEZ, yalnızca sahibi değişir.
+    /// Kimliği değiştirmek oyunun takip ettiği parmağı koparırdı.
+    pub fn rename(&mut self, from: &str, to: &str) -> Option<u8> {
+        let id = self.assigned.remove(from)?;
+        self.assigned.insert(to.to_string(), id);
+        Some(id)
+    }
+
     pub fn get(&self, binding: &str) -> Option<u8> {
         self.assigned.get(binding).copied()
     }
@@ -145,6 +177,37 @@ mod tests {
         assert_eq!(acts.len(), 3);
         assert!(acts.iter().all(|a| matches!(a, TouchAction::Up { .. })));
         assert_eq!(p.active_count(), 0);
+    }
+
+    /// Döndürme FARKLI bir kimlik vermeli: aynı slotta kalkış+iniş tek
+    /// SYN'de birleşir ve uygulama ışınlanma görür.
+    #[test]
+    fn rotate_yields_a_different_pointer() {
+        let mut p = PointerPool::new();
+        let a = p.acquire("aim").unwrap();
+        let (old, new) = p.rotate("aim").unwrap();
+        assert_eq!(old, a);
+        assert_ne!(new, a, "yeni kimlik farklı olmalı");
+        assert_eq!(p.get("aim"), Some(new));
+        assert_eq!(p.active_count(), 1, "eski kimlik bırakılmalı");
+    }
+
+    #[test]
+    fn rotate_on_unknown_binding_is_none() {
+        let mut p = PointerPool::new();
+        assert!(p.rotate("yok").is_none());
+    }
+
+    /// Havuz doluyken döndürme ESKİ kimliği korumalı — yarım bırakmak
+    /// parmağı ekranda asılı bırakır.
+    #[test]
+    fn rotate_when_full_keeps_the_old_pointer() {
+        let mut p = PointerPool::new();
+        for i in 0..MAX_POINTERS { p.acquire(&format!("b{i}")); }
+        let before = p.get("b0").unwrap();
+        assert!(p.rotate("b0").is_none());
+        assert_eq!(p.get("b0"), Some(before), "eski kimlik korunmalı");
+        assert_eq!(p.active_count(), MAX_POINTERS);
     }
 
     #[test]

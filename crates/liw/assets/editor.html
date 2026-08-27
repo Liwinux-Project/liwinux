@@ -61,6 +61,39 @@ function render() {
       <div class="c">${b.x.toFixed(3)}, ${b.y.toFixed(3)}</div>`;
     d.onclick = () => { sel = b.name; render(); };
     list.appendChild(d);
+    if (b.sensitivity != null) {
+      const sw = document.createElement('div');
+      sw.className = 'radrow';
+      sw.innerHTML = `<label>hassasiyet</label>
+        <input type="range" min="0.0002" max="0.0030" step="0.0001" value="${b.sensitivity}">
+        <span class="c">${b.sensitivity.toFixed(4)}</span>`;
+      const i1 = sw.querySelector('input'), o1 = sw.querySelector('span');
+      i1.oninput = () => { b.sensitivity = parseFloat(i1.value);
+                           o1.textContent = b.sensitivity.toFixed(4); };
+      i1.onpointerdown = e => e.stopPropagation();
+      d.appendChild(sw);
+
+      const mw = document.createElement('div');
+      mw.className = 'radrow';
+      mw.innerHTML = `<label>kenar payı</label>
+        <input type="range" min="0.01" max="0.20" step="0.005" value="${b.recenter_margin}">
+        <span class="c">${b.recenter_margin.toFixed(3)}</span>`;
+      const i2 = mw.querySelector('input'), o2 = mw.querySelector('span');
+      i2.oninput = () => { b.recenter_margin = parseFloat(i2.value);
+                           o2.textContent = b.recenter_margin.toFixed(3); };
+      i2.onpointerdown = e => e.stopPropagation();
+      d.appendChild(mw);
+
+      const info = document.createElement('div');
+      info.className = 'c';
+      info.style.marginTop = '4px';
+      const upd = () => {
+        const px = Math.round((1 - 2*b.recenter_margin) / b.sensitivity);
+        info.textContent = `yerleşmeler arası ~${px} px fare yolu`;
+      };
+      upd(); i1.addEventListener('input', upd); i2.addEventListener('input', upd);
+      d.appendChild(info);
+    }
     if (b.radius != null) {
       const rw = document.createElement('div');
       rw.className = 'radrow';
@@ -81,6 +114,39 @@ function place() {
   for (const k in marks) marks[k].remove();
   marks = {};
   for (const b of S.bindings) {
+    if (b.sensitivity != null) {
+      const sw = document.createElement('div');
+      sw.className = 'radrow';
+      sw.innerHTML = `<label>hassasiyet</label>
+        <input type="range" min="0.0002" max="0.0030" step="0.0001" value="${b.sensitivity}">
+        <span class="c">${b.sensitivity.toFixed(4)}</span>`;
+      const i1 = sw.querySelector('input'), o1 = sw.querySelector('span');
+      i1.oninput = () => { b.sensitivity = parseFloat(i1.value);
+                           o1.textContent = b.sensitivity.toFixed(4); };
+      i1.onpointerdown = e => e.stopPropagation();
+      d.appendChild(sw);
+
+      const mw = document.createElement('div');
+      mw.className = 'radrow';
+      mw.innerHTML = `<label>kenar payı</label>
+        <input type="range" min="0.01" max="0.20" step="0.005" value="${b.recenter_margin}">
+        <span class="c">${b.recenter_margin.toFixed(3)}</span>`;
+      const i2 = mw.querySelector('input'), o2 = mw.querySelector('span');
+      i2.oninput = () => { b.recenter_margin = parseFloat(i2.value);
+                           o2.textContent = b.recenter_margin.toFixed(3); };
+      i2.onpointerdown = e => e.stopPropagation();
+      d.appendChild(mw);
+
+      const info = document.createElement('div');
+      info.className = 'c';
+      info.style.marginTop = '4px';
+      const upd = () => {
+        const px = Math.round((1 - 2*b.recenter_margin) / b.sensitivity);
+        info.textContent = `yerleşmeler arası ~${px} px fare yolu`;
+      };
+      upd(); i1.addEventListener('input', upd); i2.addEventListener('input', upd);
+      d.appendChild(info);
+    }
     if (b.radius != null) {
       const r = document.createElement('div');
       r.className = 'm rad';

@@ -75,6 +75,10 @@ impl Manager {
         self.win.set(window::WindowGeometry {
             found, x, y, width, height, fullscreen,
         }).await;
+        if found {
+            // Motor en-boy düzeltmesi için gerçek piksel boyutunu ister.
+            self.km.set_screen_px(width as u32, height as u32).await;
+        }
         Ok(())
     }
 
