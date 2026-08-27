@@ -198,6 +198,17 @@ async fn main() -> Result<()> {
                 } else if h.is_healthy() {
                     if unhealthy > 0 { tracing::info!("session toparlandı"); }
                     unhealthy = 0; attempts = 0;
+
+                    // Pencere durumunu yokla. Kullanıcı session'ı ayakta
+                    // tutup pencereyi kapatıp açabiliyor; bunu görmezsek
+                    // yeni pencere hiç tam ekran yapılmıyor.
+                    if was_running {
+                        let _ = window::request_report().await;
+                        if win.note_window_gone().await {
+                            tracing::info!(
+                                "Waydroid penceresi kapandı — tam ekran yeniden denenecek");
+                        }
+                    }
                     // Session yeni ayağa kalktıysa pencereyi tam ekran yap.
                     // Boot tamamlandığında pencere HENÜZ olmayabilir, o yüzden
                     // tekrar denemeli; ayrıca her döngüde değil YALNIZCA

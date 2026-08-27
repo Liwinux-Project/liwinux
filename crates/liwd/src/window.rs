@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 
 const SCRIPT_NAME: &str = "liwinux-fullscreen";
 const ACTIVATE_SCRIPT: &str = "liwinux-activate";
+const REPORT_SCRIPT: &str = "liwinux-report";
 
 /// KWin script'inin bildirdiği pencere geometrisi.
 #[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
@@ -48,6 +49,23 @@ impl WindowState {
         *self.attempted.write().await = false;
         *self.geometry.write().await = WindowGeometry::default();
     }
+
+    /// Pencere kaybolduysa tam ekran bayrağını sıfırlar.
+    ///
+    /// Session'ın durmasını beklemek YETMİYORDU: kullanıcı session'ı ayakta
+    /// tutup `show-full-ui` penceresini kapatıp açıyor. O durumda bayrak
+    /// sıfırlanmadığı için yeni pencere hiçbir zaman tam ekran yapılmıyordu
+    /// — 10 saatlik bir daemon ömrü boyunca tek deneme. Gerçekte yaşandı.
+    ///
+    /// Pencere DURUYOR ama tam ekran değilse dokunulmuyor: kullanıcı kasten
+    /// çıkmış olabilir ve her seferinde geri zorlamak düşmanca olur.
+    ///
+    /// `true` dönerse yeni pencere için deneme yapılabilir.
+    pub async fn note_window_gone(&self) -> bool {
+        // found == false → pencere YOK. Duruyorsa hiçbir şey yapılmaz.
+        if self.geometry.read().await.found { return false; }
+        std::mem::replace(&mut *self.attempted.write().await, false)
+    }
 }
 
 /// Tam ekran script'ini bir kez çalıştırır.
@@ -79,6 +97,23 @@ pub async fn activate() -> Result<()> {
     let _: Result<bool, _> = p.call("unloadScript", &(ACTIVATE_SCRIPT,)).await;
     let _id: i32 = p.call("loadScript",
         &(path.to_string_lossy().as_ref(), ACTIVATE_SCRIPT)).await?;
+    let _: () = p.call("start", &()).await?;
+    Ok(())
+}
+
+/// Pencere durumunu sorar — HİÇBİR ŞEYİ DEĞİŞTİRMEZ.
+///
+/// Sonuç `ReportWindowGeometry` ile geri gelir. Durumu öğrenmek için
+/// `request_fullscreen` çağırmak, sırf bakmak isterken kullanıcının kasten
+/// çıktığı tam ekranı geri zorlamak olurdu.
+pub async fn request_report() -> Result<()> {
+    let path = script_path_named("report.js").context("report.js bulunamadı")?;
+    let conn = zbus::Connection::session().await?;
+    let p = zbus::Proxy::new(&conn, "org.kde.KWin", "/Scripting",
+                             "org.kde.kwin.Scripting").await?;
+    let _: Result<bool, _> = p.call("unloadScript", &(REPORT_SCRIPT,)).await;
+    let _id: i32 = p.call("loadScript",
+        &(path.to_string_lossy().as_ref(), REPORT_SCRIPT)).await?;
     let _: () = p.call("start", &()).await?;
     Ok(())
 }
@@ -170,5 +205,57 @@ mod tests {
         let g = s.get().await;
         assert!(g.found && g.fullscreen);
         assert_eq!((g.width, g.height), (2560, 1440));
+    }
+
+    /// Pencere kapanınca tam ekran yeniden denenebilmeli.
+    ///
+    /// Gerçekte yaşandı: kullanıcı session'ı ayakta tutup `show-full-ui`
+    /// penceresini kapatıp açtı; bayrak sıfırlanmadığı için 10 saat boyunca
+    /// hiçbir yeni pencere tam ekran yapılmadı.
+    #[tokio::test]
+    async fn closed_window_reenables_fullscreen_attempt() {
+        let s = WindowState::new();
+        s.set(WindowGeometry { found: true, x: 0, y: 0,
+            width: 2560, height: 1440, fullscreen: true }).await;
+        s.mark_fullscreen_attempted().await;
+
+        // Pencere duruyorken dokunulmamalı.
+        assert!(!s.note_window_gone().await, "pencere dururken sıfırlanmamalı");
+        assert!(s.fullscreen_attempted().await);
+
+        // Pencere kayboldu.
+        s.set(WindowGeometry::default()).await;
+        assert!(s.note_window_gone().await, "kapanma bildirilmeli");
+        assert!(!s.fullscreen_attempted().await, "bayrak sıfırlanmalı");
+    }
+
+    /// Kullanıcı tam ekrandan KASTEN çıktıysa geri zorlanmamalı.
+    #[tokio::test]
+    async fn user_leaving_fullscreen_is_not_fought() {
+        let s = WindowState::new();
+        s.set(WindowGeometry { found: true, x: 100, y: 100,
+            width: 1280, height: 720, fullscreen: false }).await;
+        s.mark_fullscreen_attempted().await;
+        assert!(!s.note_window_gone().await);
+        assert!(s.fullscreen_attempted().await, "kullanıcının kararı korunmalı");
+    }
+
+    /// Pencere hiç olmadıysa ve deneme yapılmadıysa bildirilecek bir şey yok.
+    #[tokio::test]
+    async fn nothing_to_report_when_never_attempted() {
+        let s = WindowState::new();
+        assert!(!s.note_window_gone().await);
+    }
+
+    /// Aynı kapanma iki kez bildirilmemeli — yoksa her yoklamada
+    /// tam ekran zorlanır ve kullanıcıyla kavga edilir.
+    #[tokio::test]
+    async fn closure_is_reported_once() {
+        let s = WindowState::new();
+        s.set(WindowGeometry { found: true, ..Default::default() }).await;
+        s.mark_fullscreen_attempted().await;
+        s.set(WindowGeometry::default()).await;
+        assert!(s.note_window_gone().await);
+        assert!(!s.note_window_gone().await, "ikinci kez bildirilmemeli");
     }
 }
