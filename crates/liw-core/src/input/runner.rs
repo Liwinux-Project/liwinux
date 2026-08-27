@@ -149,13 +149,27 @@ impl Runner {
         // libinput/KWin'in cihazı tanıması birkaç yüz ms sürebilir.
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
 
+        // Yanlış cihaz açıldığında GÜRÜLTÜLÜ başarısız ol. Doğrulamamak,
+        // ses jakı cihazından tuş beklemek ve sessizce hiç çalışmamak
+        // demekti — kullanıcı yalnızca "keymapper çalışmıyor" görüyordu.
+        {
+            let probe = evdev::Device::open(&self.cfg.device)
+                .map_err(|e| super::capture::CaptureError::Open {
+                    path: self.cfg.device.clone(), source: e })?;
+            super::capture::verify_kind(&probe, false)?;
+        }
         let dev = GrabbedDevice::open(&self.cfg.device, false)?;
         let mut stream = dev.into_stream()?;
 
         // Fare AYRI bir cihaz. Klavyeyle aynı akışta gelmez; ikisini de
         // dinlemek zorundayız yoksa Aim ve fare tuşları hiç tetiklenmez.
         let mut mouse_stream = match &self.cfg.mouse {
-            Some(p) => match GrabbedDevice::open(p, false) {
+            Some(p) => match evdev::Device::open(p)
+                .map_err(|e| super::capture::CaptureError::Open {
+                    path: p.clone(), source: e })
+                .and_then(|d| super::capture::verify_kind(&d, true))
+                .and_then(|()| GrabbedDevice::open(p, false))
+            {
                 Ok(d) => match d.into_stream() {
                     Ok(s) => Some(s),
                     Err(e) => { tracing::warn!(hata = %e, "fare akışı kurulamadı"); None }

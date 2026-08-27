@@ -27,6 +27,13 @@ pub enum CaptureError {
     Stream(#[source] std::io::Error),
     #[error("uygun girdi cihazı bulunamadı (kullanıcı 'input' grubunda mı?)")]
     NoDevices,
+    /// Açılan cihaz beklenen türde değil.
+    ///
+    /// Ayrı bir varyant: "açılamadı" ile "yanlış cihaz" tamamen farklı
+    /// sorunlar ve farklı çözümleri var. Aynı hataya gömmek, kullanıcıyı
+    /// izin sorunu sanıp yanlış yere bakmaya iterdi.
+    #[error("{0}")]
+    WrongKind(String),
 }
 
 /// Cihazın bizim için ne işe yaradığı.
@@ -94,6 +101,56 @@ fn classify(dev: &Device) -> Option<DeviceKind> {
         (false, true) => Some(DeviceKind::Pointer),
         (false, false) => None,
     }
+}
+
+/// `/dev/input/eventN` için kararlı bir `by-id` yolu bulur.
+///
+/// Neden şart: `eventN` numaraları YENİDEN BAŞLATMALAR ARASI SABİT DEĞİL.
+/// Gerçekte yaşandı — config'deki `event23` klavyeyken, yeniden başlatma
+/// sonrası "HDA NVidia HDMI/DP,pcm=9" ses cihazı oldu. Keymapper sessizce
+/// hiçbir şey yapmadı. Dağıtacağımız bir araçta bu her kullanıcıda her
+/// yeniden başlatmada kırılırdı.
+///
+/// Birden fazla bağlantı aynı düğüme çıkabilir; `-event-kbd` /
+/// `-event-mouse` sonekli olan tercih edilir çünkü udev bunları cihazın
+/// birincil işlevi için üretir.
+pub fn stable_path(event_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let dir = std::path::Path::new("/dev/input/by-id");
+    let target = event_path.canonicalize().ok()?;
+    let mut best: Option<std::path::PathBuf> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let link = entry.path();
+        if link.canonicalize().ok().as_deref() != Some(target.as_path()) { continue; }
+        if best.is_none() || prefer_link(&link) { best = Some(link); }
+    }
+    best
+}
+
+/// udev'in birincil işlev için ürettiği sonekler önceliklidir.
+fn prefer_link(p: &std::path::Path) -> bool {
+    let n = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    n.ends_with("-event-kbd") || n.ends_with("-event-mouse")
+}
+
+/// Açılan cihazın beklenen türde olduğunu doğrular.
+///
+/// Doğrulamamak, yanlış cihaz açıldığında SESSİZ başarısızlık demekti:
+/// ses jakı cihazından tuş beklemek sonsuza kadar bekler ve kullanıcı
+/// yalnızca "keymapper çalışmıyor" görür.
+pub fn verify_kind(dev: &Device, want_pointer: bool) -> Result<(), CaptureError> {
+    let name = dev.name().unwrap_or("(isimsiz)").to_string();
+    let kind = classify(dev);
+    let ok = match (want_pointer, kind) {
+        (true, Some(DeviceKind::Pointer | DeviceKind::Combo)) => true,
+        (false, Some(DeviceKind::Keyboard | DeviceKind::Combo)) => true,
+        _ => false,
+    };
+    if ok { return Ok(()); }
+    let istenen = if want_pointer { "fare" } else { "klavye" };
+    Err(CaptureError::WrongKind(format!(
+        "cihaz {istenen} değil: \"{name}\" (tür: {kind:?}). \
+         eventN numaraları yeniden başlatmalar arası değişir — \
+         `liw keymap detect --save` ile yeniden kalibre et")))
 }
 
 /// Sistemdeki kullanılabilir girdi cihazlarını listeler.
@@ -215,6 +272,33 @@ pub fn translate(ev: &evdev::InputEvent) -> Option<InputEvent> {
 
 #[cfg(test)]
 mod tests {
+    /// udev'in birincil işlev bağlantıları tercih edilmeli.
+    ///
+    /// Aynı düğüme birden fazla bağlantı çıkabiliyor; `-event-if03` gibi
+    /// arayüz bağlantıları cihazın ikincil işlevlerini gösterir.
+    #[test]
+    fn primary_udev_links_are_preferred() {
+        use std::path::Path;
+        assert!(super::prefer_link(Path::new(
+            "/dev/input/by-id/usb-Razer_BlackWidow_V3-event-kbd")));
+        assert!(super::prefer_link(Path::new(
+            "/dev/input/by-id/usb-Razer_Basilisk_V3-event-mouse")));
+        assert!(!super::prefer_link(Path::new(
+            "/dev/input/by-id/usb-Razer_BlackWidow_V3-event-if03")));
+        assert!(!super::prefer_link(Path::new(
+            "/dev/input/by-id/usb-Compx_Receiver-if01-event")));
+    }
+
+    /// Yanlış cihaz açıldığında hata "açılamadı" ile KARIŞMAMALI:
+    /// ikisi farklı sorunlar ve kullanıcı yanlış yere bakar.
+    #[test]
+    fn wrong_kind_is_a_distinct_error() {
+        let e = super::CaptureError::WrongKind("cihaz klavye değil".into());
+        let msg = e.to_string();
+        assert!(msg.contains("klavye değil"), "{msg}");
+        assert!(!msg.contains("açılamadı"), "izin sorunu sanılmamalı: {msg}");
+    }
+
     use super::*;
     use evdev::{EventType, InputEvent as RawEvent};
 

@@ -402,6 +402,21 @@ pub async fn detect(save: bool, mouse_mode: bool, hotkey_mode: bool) -> Result<(
     }
 
     if save {
+        // eventN yerine KARARLI yol yaz. Numaralar yeniden başlatmalar
+        // arası değişiyor: gerçekte config'deki event23 klavyeyken yeniden
+        // başlatma sonrası bir ses cihazı oldu ve keymapper sessizce
+        // çalışmayı bıraktı.
+        let path = match liw_core::input::capture::stable_path(&path) {
+            Some(stable) => {
+                println!("Kararlı yol: {}", stable.display());
+                stable
+            }
+            None => {
+                println!("UYARI: bu cihaz için /dev/input/by-id altında kararlı \
+                          bağlantı yok; eventN yeniden başlatmada değişebilir.");
+                path
+            }
+        };
         let mut cfg = liw_core::Config::load();
         if mouse_mode { cfg.mouse = Some(path); }
         else if hotkey_mode { cfg.hotkey_game_mode = Some(code); }
