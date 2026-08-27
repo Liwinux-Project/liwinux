@@ -52,8 +52,17 @@ pub fn parse_latency(raw: &str) -> Option<Snapshot> {
 /// Toplanmış anlık görüntülerden kare aralıkları çıkarır.
 #[derive(Debug, Default)]
 pub struct FrameData {
-    /// Aralıklar (ms). YALNIZCA aynı anlık görüntü içindeki ardışık karelerden.
-    intervals_ms: Vec<f64>,
+    /// Aralıklar (ms), BAŞLANGIÇ KARESİNE göre tekilleştirilmiş.
+    ///
+    /// Anlık görüntüler üst üste biniyor: dumpsys 128 karelik tampon
+    /// döndürüyor ama her örnekte yalnızca ~57 yeni kare oluyor, yani aynı
+    /// aralık 2-3 örnekte birden görünüyor. Vec kullanmak onu 2-3 kez
+    /// sayıyordu; ölçülen 7997 tekil kareden 23560 "aralık" çıkmıştı.
+    ///
+    /// Yüzdelikler bundan az etkilenir (pay ve payda birlikte şişer) ama
+    /// örneklem sayısı olduğundan büyük görünür ve jank SAYILARI yanlış
+    /// olur. Faz 4'te öncesi/sonrası karşılaştıracağımız için önemli.
+    intervals: std::collections::BTreeMap<i64, f64>,
     /// Görülen tekil kareler; kapsam hesabı için.
     frames: BTreeSet<i64>,
     refresh_ns: u64,
@@ -71,12 +80,14 @@ impl FrameData {
             // Absürt değerleri ele: 0.05 ms altı ölçüm gürültüsü,
             // 1000 ms üstü duraklama (uygulama arka plana gitmiş olabilir).
             if (0.05..1000.0).contains(&d) {
-                self.intervals_ms.push(d);
+                // Başlangıç karesi anahtarı: aynı aralık kaç örnekte
+                // görünürse görünsün bir kez sayılır.
+                self.intervals.insert(w[0], d);
             }
         }
     }
 
-    pub fn interval_count(&self) -> usize { self.intervals_ms.len() }
+    pub fn interval_count(&self) -> usize { self.intervals.len() }
     pub fn frame_count(&self) -> usize { self.frames.len() }
     pub fn refresh_ms(&self) -> f64 { self.refresh_ns as f64 / 1e6 }
 
@@ -96,7 +107,7 @@ impl FrameData {
 
     /// Sıralı aralıklar (yüzdelik hesabı için).
     fn sorted(&self) -> Vec<f64> {
-        let mut v = self.intervals_ms.clone();
+        let mut v: Vec<f64> = self.intervals.values().copied().collect();
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
         v
     }
@@ -109,20 +120,20 @@ impl FrameData {
     }
 
     pub fn mean_ms(&self) -> f64 {
-        if self.intervals_ms.is_empty() { return 0.0; }
-        self.intervals_ms.iter().sum::<f64>() / self.intervals_ms.len() as f64
+        if self.intervals.is_empty() { return 0.0; }
+        self.intervals.values().sum::<f64>() / self.intervals.len() as f64
     }
 
     /// Refresh'in `mult` katından uzun aralıklar (jank).
     pub fn jank_count(&self, mult: f64) -> usize {
         let t = self.refresh_ms() * mult;
         if t <= 0.0 { return 0; }
-        self.intervals_ms.iter().filter(|&&x| x > t).count()
+        self.intervals.values().filter(|&&x| x > t).count()
     }
 
     pub fn jank_pct(&self, mult: f64) -> f64 {
-        if self.intervals_ms.is_empty() { return 0.0; }
-        100.0 * self.jank_count(mult) as f64 / self.intervals_ms.len() as f64
+        if self.intervals.is_empty() { return 0.0; }
+        100.0 * self.jank_count(mult) as f64 / self.intervals.len() as f64
     }
 }
 
@@ -140,6 +151,44 @@ pub fn sample_interval_ms(refresh_ns: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    /// Üst üste binen anlık görüntüler aynı aralığı ÇOK KEZ saymamalı.
+    ///
+    /// dumpsys 128 karelik tampon döndürüyor ama her örnekte ~57 yeni kare
+    /// var; aynı aralık 2-3 örnekte birden görünüyor. Gerçek ölçümde 7997
+    /// tekil kareden 23560 "aralık" çıkmıştı.
+    #[test]
+    fn overlapping_snapshots_do_not_inflate_sample_count() {
+        let mut fd = super::FrameData::new();
+        let r = 5_555_555u64;
+        let mk = |base: i64, n: i64| super::Snapshot {
+            refresh_ns: r,
+            presents: (0..n).map(|i| base + i * r as i64).collect(),
+        };
+        // Üç örnek, her biri bir öncekiyle büyük ölçüde örtüşüyor.
+        fd.add(&mk(0, 10));
+        fd.add(&mk(5 * r as i64, 10));
+        fd.add(&mk(10 * r as i64, 10));
+        // Kareler 0..20 -> 19 tekil aralık. Şişmiş sayım 27 verirdi.
+        assert_eq!(fd.frame_count(), 20);
+        assert_eq!(fd.interval_count(), 19,
+            "örtüşen örnekler aralığı tekrar saymamalı");
+    }
+
+    /// Tekilleştirme yüzdelikleri bozmamalı: hepsi aynı aralıksa p50 odur.
+    #[test]
+    fn dedupe_preserves_percentiles() {
+        let mut fd = super::FrameData::new();
+        let r = 5_555_555u64;
+        for k in 0..5i64 {
+            fd.add(&super::Snapshot {
+                refresh_ns: r,
+                presents: (0..8).map(|i| (k * 4 + i) * r as i64).collect(),
+            });
+        }
+        let p50 = fd.percentile(50.0);
+        assert!((p50 - 5.5555).abs() < 0.01, "p50 = {p50}");
+    }
+
     use super::*;
 
     const REAL: &str = "5555555\n\
