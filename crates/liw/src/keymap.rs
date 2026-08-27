@@ -15,17 +15,39 @@ pub fn list_devices() -> Result<()> {
         println!("Kullanıcı 'input' grubunda mı?  ->  groups | grep input");
         return Ok(());
     }
-    let best = capture::best_keyboard(&devs).map(|d| d.path.clone());
+    // Gerçekte KULLANILAN cihazı işaretle, tahmin edileni değil.
+    //
+    // Önceden burada otomatik seçim fonksiyonunun sonucu "varsayılan" diye
+    // gösteriliyordu. Config bambaşka bir cihazı kullanırken listede
+    // alakasız bir cihazın işaretli görünmesi teşhisi zorlaştırıyordu.
+    let cfg = liw_core::Config::load();
+    let want = |p: &std::path::Path, cfgp: &Option<PathBuf>| -> bool {
+        cfgp.as_ref().is_some_and(|c| {
+            c == p || c.canonicalize().ok() == p.canonicalize().ok()
+        })
+    };
     println!("{:<20} {:<9} {:<5} {:<7} {}", "YOL", "TÜR", "PUAN", "SANAL", "AD");
     for d in &devs {
-        let mark = if Some(&d.path) == best.as_ref() { " <- varsayılan" } else { "" };
+        let mark = if want(&d.path, &cfg.keyboard) { "  <- YAPILANDIRILMIŞ klavye" }
+            else if want(&d.path, &cfg.mouse) { "  <- YAPILANDIRILMIŞ fare" }
+            else { "" };
         println!("{:<20} {:<9} {:<5} {:<7} {}{}",
             d.path.display(), format!("{:?}", d.kind), d.typing_score,
             if d.virtual_device { "evet" } else { "hayır" }, d.name, mark);
     }
     println!();
     println!("PUAN = gerçek yazma klavyesi olma olasılığı (22 üzerinden).");
-    println!("Doğru cihazdan emin değilsen:  liw keymap watch");
+    if cfg.keyboard.is_none() {
+        println!("UYARI: yapılandırılmış klavye yok — otomatik seçim kullanılacak.");
+    }
+    // Puan tek başına YETMEZ: aynı klavyenin birden çok düğümü 22 alabilir
+    // ama yalnızca biri gerçekten tuş gönderir. Ölçmek şart.
+    let tops = devs.iter().filter(|d| !d.virtual_device && d.typing_score >= 22).count();
+    if tops > 1 {
+        println!();
+        println!("{tops} cihaz aynı puanı aldı — puan hangisinin GERÇEKTEN tuş");
+        println!("gönderdiğini söylemez. Ölçmek için:  liw keymap detect --save");
+    }
     Ok(())
 }
 
