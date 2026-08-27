@@ -5,6 +5,7 @@
 //! (argüman tuzakları, sağlık göstergeleri, çökme zincirleri) tek yerde tutar.
 
 pub mod bench;
+pub mod perf;
 pub mod config;
 pub mod hostsample;
 pub mod helper;

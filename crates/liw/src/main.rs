@@ -1,6 +1,7 @@
 //! liw — liwinux komut satırı istemcisi.
 
 mod bench;
+mod perf;
 mod editor;
 mod keymap;
 mod profile;
@@ -34,6 +35,11 @@ enum Cmd {
         /// Ölçüm süresi (saniye)
         #[arg(short, long, default_value_t = 60)]
         duration: u64,
+    },
+    /// Performans kaldıraçlarının teşhisi (hiçbir şey değiştirmez)
+    Perf {
+        #[command(subcommand)]
+        action: PerfAction,
     },
     /// Profil yönetimi
     Profile {
@@ -208,6 +214,12 @@ enum KeymapAction {
 }
 
 #[derive(Subcommand)]
+enum PerfAction {
+    /// Kaldıraçların şu anki halini oku ve raporla
+    Status,
+}
+
+#[derive(Subcommand)]
 enum SessionAction {
     /// Session'ı başlat (terminalden bağımsız)
     Start,
@@ -239,6 +251,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let action = match cli.cmd {
         Cmd::Bench { package, duration } => return bench::run(package, duration).await,
+        Cmd::Perf { action } => return match action {
+            PerfAction::Status => perf::status(),
+        },
         Cmd::Profile { action } => {
             return match action {
                 ProfileAction::List => profile::list(),
