@@ -41,6 +41,44 @@ impl Handle {
         if w > 0 && h > 0 { *self.screen_px.lock().await = (w, h); }
     }
 
+    /// Dokunuş borusunu alır; hazır değilse bir süre BEKLER.
+    ///
+    /// Tek denemek yetmiyor. `waydroid.display_width`'i hwcomposer ancak
+    /// ilk hotplug'da yazıyor; session yeni başladıysa bu birkaç saniye
+    /// sürer. Gerçekte yaşandı: `liw session restart` sonrası keymapper
+    /// her seferinde sessizce uinput'a düştü ve nişan sınırlı kipte kaldı
+    /// — kullanıcı yalnızca "eskisi gibi oldu" gördü.
+    async fn acquire_pipe(helper: &HelperClient)
+        -> Option<(std::fs::File, (u32, u32))>
+    {
+        /// Toplam ~15 sn. Waydroid'in tam açılışı bu civarda.
+        const TRIES: u32 = 15;
+        let mut last = String::new();
+        for i in 0..TRIES {
+            match helper.open_touch_pipe().await {
+                Ok((f, w, h)) => {
+                    tracing::info!(genişlik = w, yükseklik = h, deneme = i + 1,
+                        "dokunuş borusu alındı — compositor atlanıyor, \
+                         sınırsız nişan etkin");
+                    return Some((f, (w, h)));
+                }
+                Err(e) => {
+                    last = e.to_string();
+                    if i == 0 {
+                        tracing::info!(hata = %last,
+                            "dokunuş borusu henüz hazır değil, bekleniyor");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+        tracing::warn!(hata = %last, deneme = TRIES,
+            "dokunuş borusu alınamadı — uinput yoluna düşülüyor. \
+             Nişan SINIRLI kipte çalışacak: parmak ekran kenarında \
+             sıfırlanır ve hızlı çevirmede dönüş kaybı olur.");
+        None
+    }
+
     /// KWin'den gelen odak bildirimi.
     pub async fn set_active_window(&self, class: &str) {
         let guard = self.inner.lock().await;
@@ -91,15 +129,34 @@ impl Handle {
                  --hotkey --save' ile bir tuş belirle.");
         }
 
+        // Ön plan tespiti ve dokunuş borusu için helper ŞART.
+        let helper = HelperClient::connect().await
+            .context("liwd-helper'a bağlanılamadı — ön plan tespiti için gerekli")?;
+
+        // Dokunuş borusu: başarılıysa compositor zinciri atlanır ve
+        // koordinat kırpılmadığı için sınırsız nişan devreye girer.
+        // Başarısızsa uinput yoluna düşülür — ama SESSİZCE değil: nişanın
+        // hissi tamamen buna bağlı ve kullanıcı hangi yolda olduğunu
+        // bilmeli (`docs/fare-nisan.md`).
+        let pipe = Self::acquire_pipe(&helper).await;
+
         let mut runner = Runner::new(
             RunnerConfig {
                 device, mouse: cfg.mouse.clone(), grab,
                 hotkey: cfg.hotkey_game_mode,
                 screen_map: ScreenMap::default(),
-                screen_px: *self.screen_px.lock().await,
+                screen_px: match pipe {
+                    // Boru yolunda en-boy oranı ANDROID ekranından gelmeli:
+                    // koordinatlar oraya gidiyor, host penceresine değil.
+                    Some((_, px)) => px,
+                    None => *self.screen_px.lock().await,
+                },
             },
             store,
         );
+        if let Some((f, px)) = pipe {
+            runner = runner.with_touch_pipe(f, px);
+        }
         let state = runner.state();
 
         // Odak başlangıçta BİLİNMİYOR; KWin script'i ilk bildirimi yapana
@@ -111,8 +168,6 @@ impl Handle {
         let (sd_tx, sd_rx) = watch::channel(false);
 
         // Ön plan yoklaması — girdi yolunu ASLA bloke etmemeli.
-        let helper = HelperClient::connect().await
-            .context("liwd-helper'a bağlanılamadı — ön plan tespiti için gerekli")?;
         let poll = tokio::spawn(async move {
             let mut t = tokio::time::interval(std::time::Duration::from_millis(POLL_MS));
             loop {

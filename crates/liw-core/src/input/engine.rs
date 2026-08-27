@@ -74,6 +74,20 @@ const MIN_STEP_DELTA: f32 = 0.002;
 /// Devir teslim için ikinci parmağın havuz anahtarı.
 fn second_key(name: &str) -> String { format!("{name}\u{0}2") }
 
+/// Sınırsız nişanda bir adım: kırpma YOK, yalnızca emniyet kutusu.
+///
+/// Kutunun amacı his değil taşma koruması. Konum f32, tel üzerindeki
+/// değer i32; sınırsız bırakmak yeterince uzun oyunda hassasiyeti
+/// aşındırırdı. Kutuya dayanılırsa nişan orada takılır ama bu, fare ilk
+/// durduğunda `idle_recenter` tarafından sessizce onarılır.
+fn free_step(pos: Norm, origin: Norm, safety_span: f32, dx: f32, dy: f32) -> Norm {
+    let lim = safety_span.max(1.0);
+    Norm::unclamped(
+        (pos.x + dx).clamp(origin.x - lim, origin.x + lim),
+        (pos.y + dy).clamp(origin.y - lim, origin.y + lim),
+    )
+}
+
 /// Kaydırma kaç ara adıma bölünsün. Az olursa jest tanınmaz, çok olursa
 /// gereksiz olay üretilir. 12 adım 80ms'de ~7ms aralık demek — 144Hz'de bile yeterli.
 const SWIPE_STEPS: u32 = 12;
@@ -124,6 +138,13 @@ pub struct Engine {
     /// Motor etkin mi. Kapalıyken hiçbir olay üretilmez ama takılı
     /// parmaklar bırakılır — aksi halde oyunda parmak asılı kalır.
     enabled: bool,
+    /// Arka uç ekran DIŞI koordinat taşıyabiliyor mu.
+    ///
+    /// Profildeki `unbounded` yalnız başına yetmez: uinput yolunda
+    /// libinput ve KWin koordinatı ekrana sıkıştırır, parmak kenarda
+    /// takılır ve nişan tamamen ölür. Bu yüzden karar arka uca ait ve
+    /// varsayılan KAPALI — bilinmezken sınırlı kip her yolda çalışır.
+    offscreen_ok: bool,
 }
 
 impl Engine {
@@ -138,6 +159,7 @@ impl Engine {
             aim_down_at: None,
             aim_second: None,
             aim_pos: None, enabled: true,
+            offscreen_ok: false,
         }
     }
 
@@ -149,6 +171,19 @@ impl Engine {
         if w > 0 && h > 0 { self.aspect = w as f32 / h as f32; }
     }
     pub fn is_enabled(&self) -> bool { self.enabled }
+
+    /// Arka ucun ekran dışı koordinat taşıyabildiğini bildirir.
+    ///
+    /// Yalnızca Waydroid'in dokunuş borusuna doğrudan yazan arka uç için
+    /// doğrudur; ayrıntı `docs/fare-nisan.md`. Profilde `unbounded = true`
+    /// olsa bile bu açılmadan sınırsız nişan devreye girmez.
+    pub fn set_offscreen_ok(&mut self, ok: bool) { self.offscreen_ok = ok; }
+
+    /// Sınırsız nişan şu an gerçekten etkin mi (teşhis ve test).
+    pub fn aim_is_unbounded(&self) -> bool {
+        self.offscreen_ok && self.profile.bindings.values().any(|b|
+            matches!(b, Binding::Aim { unbounded: true, .. }))
+    }
 
     /// Motoru açar/kapatır. Kapatırken tüm parmakları kaldırır.
     #[must_use = "kapatma sırasında üretilen UP eylemleri gönderilmezse                   parmaklar ekranda kalır"]
@@ -215,14 +250,17 @@ impl Engine {
                     }
                 }
             }
-            // Erken ÇIKMA: joystick ve kaydırmaların bekleyen işleri de
-            // bu tick'te yapılmalı. Yürürken nişan sıfırlanırsa hareket
-            // duruyordu.
-            if self.aim_down_at.is_some() {
-                // İniş henüz zamanı gelmedi; nişan tarafını atla ama
-                // diğer jestleri işlemeye devam et.
-                return self.tick_gestures(now_ms, acts);
-            }
+            // HER İKİ durumda da nişan tarafını atlayıp çıkıyoruz —
+            // ama joystick ve kaydırmaların bekleyen işleri yapılmalı,
+            // yoksa yürürken nişan sıfırlanınca hareket duruyor.
+            //
+            // İniş bu tick'te YAPILDIYSA da çıkmak ŞART. Devam etseydik
+            // biriken fare hareketi aynı dizide bir `Move` üretirdi;
+            // ikisi tek SYN_REPORT'a düşer, dokunuş doğrudan hedefte
+            // belirir ve oyun delta hesaplayamaz — o dönüş kaybolur.
+            // Hızlı çevirmede bu kendini besleyip saniyelerce ölü bölge
+            // üretiyordu. Biriken hareket bir sonraki kareye kalır.
+            return self.tick_gestures(now_ms, acts);
         }
 
         // SIRA ÖNEMLİ: ertelenen ÖNCE uygulanır.
@@ -386,6 +424,10 @@ impl Engine {
     /// Kullanımdaki işaretçi sayısı (teşhis).
     pub fn active_pointers(&self) -> usize { self.pool.active_count() }
 
+    /// Nişan parmağının şu anki konumu (teşhis ve test).
+    /// Sınırsız kipte ekran dışında olabilir.
+    pub fn aim_position(&self) -> Option<Norm> { self.aim_pos }
+
     #[cfg(test)]
     fn forget_held_for_test(&mut self) { self.held.clear(); }
 
@@ -428,6 +470,9 @@ impl Engine {
             }
             Binding::Joystick { .. } => self.recompute_joystick(&name),
             Binding::Aim { origin, .. } => {
+                // Bekleyen gecikmeli iniş iptal: burada zaten iniyoruz,
+                // ikisi birden çalışırsa ekranda iki nişan parmağı kalır.
+                self.aim_down_at = None;
                 self.aim_pos = Some(origin);
                 match self.pool.acquire(&name) {
                     Some(id) => vec![TouchAction::Down { id, at: origin }],
@@ -487,7 +532,11 @@ impl Engine {
                 } else { acts }
             }
             Binding::Aim { .. } => {
+                // Bekleyen iniş de iptal: nişan bırakıldıktan SONRA parmak
+                // inerse oyunda sahipsiz bir dokunuş asılı kalır.
+                self.aim_down_at = None;
                 self.aim_pos = None;
+                self.aim_accum = (0.0, 0.0);
                 self.pool.release(&name).map(|id| vec![TouchAction::Up { id }])
                     .unwrap_or_default()
             }
@@ -538,13 +587,22 @@ impl Engine {
     fn on_mouse(&mut self, dx: f32, dy: f32) -> Vec<TouchAction> {
         let Some((name, Binding::Aim {
             toggle, origin, sensitivity, deadzone, recenter_margin, handoff,
-            nonlinear, reset_delay_ms,
+            nonlinear, reset_delay_ms, unbounded, safety_span,
         })) = self.profile.bindings.iter()
                 .find(|(_, b)| matches!(b, Binding::Aim { .. }))
                 .map(|(n, b)| (n.clone(), b.clone()))
         else { return Vec::new() };
 
         if (dx * dx + dy * dy).sqrt() < deadzone { return Vec::new(); }
+
+        // Sınırsız kip: aşağıdaki sıfırlama düzeneğinin TAMAMI atlanır.
+        // Kenar payı, devir teslim, doğrusal olmayan ölçekleme ve gecikmeli
+        // iniş hepsi tek bir kısıtı gizlemek için vardı — o kısıt bu yolda
+        // yok (`docs/fare-nisan.md`).
+        if unbounded && self.offscreen_ok {
+            if toggle.is_some() && self.aim_pos.is_none() { return Vec::new(); }
+            return self.on_mouse_free(&name, origin, sensitivity, safety_span, dx, dy);
+        }
 
         // toggle yoksa nişan HER ZAMAN etkin: ilk fare hareketinde parmağı
         // indir. FPS'te bakış için tuşa basılı tutmak gerekmemeli.
@@ -683,12 +741,47 @@ impl Engine {
         acts
     }
 
-    /// Gecikmeli iniş beklenirken nişan ÖLMEMELİ.
+    /// Sınırsız nişan: parmak bir kez iner, sonra sadece hareket eder.
     ///
-    /// has_pending() bunu saymazsa çağıranın saat kolu kapanır, tick hiç
-    /// çağrılmaz ve iniş asla gerçekleşmez.
-    #[cfg(test)]
-    fn assert_pending_covers_delayed_down() {}
+    /// Kalkış yok, ortalama yok, devir teslim yok. Üç belirtinin de
+    /// (hiç algılamama, saniyelerce ölü bölge, aim kayması) kaynağı
+    /// bunlardı; ortadan kaldırınca hafifletmeye de gerek kalmıyor.
+    ///
+    /// Hassasiyet SABİT: `nonlinear` bilerek uygulanmıyor. Parmağın
+    /// görünmeyen konumuna göre değişen hassasiyet, FPS'te kas hafızasını
+    /// imkânsız kılıyor ve kullanıcı bunu "aim kayıyor" diye yaşıyordu.
+    fn on_mouse_free(
+        &mut self, name: &str, origin: Norm, sensitivity: f32,
+        safety_span: f32, dx: f32, dy: f32,
+    ) -> Vec<TouchAction> {
+        let mut acts = Vec::new();
+
+        if self.aim_pos.is_none() {
+            // Emniyet sıfırlaması sürüyorsa karışma: iki nişan parmağı olur.
+            if self.aim_down_at.is_some() { return acts; }
+            let Some(id) = self.pool.acquire(name) else {
+                tracing::error!(
+                    kullanımda = self.pool.active_count(), sınır = MAX_POINTERS,
+                    "nişan işaretçi alamadı — havuz dolu, fare çalışmayacak");
+                return acts;
+            };
+            self.aim_pos = Some(origin);
+            acts.push(TouchAction::Down { id, at: origin });
+            // İniş KENDİ karesinde yalnız kalmalı; hareket bir sonrakine
+            // ertelenir. Aynı SYN_REPORT'ta gitseydi oyun dokunuşu
+            // doğrudan hedefte görür ve delta hesaplayamazdı.
+            let (px, py) = self.aim_pending.unwrap_or((0.0, 0.0));
+            self.aim_pending = Some((px + dx, py + dy));
+            return acts;
+        }
+
+        let (Some(pos), Some(id)) = (self.aim_pos, self.pool.get(name))
+        else { return acts };
+        let next = free_step(pos, origin, safety_span, dx * sensitivity, dy * sensitivity);
+        self.aim_pos = Some(next);
+        acts.push(TouchAction::Move { id, at: next });
+        acts
+    }
 
     /// Fare durduysa ve parmak merkezden uzaklaşmışsa sessizce ortalar.
     ///
@@ -703,8 +796,9 @@ impl Engine {
         /// Merkezden bu oranda uzaklaşınca sıfırlamaya değer.
         const FAR: f32 = 0.15;
 
-        let Some((name, Binding::Aim { origin, recenter_margin, .. })) =
-            self.profile.bindings.iter()
+        let Some((name, Binding::Aim {
+            origin, recenter_margin, reset_delay_ms, unbounded, safety_span, ..
+        })) = self.profile.bindings.iter()
                 .find(|(_, b)| matches!(b, Binding::Aim { .. }))
                 .map(|(n, b)| (n.clone(), b.clone()))
         else { return Vec::new() };
@@ -712,17 +806,32 @@ impl Engine {
         if self.now_ms.saturating_sub(self.aim_last_move_ms) < IDLE_MS {
             return Vec::new();
         }
-        let m = recenter_margin.clamp(0.01, 0.45);
-        let span = 1.0 - 2.0 * m;
         let d = ((pos.x - origin.x).powi(2) + (pos.y - origin.y).powi(2)).sqrt();
-        if d < span * FAR { return Vec::new(); }
+        let threshold = if unbounded && self.offscreen_ok {
+            // Sınırsız kipte ortalamanın TEK gerekçesi sayısal aralık.
+            // Eşik emniyet kutusunun yarısı: normal oyunda hiç
+            // tetiklenmez, tetiklendiğinde de fare zaten durmuştur.
+            safety_span.max(1.0) * 0.5
+        } else {
+            let m = recenter_margin.clamp(0.01, 0.45);
+            (1.0 - 2.0 * m) * FAR
+        };
+        if d < threshold { return Vec::new(); }
 
-        let Some((old_id, new_id)) = self.pool.rotate(&name) else { return Vec::new() };
-        self.aim_pos = Some(origin);
-        // Bir daha hemen tetiklenmesin.
+        // Kalkış ŞİMDİ, iniş GECİKMELİ ve KENDİ karesinde.
+        //
+        // Eskiden ikisi tek dizide dönüyordu; arka uç bunu tek
+        // SYN_REPORT'a çevirdiği için Android dokunuşun bittiğini
+        // göremiyor ve oyun ışınlanma görüyordu — kodun başka yerinde
+        // defalarca uyarılan hatanın ta kendisi.
+        let Some(id) = self.pool.release(&name) else { return Vec::new() };
+        self.aim_pos = None;
+        // Birikmiş hareketi at: fare zaten duruyor, taşıyacağı bilgi yok
+        // ama inişten sonra sahte bir sıçrama üretebilir.
+        self.aim_accum = (0.0, 0.0);
         self.aim_last_move_ms = self.now_ms;
-        vec![TouchAction::Up { id: old_id },
-             TouchAction::Down { id: new_id, at: origin }]
+        self.aim_down_at = Some(self.now_ms + reset_delay_ms.max(1) as u64);
+        vec![TouchAction::Up { id }]
     }
 
     /// Yeniden yerleştirme noktasını HAREKET YÖNÜNE göre seçer.
@@ -762,20 +871,25 @@ impl Engine {
         Norm::new(origin.x - ux * t * USE, origin.y - uy * t * USE)
     }
 
-    /// Ertelenmiş fare hareketini uygular (yeniden ortalama sonrası).
+    /// Ertelenmiş fare hareketini uygular (iniş sonrası ilk kare).
     fn apply_aim_delta(&mut self, dx: f32, dy: f32) -> Vec<TouchAction> {
-        let Some((name, Binding::Aim { sensitivity, recenter_margin, .. })) =
-            self.profile.bindings.iter()
+        let Some((name, Binding::Aim {
+            origin, sensitivity, recenter_margin, unbounded, safety_span, ..
+        })) = self.profile.bindings.iter()
                 .find(|(_, b)| matches!(b, Binding::Aim { .. }))
                 .map(|(n, b)| (n.clone(), b.clone()))
         else { return Vec::new() };
         let (Some(pos), Some(id)) = (self.aim_pos, self.pool.get(&name))
         else { return Vec::new() };
-        let m = recenter_margin.clamp(0.01, 0.45);
-        let next = Norm::new(
-            (pos.x + dx * sensitivity).clamp(m, 1.0 - m),
-            (pos.y + dy * sensitivity).clamp(m, 1.0 - m),
-        );
+        let next = if unbounded && self.offscreen_ok {
+            free_step(pos, origin, safety_span, dx * sensitivity, dy * sensitivity)
+        } else {
+            let m = recenter_margin.clamp(0.01, 0.45);
+            Norm::new(
+                (pos.x + dx * sensitivity).clamp(m, 1.0 - m),
+                (pos.y + dy * sensitivity).clamp(m, 1.0 - m),
+            )
+        };
         self.aim_pos = Some(next);
         vec![TouchAction::Move { id, at: next }]
     }
@@ -812,6 +926,8 @@ mod tests {
             deadzone: 0.5,
             recenter_margin: 0.12,
             handoff: false, nonlinear: false, reset_delay_ms: 0,
+            // Bu testler SINIRLI yolu sınıyor.
+            unbounded: false, safety_span: 32.0,
         });
         Profile { name: "t".into(), package: "p".into(), bindings: b }
     }
@@ -989,6 +1105,7 @@ mod tests {
             deadzone: 0.5,
             recenter_margin: 0.12,
             handoff, nonlinear: false, reset_delay_ms: 0,
+            unbounded: false, safety_span: 32.0,
         });
         Engine::new(Profile { name: "t".into(), package: "p".into(), bindings: b })
     }
@@ -1401,17 +1518,176 @@ mod tests {
 
 
 
+    /// Boşta ortalama: kalkış ve iniş AYRI karelerde olmalı.
+    ///
+    /// Tek dizide dönerlerse arka uç ikisini tek `SYN_REPORT`'a koyar;
+    /// Android dokunuşun bittiğini göremez ve oyun ışınlanma görür. Kodun
+    /// başka yerinde defalarca uyarılan hata buradaydı.
     #[test]
-    fn idle_recenter_pulls_finger_back_during_pause() {
+    fn idle_recenter_lifts_and_lands_in_separate_frames() {
         let mut e = always_on_aim();
         let _ = e.tick(0);
         let _ = mouse(&mut e, 300.0, 0.0);
         // Hemen: henüz boşta değil.
         assert!(e.tick(10).is_empty(), "hareketten hemen sonra ortalanmamalı");
-        // 60ms sonra: boşta.
+
+        // Boşta: yalnızca KALKIŞ.
         let a = e.tick(100);
-        assert!(matches!(a[..], [TouchAction::Up { .. }, TouchAction::Down { .. }]),
-                "boşta ortalanmalı: {a:?}");
+        assert!(matches!(a[..], [TouchAction::Up { .. }]),
+                "önce yalnızca kalkış olmalı: {a:?}");
+        assert!(e.has_pending(), "gecikmeli iniş bekleniyor sayılmalı");
+
+        // Sonraki kare: yalnızca İNİŞ, ve merkeze.
+        let b = e.tick(101);
+        match b[..] {
+            [TouchAction::Down { at, .. }] => {
+                assert!((at.x - 0.5).abs() < 1e-4 && (at.y - 0.5).abs() < 1e-4,
+                        "merkeze inmeli: {at:?}");
+            }
+            _ => panic!("ayrı karede yalnızca iniş bekleniyordu: {b:?}"),
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // SINIRSIZ NİŞAN
+    //
+    // Kullanıcının bildirdiği üç belirtinin de kaynağı kenarda
+    // sıfırlamaydı: parmak kalkınca oyun takibi kesiyor ("hiç
+    // algılamıyor"), gecikmeli iniş kendini besleyince saniyeler süren
+    // ölü bölge çıkıyor, doğrusal olmayan ölçekleme de hassasiyeti
+    // parmağın görünmeyen konumuna bağlıyordu ("aim kayıyor").
+    //
+    // Sınırsız kipte sıfırlama YOK. Aşağıdakiler bunu koruyor.
+    // ---------------------------------------------------------------
+
+    fn free_aim() -> Engine {
+        let mut b = BTreeMap::new();
+        b.insert("bakis".into(), Binding::Aim {
+            toggle: None,
+            origin: Norm::new(0.72, 0.5),
+            sensitivity: 0.001,
+            deadzone: 0.5,
+            recenter_margin: 0.12,
+            handoff: false, nonlinear: true, reset_delay_ms: 12,
+            unbounded: true, safety_span: 32.0,
+        });
+        let mut e = Engine::new(Profile {
+            name: "t".into(), package: "p".into(), bindings: b });
+        e.set_offscreen_ok(true);
+        e
+    }
+
+    /// Sürekli çevirmede parmak ASLA kalkmamalı ve ekran dışına çıkmalı.
+    ///
+    /// Sınırlı yolda aynı hareket onlarca kalkış/iniş üretiyordu; her biri
+    /// oyunun takibini kesiyor ve bir kare dönüş yutuyordu.
+    #[test]
+    fn unbounded_aim_never_lifts_the_finger() {
+        let mut e = free_aim();
+        let mut last = Norm::new(0.0, 0.0);
+        for _ in 0..400 {
+            for a in mouse(&mut e, 40.0, 0.0) {
+                assert!(!matches!(a, TouchAction::Up { .. }),
+                        "sınırsız kipte parmak kalkmamalı");
+                if let TouchAction::Move { at, .. } = a { last = at; }
+            }
+        }
+        assert!(last.is_offscreen(), "parmak ekran dışına çıkabilmeli: {last:?}");
+        assert!(last.x > 5.0, "400 × 40 sayım × 0.001 ≈ 16 ekran: {last:?}");
+        assert_eq!(e.active_pointers(), 1, "tek nişan parmağı kalmalı");
+    }
+
+    /// Hassasiyet SABİT olmalı: aynı fare hareketi her konumda aynı
+    /// mesafeyi katetmeli. Değişirse kas hafızası kurulamaz.
+    #[test]
+    fn unbounded_aim_sensitivity_does_not_drift() {
+        let mut e = free_aim();
+        let step_at = |e: &mut Engine| -> f32 {
+            let before = e.aim_position().expect("parmak inmiş olmalı").x;
+            let _ = mouse(e, 50.0, 0.0);
+            e.aim_position().unwrap().x - before
+        };
+        let _ = mouse(&mut e, 50.0, 0.0);   // iniş
+        let _ = mouse(&mut e, 50.0, 0.0);   // ertelenen uygulanır
+        let near = step_at(&mut e);
+        for _ in 0..200 { let _ = mouse(&mut e, 50.0, 0.0); }
+        let far = step_at(&mut e);
+        assert!((near - far).abs() < 1e-5,
+                "merkezde {near}, uzakta {far} — hassasiyet değişmemeli");
+        assert!((near - 0.05).abs() < 1e-5, "50 sayım × 0.001 = 0.05: {near}");
+    }
+
+    /// İniş ile ilk hareket AYNI karede olmamalı: oyun delta hesaplayamaz
+    /// ve o dönüş kaybolur.
+    #[test]
+    fn unbounded_aim_lands_alone_then_moves() {
+        let mut e = free_aim();
+        let first = mouse(&mut e, 60.0, 0.0);
+        match first[..] {
+            [TouchAction::Down { at, .. }] => {
+                assert!((at.x - 0.72).abs() < 1e-4, "bakış bölgesine inmeli: {at:?}");
+            }
+            _ => panic!("önce yalnızca iniş bekleniyordu: {first:?}"),
+        }
+        let second = e.tick(e.now_ms() + 1);
+        match second[..] {
+            [TouchAction::Move { at, .. }] =>
+                assert!((at.x - (0.72 + 0.06)).abs() < 1e-4,
+                        "ertelenen hareket kaybolmamalı: {at:?}"),
+            _ => panic!("sonra hareket bekleniyordu: {second:?}"),
+        }
+    }
+
+    /// Arka uç ekran dışını taşıyamıyorsa sınırsız kip DEVREYE GİRMEMELİ.
+    ///
+    /// uinput yolunda libinput koordinatı ekrana sıkıştırır; sınırsız kipe
+    /// güvenmek parmağı kenarda sonsuza kadar takılı bırakırdı — sınırlı
+    /// yoldan bile kötü.
+    #[test]
+    fn unbounded_needs_backend_support() {
+        let mut e = free_aim();
+        e.set_offscreen_ok(false);
+        assert!(!e.aim_is_unbounded());
+        let mut saw_lift = false;
+        for _ in 0..400 {
+            for a in mouse(&mut e, 40.0, 0.0) {
+                if matches!(a, TouchAction::Up { .. }) { saw_lift = true; }
+                if let TouchAction::Move { at, .. } = a {
+                    assert!(!at.is_offscreen(),
+                            "desteklenmeyen arka uçta ekran dışına çıkılmamalı: {at:?}");
+                }
+            }
+        }
+        assert!(saw_lift, "sınırlı yolda sıfırlama beklenir");
+    }
+
+    /// Emniyet kutusuna dayanılsa bile sıfırlama YALNIZCA fare dururken.
+    ///
+    /// Hareket sırasında sıfırlamak duraklama olarak hissedilir; durakta
+    /// yapılırsa hiç fark edilmez.
+    #[test]
+    fn safety_reset_waits_for_the_mouse_to_stop() {
+        let mut e = free_aim();
+        // Kutunun yarısını (16 ekran) kesin olarak aş.
+        for _ in 0..600 { let _ = mouse(&mut e, 50.0, 0.0); }
+        let far = e.aim_position().expect("parmak inmiş olmalı");
+        assert!(far.x - 0.72 > 16.0, "eşiğin ötesinde olmalı: {far:?}");
+
+        // Fare hâlâ hareket ediyor: sıfırlama yok.
+        for a in mouse(&mut e, 50.0, 0.0) {
+            assert!(!matches!(a, TouchAction::Up { .. }),
+                    "hareket sırasında sıfırlanmamalı");
+        }
+        // Fare durdu: kalkış, ardından ayrı karede iniş.
+        let lift = e.tick(e.now_ms() + 200);
+        assert!(matches!(lift[..], [TouchAction::Up { .. }]),
+                "boşta sıfırlanmalı: {lift:?}");
+        let land = e.tick(e.now_ms() + 20);
+        match land[..] {
+            [TouchAction::Down { at, .. }] =>
+                assert!((at.x - 0.72).abs() < 1e-4, "merkeze inmeli: {at:?}"),
+            _ => panic!("ayrı karede iniş bekleniyordu: {land:?}"),
+        }
     }
 
     /// Merkeze yakınken boşta ortalama YAPILMAMALI — gereksiz Up/Down
@@ -1444,6 +1720,7 @@ mod tests {
             toggle: None, origin: Norm::new(0.5, 0.5),
             sensitivity: 0.001, deadzone: 0.5, recenter_margin: 0.12,
             handoff: false, nonlinear: false, reset_delay_ms: 20,
+            unbounded: false, safety_span: 32.0,
         });
         b.insert("hareket".into(), Binding::Joystick {
             up: Trigger::Key(W), down: Trigger::Key(S),

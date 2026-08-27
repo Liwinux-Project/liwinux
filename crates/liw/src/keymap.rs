@@ -218,17 +218,57 @@ fn print_action(act: &TouchAction, (w, h): (u32, u32)) {
 /// yoksa enjeksiyon yolunda mı olduğunu bilmek gerekir.
 pub async fn poke(
     x: f32, y: f32, hold_ms: u64, drag_to: Option<(f32, f32)>,
-    map: ScreenMap, delay_s: u64,
+    map: ScreenMap, delay_s: u64, force_uinput: bool,
 ) -> Result<()> {
-    use liw_core::input::Norm;
+    use liw_core::input::{Norm, WlTouchBackend};
 
-    let mut b = UinputBackend::new(map)
-        .context("sanal dokunmatik ekran oluşturulamadı")?;
-    println!("Sanal cihaz: {}", b.dev_nodes().join(", "));
-    println!("Harita: origin({:.3},{:.3}) scale({:.3},{:.3}) invert({},{})",
-        map.origin_x, map.origin_y, map.scale_x, map.scale_y, map.invert_x, map.invert_y);
-    println!("KWin/libinput'un cihazı tanıması bekleniyor...");
-    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    // Varsayılan Waydroid'in dokunuş borusu: compositor zincirini atlar ve
+    // koordinatı kırpmaz. Bu komut aynı zamanda o iddianın DOĞRULAMA aracı —
+    // 0..1 dışında koordinat verip dokunuşun hâlâ ulaştığını görebilirsin
+    // (bkz. docs/fare-nisan.md).
+    //
+    // Boru alınamazsa uinput'a düşülür; hata vermek bu teşhis komutunu
+    // helper'a bağımlı kılardı ve helper'ın kendisi teşhis edilirken işe
+    // yaramaz olurdu.
+    let pipe = if force_uinput { None } else {
+        match liw_core::HelperClient::connect().await {
+            Ok(h) => match h.open_touch_pipe().await {
+                Ok(t) => Some(t),
+                Err(e) => { eprintln!("uyarı: dokunuş borusu alınamadı: {e}"); None }
+            },
+            Err(e) => { eprintln!("uyarı: liwd-helper'a bağlanılamadı: {e}"); None }
+        }
+    };
+    // Ekran dışı koordinat YALNIZCA boru yolunda anlamlı: uinput yolunda
+    // libinput zaten ekrana sıkıştırır ve kırpmamak sonucu yanıltıcı kılar.
+    let offscreen_ok = pipe.is_some();
+
+    let mut b: Box<dyn liw_core::input::TouchBackend> = match pipe {
+        Some((f, w, h)) => {
+            println!("Arka uç: Waydroid dokunuş borusu ({w}x{h}) — compositor atlanıyor");
+            println!("Koordinat KIRPILMIYOR: 0..1 dışı değerler de gönderilir.");
+            Box::new(WlTouchBackend::from_pipe(f, w, h)
+                .context("dokunuş arka ucu kurulamadı")?)
+        }
+        None => {
+            let mut u = UinputBackend::new(map)
+                .context("sanal dokunmatik ekran oluşturulamadı")?;
+            println!("Arka uç: uinput → libinput → KWin → wl_touch");
+            println!("Sanal cihaz: {}", u.dev_nodes().join(", "));
+            println!("Harita: origin({:.3},{:.3}) scale({:.3},{:.3}) invert({},{})",
+                map.origin_x, map.origin_y, map.scale_x, map.scale_y,
+                map.invert_x, map.invert_y);
+            println!("KWin/libinput'un cihazı tanıması bekleniyor...");
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            Box::new(u)
+        }
+    };
+
+    let point = |px: f32, py: f32| if offscreen_ok {
+        Norm::unclamped(px, py)
+    } else {
+        Norm::new(px, py)
+    };
 
     // Dokunuşlar KONUMA göre yönlendirilir, odağa göre değil. Komut
     // terminalden çalıştırıldığında terminal penceresi hedefin üstündeyse
@@ -245,7 +285,7 @@ pub async fn poke(
         println!();
     }
 
-    let from = Norm::new(x, y);
+    let from = point(x, y);
     println!("DOWN  ({x:.3}, {y:.3})");
     b.dispatch(&[TouchAction::Down { id: 0, at: from }])
         .context("DOWN gönderilemedi")?;
@@ -257,7 +297,7 @@ pub async fn poke(
         let step_ms = (hold_ms / STEPS as u64).max(4);
         for i in 1..=STEPS {
             let t = i as f32 / STEPS as f32;
-            let at = Norm::new(x + (tx - x) * t, y + (ty - y) * t);
+            let at = point(x + (tx - x) * t, y + (ty - y) * t);
             b.dispatch(&[TouchAction::Move { id: 0, at }])
                 .context("MOVE gönderilemedi")?;
             tokio::time::sleep(std::time::Duration::from_millis(step_ms)).await;
@@ -523,12 +563,30 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
     println!("Ctrl+C ile çık. Kilitliyken çıkış: ESC ×3");
     println!();
 
+    // Dokunuş borusu: alınabilirse compositor zinciri atlanır ve nişan
+    // sınırsız kipte çalışır. Alınamazsa uinput yolu — çalışır ama nişan
+    // kenarda sıfırlanır (`docs/fare-nisan.md`).
+    let pipe = match helper.open_touch_pipe().await {
+        Ok((f, w, h)) => {
+            println!("Dokunuş : Waydroid borusu ({w}x{h}) — sınırsız nişan ETKİN");
+            Some((f, (w, h)))
+        }
+        Err(e) => {
+            eprintln!("Dokunuş : uinput (boru alınamadı: {e})");
+            eprintln!("          Nişan SINIRLI kipte: parmak kenarda sıfırlanır.");
+            None
+        }
+    };
+
     let mut runner = Runner::new(
         RunnerConfig {
             device, mouse: cfg.mouse.clone(), grab,
             hotkey: cfg.hotkey_game_mode, screen_map: ScreenMap::default(),
-            screen_px: (2560, 1440),
+            screen_px: pipe.as_ref().map(|(_, px)| *px).unwrap_or((2560, 1440)),
         }, store);
+    if let Some((f, px)) = pipe {
+        runner = runner.with_touch_pipe(f, px);
+    }
 
     // Hata ayıklama kipinde host odak kapısı YOK: KWin bildirimi liwd'ye
     // gider, bu süreç onu alamaz. Bu yüzden kapı sürekli açık kabul edilir

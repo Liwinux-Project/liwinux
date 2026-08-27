@@ -219,5 +219,5 @@ pub async fn poke_binding(package: &str, binding: &str, delay_s: u64) -> Result<
     };
     println!("{binding}: ({x:.3}, {y:.3})");
     crate::keymap::poke(x, y, 250, to.map(|(a, b)| (a, b)),
-                        liw_core::input::ScreenMap::default(), delay_s).await
+                        liw_core::input::ScreenMap::default(), delay_s, false).await
 }

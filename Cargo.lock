@@ -425,6 +425,7 @@ name = "liw-core"
 version = "0.1.0"
 dependencies = [
  "evdev",
+ "libc",
  "serde",
  "serde_json",
  "thiserror",
@@ -453,6 +454,7 @@ name = "liwd-helper"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "liw-core",
  "serde",
  "serde_json",
@@ -872,6 +874,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6975367e4d2ef766d86af01ffad14b622fecc8d4357a998fbc4deb6e9bacaf9b"
 dependencies = [
  "indexmap",
+ "serde_core",
+ "serde_spanned",
  "toml_datetime",
  "toml_parser",
  "toml_writer",

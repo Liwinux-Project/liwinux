@@ -190,6 +190,9 @@ enum KeymapAction {
         /// Dokunmadan önce bekle (saniye) — hedef pencereyi öne getirmek için
         #[arg(long, default_value_t = 0)]
         delay: u64,
+        /// Eski uinput yolunu zorla (varsayılan: Waydroid dokunuş borusu)
+        #[arg(long)]
+        uinput: bool,
     },
     /// Profili gerçek klavyeyle dene (Android'e enjeksiyon YOK)
     Test {
@@ -279,7 +282,7 @@ async fn main() -> Result<()> {
                 KeymapAction::Detect { save, mouse, hotkey } =>
                     keymap::detect(save, mouse, hotkey).await,
                 KeymapAction::Watch { device } => keymap::watch(device).await,
-                KeymapAction::Poke { x, y, hold, to, region, invert_x, invert_y, delay } => {
+                KeymapAction::Poke { x, y, hold, to, region, invert_x, invert_y, delay, uinput } => {
                     let drag = match to {
                         Some(s) => {
                             let (a, b) = s.split_once(',')
@@ -300,7 +303,7 @@ async fn main() -> Result<()> {
                     }
                     map.invert_x = invert_x;
                     map.invert_y = invert_y;
-                    keymap::poke(x, y, hold, drag, map, delay).await
+                    keymap::poke(x, y, hold, drag, map, delay, uinput).await
                 }
                 KeymapAction::Test { profile, device, grab, width, height, inject } =>
                     keymap::test_profile(profile, device, grab, (width, height), inject).await,

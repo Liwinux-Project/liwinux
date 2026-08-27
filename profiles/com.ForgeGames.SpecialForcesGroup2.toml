@@ -20,22 +20,82 @@ right = { Key = 32 }             # D
 center = { x = 0.148, y = 0.738 }
 radius = 0.085
 
-# --- bakış: fare (sürekli, kenarda yeniden ortalanır) ---
-# Nişan ayarları — XtMapper'ın MouseAimHandler'ından öğrenilen iki teknik:
+# --- bakış: fare (sınırsız — kenarda sıfırlama YOK) ---
 #
-# nonlinear: parmak merkezden uzaklaştıkça hassasiyet sqrt(min/uzaklık) ile
-#   düşer. Parmak kenara asimptotik yaklaşır, pratikte hiç varmaz; yeniden
-#   sıfırlama ihtiyacı BAŞTAN doğmaz. Asıl çözüm bu.
-# reset_delay_ms: kalkış ile iniş arasına gecikme. Aynı karede göndermek
-#   Android'in dokunuşu gerçekten bitirmesine fırsat vermiyor.
+# Bu bölüm baştan yazıldı. Eski hali "kenara gelince kaldır ve ortala"
+# varsayımına dayanıyordu ve kullanıcının bildirdiği ÜÇ belirtinin de
+# kaynağı oydu: fare bazen hiç algılanmıyor, bazen 2-3 saniye ölü kalıyor,
+# bazen aim kayıyor. Gerekçe ve ölçüm: docs/fare-nisan.md
+#
+# unbounded: parmak ekranın DIŞINA çıkabilir. Waydroid'in dokunuş borusunda
+#   kırpma yapan katman yok (çekirdek evdev devrede değil, TouchInputMapper
+#   kırpmıyor, InputDispatcher MOVE'da pencere aramıyor). Parmak oyunun
+#   içinde bir kez indikten sonra sınırsız düzlemde gezer; kaldırılmadığı
+#   için oyunun takibi hiç kesilmez.
+#   Yalnızca boru arka ucunda etkindir; uinput yoluna düşülürse motor
+#   sessizce sınırlı kipe döner.
+#
+# origin: ekranın ORTASI — ama tam 0.50 değil, bir piksel sağı.
+#
+#   Neden ortada: sınırsız kipte iniş bir KEZ oluyor ve parmak oradan
+#   sınırsız gezdiği için nokta yalnızca "oyun bunu bakış sayıyor mu"
+#   sorusunu belirliyor. Ekranın ortası her yöne eşit görünür yol bırakıyor
+#   ve dokunuş izini izlerken en okunaklısı bu.
+#
+#   Neden tam 0.50 DEĞİL: FPS'lerin çoğu bakış/yürüyüş ayrımını
+#   `x > genişlik/2` ile yapar. 2560 pikselde 0.50 tam olarak 1280'dir ve
+#   `1280 > 1280` yanlıştır — testi `>` ile yazan bir oyunda parmak sol
+#   yarıya düşer, oyun onu hareket pedi sanır ve nişan komple ölür.
+#   0.5004 × 2560 = 1281: gözle ortadan ayırt edilemez, sınırın doğru
+#   tarafında. Çözünürlükten bağımsız çalışır çünkü oran hep merkezin
+#   birkaç yüzde binlik sağında kalıyor.
+#
+#   Nişan oyun kipini açar açmaz HİÇ çalışmıyorsa bakılacak ilk yer burası:
+#   0.60'a çekmek bakış bölgesini kesinleştirir.
+#
+# nonlinear: KAPALI. Açıkken hassasiyet parmağın merkeze uzaklığıyla
+#   3 kata kadar değişiyordu. Aynı fare hareketi farklı açı döndürünce kas
+#   hafızası kurulamıyor — "aim kayıyor" tam olarak buydu. Sıfırlama
+#   olmadığı için asıl amacı (kenara varmayı geciktirmek) da anlamsız.
+#
+# sensitivity: 1 fare sayımı = 0.0006 ekran genişliği ≈ 1.5 piksel.
+#   Sınırsız kipte bu SADECE his ayarıdır; hiçbir sıfırlama sıklığını
+#   etkilemez. Oyun içi bakış hassasiyetini önce sabitle, sonra burayı
+#   kendi DPI'ına göre ayarla.
+#
+# safety_span: taşma koruması, his değil. 32 ekran ≈ 82000 piksel; net
+#   sürüklenme oraya varırsa fare İLK DURDUĞUNDA sessizce ortalanır.
+#
+# ÖNEMLİ: bu profil `--grab` ile kullanılmalı.
+#   liw keymap start --grab
+#
+# `persist.waydroid.fake_touch` AÇIK KALSIN. Eski yorumda "kapatılmalı"
+# yazıyordu; boru yoluna geçince yanlış oldu:
+#
+#   * fake_touch yeni dokunuş ÜRETMEZ. Yaptığı tek şey ViewRootImpl'e
+#     ulaşan MotionEvent'lerin kaynağını SOURCE_TOUCHSCREEN'e (4098)
+#     çevirmek (`0016-Fake-touch-inputs-for-select-apps.patch`). Bizim
+#     enjekte ettiklerimiz zaten o kaynakta, yani üzerimizde etkisi yok.
+#   * Oyun kipinde fare KİLİTLİ; Waydroid'e hiç fare olayı gitmiyor.
+#     Kilitleyecek bir şey kalmıyor.
+#   * Oyun kipi KAPALIYKEN fake_touch tam da gerektiği için lazım:
+#     menülerdeki bazı UI öğeleri fareyle ancak böyle tıklanıyor.
+#
+# Ayrıca değeri çalışırken değiştirmenin bir anlamı yok: prop, pencere
+# oluşturulurken `final` bir alana okunuyor. Oyun kipiyle birlikte açıp
+# kapatmak çalışan oyunu ETKİLEMEZ (yalnızca sonradan açılan pencereleri),
+# yani plasebo olurdu.
 [bindings.bakis]
 type = "aim"
-origin = { x = 0.50, y = 0.50 }
+origin = { x = 0.5004, y = 0.50 }
 sensitivity = 0.0006
 deadzone = 0.4
+unbounded = true
+safety_span = 32.0
+nonlinear = false
+# Aşağıdakiler yalnızca sınırlı kipe (uinput yoluna) düşülürse kullanılır.
 recenter_margin = 0.03
 handoff = false
-nonlinear = true
 reset_delay_ms = 12
 
 # --- ateş: sağ üstteki nişangah dairesi ---

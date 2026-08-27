@@ -1,227 +1,838 @@
 <!doctype html><html lang="tr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>liwinux — profil düzenleyici</title>
 <style>
-:root { --bg:#14161a; --fg:#e6e8ec; --mut:#9aa3af; --acc:#4da3ff; --ok:#2ecc71; }
-*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);
-  font:14px/1.5 system-ui,sans-serif;display:flex;height:100vh}
-#side{width:300px;flex:none;overflow-y:auto;padding:14px;border-right:1px solid #2a2f37}
-#stage{flex:1;position:relative;overflow:auto;background:#0b0d10}
-#wrap{position:relative;display:inline-block}
-img{display:block;max-width:none}
-.m{position:absolute;transform:translate(-50%,-50%);cursor:grab;user-select:none}
-.m .dot{width:22px;height:22px;border-radius:50%;border:2px solid #fff;
-  background:rgba(77,163,255,.55);box-shadow:0 0 0 2px rgba(0,0,0,.6)}
-.m.sel .dot{background:rgba(46,204,113,.65);border-color:var(--ok)}
-.m .lbl{position:absolute;left:16px;top:-4px;white-space:nowrap;font-size:12px;
-  background:rgba(0,0,0,.75);padding:1px 6px;border-radius:3px}
-.m.rad{pointer-events:none}
-.m.rad .ring{border:2px dashed rgba(77,163,255,.6);border-radius:50%;
-  transform:translate(-50%,-50%);position:absolute}
-h1{font-size:15px;margin:0 0 4px} .sub{color:var(--mut);font-size:12px;margin-bottom:12px}
-.b{padding:7px 8px;border-radius:6px;cursor:pointer;margin-bottom:4px;border:1px solid #262b33}
-.b:hover{background:#1b1f26} .b.sel{background:#1e2a38;border-color:var(--acc)}
-.b .n{font-weight:600} .b .c{color:var(--mut);font-size:12px;font-family:ui-monospace,monospace}
-.radrow{display:flex;align-items:center;gap:6px;margin-top:6px}
-.radrow label{font-size:11px;color:var(--mut)} .radrow input{flex:1}
-button{width:100%;padding:9px;margin-top:10px;border:0;border-radius:6px;
-  background:var(--acc);color:#08121e;font-weight:700;cursor:pointer;font-size:14px}
-button.sec{background:#2a2f37;color:var(--fg)}
-#msg{margin-top:8px;font-size:12px;color:var(--ok);min-height:18px}
-kbd{background:#242a33;border:1px solid #333b46;border-radius:4px;padding:0 5px;font-size:12px}
+:root{
+  --bg:#0f1115; --panel:#161a21; --line:#262c36; --fg:#e7eaf0; --mut:#8d96a5;
+  --acc:#4da3ff; --ok:#35d07f; --warn:#ffb020; --bad:#ff5c5c;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:13px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  display:flex;overflow:hidden}
+
+/* ---------- kenar çubuğu ---------- */
+#side{width:340px;flex:none;background:var(--panel);border-right:1px solid var(--line);
+  display:flex;flex-direction:column}
+#head{padding:12px 14px;border-bottom:1px solid var(--line)}
+#head h1{margin:0;font-size:15px}
+#head .pkg{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;
+  word-break:break-all}
+#addbar{padding:10px 12px;border-bottom:1px solid var(--line);display:flex;gap:6px}
+#list{flex:1;overflow-y:auto;padding:8px 10px}
+#foot{padding:10px 12px;border-top:1px solid var(--line)}
+
+.card{border:1px solid var(--line);border-radius:8px;margin-bottom:8px;
+  background:#12161d;overflow:hidden}
+.card.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc) inset}
+.card>.top{display:flex;align-items:center;gap:6px;padding:8px 10px;cursor:pointer}
+.card>.top:hover{background:#1a1f28}
+.card .nm{font-weight:650;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.tag{font-size:10px;padding:1px 6px;border-radius:99px;background:#222935;
+  color:var(--mut);text-transform:uppercase;letter-spacing:.4px;flex:none}
+.card .body{padding:2px 10px 10px;border-top:1px solid var(--line);display:none}
+.card.sel .body{display:block}
+
+.row{display:flex;align-items:center;gap:8px;margin-top:8px}
+.row label{width:82px;flex:none;color:var(--mut);font-size:11px}
+.row .val{font-family:ui-monospace,monospace;font-size:11px;color:var(--mut)}
+input[type=text],input[type=number],select{background:#0d1015;color:var(--fg);
+  border:1px solid var(--line);border-radius:5px;padding:5px 7px;font:inherit;
+  min-width:0;width:100%}
+input[type=number]{font-family:ui-monospace,monospace}
+input[type=range]{width:100%;accent-color:var(--acc)}
+.xy{display:flex;gap:6px;flex:1}
+.xy>div{flex:1;display:flex;align-items:center;gap:4px}
+.xy span{color:var(--mut);font-size:10px}
+
+button{border:1px solid var(--line);border-radius:6px;background:#1b212b;color:var(--fg);
+  padding:6px 10px;font:inherit;cursor:pointer}
+button:hover{background:#232b37}
+button.p{background:var(--acc);border-color:var(--acc);color:#06121f;font-weight:700}
+button.p:hover{filter:brightness(1.08)}
+button.d{color:var(--bad);border-color:#3a2427}
+button.wide{width:100%}
+button.key{font-family:ui-monospace,monospace;text-align:left}
+button.key.none{color:var(--warn);border-color:#3a3020}
+
+#msg{margin-top:8px;font-size:12px;min-height:32px;white-space:pre-wrap}
+#msg.ok{color:var(--ok)} #msg.bad{color:var(--bad)}
+
+/* ---------- sahne ---------- */
+main{flex:1;display:flex;flex-direction:column;min-width:0}
+#bar{display:flex;align-items:center;gap:8px;padding:8px 12px;
+  border-bottom:1px solid var(--line);background:var(--panel);flex:none;flex-wrap:wrap}
+#bar .sp{flex:1}
+#readout{font-family:ui-monospace,monospace;font-size:12px;color:var(--mut);
+  white-space:nowrap}
+#readout b{color:var(--fg)}
+#view{flex:1;position:relative;overflow:hidden;background:#07090c;
+  cursor:grab;touch-action:none}
+#view.pan{cursor:grabbing}
+#canvas{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
+#canvas img{display:block;image-rendering:auto}
+#ov{position:absolute;inset:0;pointer-events:none}
+
+.mk{position:absolute;pointer-events:auto;cursor:grab;
+  transform:translate(-50%,-50%);z-index:3}
+.mk .dot{width:16px;height:16px;border-radius:50%;
+  border:2px solid #fff;background:rgba(77,163,255,.7);
+  box-shadow:0 0 0 2px rgba(0,0,0,.75)}
+.mk.sel .dot{background:rgba(53,208,127,.85);border-color:#fff;
+  width:18px;height:18px}
+.mk .tip{position:absolute;left:14px;top:-6px;white-space:nowrap;font-size:11px;
+  background:rgba(0,0,0,.8);border:1px solid var(--line);padding:1px 6px;
+  border-radius:4px}
+.ring{position:absolute;border:2px dashed rgba(77,163,255,.65);border-radius:50%;
+  transform:translate(-50%,-50%);pointer-events:none;z-index:2}
+.guide{position:absolute;background:rgba(53,208,127,.45);pointer-events:none;z-index:1}
+#link{position:absolute;inset:0;pointer-events:none;z-index:1}
+
+#loupe{position:absolute;width:180px;height:180px;border-radius:50%;
+  border:2px solid var(--line);box-shadow:0 6px 24px rgba(0,0,0,.7);
+  display:none;z-index:9;pointer-events:none;background:#000}
+
+/* ---------- tuş yakalama ---------- */
+#grab{position:fixed;inset:0;background:rgba(6,8,12,.86);z-index:50;
+  display:none;align-items:center;justify-content:center;flex-direction:column;gap:10px}
+#grab .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:26px 34px;text-align:center;max-width:420px}
+#grab h2{margin:0 0 6px;font-size:16px}
+#grab p{margin:0;color:var(--mut);font-size:12px}
+kbd{background:#222935;border:1px solid var(--line);border-radius:4px;
+  padding:0 5px;font-family:ui-monospace,monospace;font-size:11px}
+.hint{color:var(--mut);font-size:11px;margin-top:6px}
 </style></head><body>
-<div id="side">
-  <h1 id="pname">profil</h1>
-  <div class="sub" id="ppkg"></div>
-  <div class="sub">İşaretçiyi <b>sürükle</b> ya da listeden seçip görüntüye <b>tıkla</b>.
-    Seçiliyken <kbd>ok tuşları</kbd> ince ayar yapar (<kbd>Shift</kbd> = 10×).
-    Joystick yarıçapı: kaydırıcı ya da <kbd>[</kbd> <kbd>]</kbd>.</div>
+
+<aside id="side">
+  <div id="head"><h1 id="pname">…</h1><div class="pkg" id="ppkg"></div></div>
+  <div id="addbar">
+    <input type="text" id="newname" placeholder="yeni bağlantı adı">
+    <select id="newtype" style="width:110px">
+      <option value="tap">tap</option>
+      <option value="toggle">toggle</option>
+      <option value="joystick">joystick</option>
+      <option value="swipe">swipe</option>
+      <option value="aim">aim</option>
+    </select>
+    <button id="add">Ekle</button>
+  </div>
   <div id="list"></div>
-  <button id="save">Kaydet</button>
-  <button class="sec" id="test">Seçiliye dokun (3 sn sonra)</button>
-  <div id="msg"></div>
-</div>
-<div id="stage"><div id="wrap"><img id="shot" src="/shot.png" alt=""></div></div>
+  <div id="foot">
+    <button class="p wide" id="save">Kaydet</button>
+    <div id="msg"></div>
+  </div>
+</aside>
+
+<main>
+  <div id="bar">
+    <button id="fit">Sığdır</button>
+    <button id="one">1:1</button>
+    <button id="zout">−</button>
+    <button id="zin">+</button>
+    <span class="val" id="zlbl">%100</span>
+    <span class="sp"></span>
+    <span id="readout">—</span>
+    <span class="sp"></span>
+    <button id="reshot">Görüntüyü yenile</button>
+    <button id="test">Seçiliye dokun</button>
+  </div>
+  <div id="view">
+    <div id="canvas"><img id="shot" alt=""></div>
+    <div id="ov"><svg id="link"></svg></div>
+    <canvas id="loupe" width="180" height="180"></canvas>
+  </div>
+</main>
+
+<div id="grab"><div class="box">
+  <h2 id="gtitle">Tuşa bas</h2>
+  <p>Klavye tuşuna bas, fare düğmesine tıkla ya da tekerleği çevir.<br>
+     <kbd>Esc</kbd> iptal eder.</p>
+</div></div>
+
 <script>
-const S = JSON.parse(document.getElementById('data').textContent);
-let sel = null, marks = {};
-document.getElementById('pname').textContent = S.name;
-document.getElementById('ppkg').textContent = S.package;
+"use strict";
 
-const wrap = document.getElementById('wrap');
-const img  = document.getElementById('shot');
-const list = document.getElementById('list');
-const msg  = document.getElementById('msg');
+/* ============================================================
+   evdev tuş kodları
+   Profil FİZİKSEL tuş kodu tutuyor (klavye düzeninden bağımsız).
+   Tarayıcının `event.code` değeri de fiziksel — eşleme bu yüzden
+   sabit ve düzenden bağımsız. `event.key` KULLANILAMAZ: Türkçe
+   düzende "i" tuşu farklı bir harf üretir ama aynı fiziksel tuştur.
+   ============================================================ */
+const EVDEV = {
+  Escape:1, Digit1:2, Digit2:3, Digit3:4, Digit4:5, Digit5:6, Digit6:7,
+  Digit7:8, Digit8:9, Digit9:10, Digit0:11, Minus:12, Equal:13, Backspace:14,
+  Tab:15, KeyQ:16, KeyW:17, KeyE:18, KeyR:19, KeyT:20, KeyY:21, KeyU:22,
+  KeyI:23, KeyO:24, KeyP:25, BracketLeft:26, BracketRight:27, Enter:28,
+  ControlLeft:29, KeyA:30, KeyS:31, KeyD:32, KeyF:33, KeyG:34, KeyH:35,
+  KeyJ:36, KeyK:37, KeyL:38, Semicolon:39, Quote:40, Backquote:41,
+  ShiftLeft:42, Backslash:43, KeyZ:44, KeyX:45, KeyC:46, KeyV:47, KeyB:48,
+  KeyN:49, KeyM:50, Comma:51, Period:52, Slash:53, ShiftRight:54,
+  NumpadMultiply:55, AltLeft:56, Space:57, CapsLock:58,
+  F1:59, F2:60, F3:61, F4:62, F5:63, F6:64, F7:65, F8:66, F9:67, F10:68,
+  NumLock:69, ScrollLock:70, Numpad7:71, Numpad8:72, Numpad9:73,
+  NumpadSubtract:74, Numpad4:75, Numpad5:76, Numpad6:77, NumpadAdd:78,
+  Numpad1:79, Numpad2:80, Numpad3:81, Numpad0:82, NumpadDecimal:83,
+  IntlBackslash:86, F11:87, F12:88, IntlRo:89, Convert:92, KanaMode:93,
+  NonConvert:94, NumpadEnter:96, ControlRight:97, NumpadDivide:98,
+  PrintScreen:99, AltRight:100, Home:102, ArrowUp:103, PageUp:104,
+  ArrowLeft:105, ArrowRight:106, End:107, ArrowDown:108, PageDown:109,
+  Insert:110, Delete:111, AudioVolumeMute:113, AudioVolumeDown:114,
+  AudioVolumeUp:115, NumpadEqual:117, Pause:119, NumpadComma:121,
+  Lang1:122, Lang2:123, IntlYen:124, MetaLeft:125, MetaRight:126,
+  ContextMenu:127
+};
+const CODE2NAME = {};
+for (const [code, ev] of Object.entries(EVDEV)) if (!(ev in CODE2NAME)) CODE2NAME[ev] = code;
+/* Okunaklı etiketler — kod numarası kullanıcıya bir şey ifade etmiyor. */
+const PRETTY = {
+  1:'Esc', 14:'Backspace', 15:'Tab', 28:'Enter', 29:'Sol Ctrl', 42:'Sol Shift',
+  54:'Sağ Shift', 56:'Sol Alt', 57:'Boşluk', 58:'CapsLock', 97:'Sağ Ctrl',
+  100:'Sağ Alt', 103:'Yukarı', 105:'Sol', 106:'Sağ', 108:'Aşağı',
+  125:'Sol Meta', 126:'Sağ Meta', 41:'Backquote (`)'
+};
+function trigLabel(t) {
+  if (t == null) return 'atanmadı';
+  if (typeof t === 'string') return {
+    MouseLeft:'Fare Sol', MouseRight:'Fare Sağ', MouseMiddle:'Fare Orta',
+    WheelUp:'Tekerlek ↑', WheelDown:'Tekerlek ↓' }[t] || t;
+  const c = t.Key;
+  if (!c) return 'atanmadı';
+  if (PRETTY[c]) return PRETTY[c] + '  (' + c + ')';
+  const n = CODE2NAME[c] || '?';
+  return n.replace(/^Key|^Digit/, '') + '  (' + c + ')';
+}
+const UNSET = () => ({ Key: 0 });
+const isUnset = t => t == null || (typeof t === 'object' && !t.Key);
 
-function render() {
-  list.innerHTML = '';
-  for (const b of S.bindings) {
-    const d = document.createElement('div');
-    d.className = 'b' + (b.name === sel ? ' sel' : '');
-    d.innerHTML = `<div class="n">${b.name} <span class="c">${b.kind}</span></div>
-      <div class="c">${b.x.toFixed(3)}, ${b.y.toFixed(3)}</div>`;
-    d.onclick = () => { sel = b.name; render(); };
-    list.appendChild(d);
-    if (b.sensitivity != null) {
-      const sw = document.createElement('div');
-      sw.className = 'radrow';
-      sw.innerHTML = `<label>hassasiyet</label>
-        <input type="range" min="0.0002" max="0.0030" step="0.0001" value="${b.sensitivity}">
-        <span class="c">${b.sensitivity.toFixed(4)}</span>`;
-      const i1 = sw.querySelector('input'), o1 = sw.querySelector('span');
-      i1.oninput = () => { b.sensitivity = parseFloat(i1.value);
-                           o1.textContent = b.sensitivity.toFixed(4); };
-      i1.onpointerdown = e => e.stopPropagation();
-      d.appendChild(sw);
+/* ============================================================ */
+const $ = s => document.querySelector(s);
+const view = $('#view'), canvas = $('#canvas'), img = $('#shot'),
+      ov = $('#ov'), link = $('#link'), loupe = $('#loupe'), lctx = loupe.getContext('2d');
 
-      const mw = document.createElement('div');
-      mw.className = 'radrow';
-      mw.innerHTML = `<label>kenar payı</label>
-        <input type="range" min="0.01" max="0.20" step="0.005" value="${b.recenter_margin}">
-        <span class="c">${b.recenter_margin.toFixed(3)}</span>`;
-      const i2 = mw.querySelector('input'), o2 = mw.querySelector('span');
-      i2.oninput = () => { b.recenter_margin = parseFloat(i2.value);
-                           o2.textContent = b.recenter_margin.toFixed(3); };
-      i2.onpointerdown = e => e.stopPropagation();
-      d.appendChild(mw);
+let S = null;               // sunucu durumu
+let B = {};                 // ad -> binding (düzenlenen kopya)
+let sel = null;             // seçili bağlantı adı
+let selPt = null;           // seçili nokta alanı ('at' | 'center' | 'from' ...)
+let scale = 1, tx = 0, ty = 0;
+let dirty = false;
 
-      const info = document.createElement('div');
-      info.className = 'c';
-      info.style.marginTop = '4px';
-      const upd = () => {
-        const px = Math.round((1 - 2*b.recenter_margin) / b.sensitivity);
-        info.textContent = `yerleşmeler arası ~${px} px fare yolu`;
-      };
-      upd(); i1.addEventListener('input', upd); i2.addEventListener('input', upd);
-      d.appendChild(info);
-    }
-    if (b.radius != null) {
-      const rw = document.createElement('div');
-      rw.className = 'radrow';
-      rw.innerHTML = `<label>yarıçap</label>
-        <input type="range" min="0.02" max="0.30" step="0.005" value="${b.radius}">
-        <span class="c">${b.radius.toFixed(3)}</span>`;
-      const inp = rw.querySelector('input'), out = rw.querySelector('span');
-      inp.oninput = () => { b.radius = parseFloat(inp.value);
-                            out.textContent = b.radius.toFixed(3); place(); };
-      inp.onpointerdown = e => e.stopPropagation();
-      d.appendChild(rw);
-    }
-  }
-  place();
+/* --- koordinat dönüşümü ---------------------------------------
+   Tek doğru kaynağı burası. Görüntü KAYNAK piksel boyutunda duruyor
+   ve ölçek yalnızca CSS transform; koordinat her zaman kaynak piksele
+   geri çevriliyor. Böylece hangi yakınlıkta çalışırsan çalış profile
+   yazılan değer aynı kalıyor — sığdırma ölçeği kaymaya yol açmıyor.  */
+const toScreen = (nx, ny) => [nx * S.width * scale + tx, ny * S.height * scale + ty];
+const toNorm = (sx, sy) => [((sx - tx) / scale) / S.width, ((sy - ty) / scale) / S.height];
+const clamp01 = v => Math.min(1, Math.max(0, v));
+const px = (n, size) => Math.round(n * size);
+
+function applyView() {
+  canvas.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`;
+  $('#zlbl').textContent = '%' + Math.round(scale * 100);
+  placeMarkers();
+}
+/// Sığdırma henüz GERÇEK bir düzen üstünde yapıldı mı.
+///
+/// Gerçekte yaşandı: `xdg-open` sayfayı arka plan sekmesinde açtığında
+/// `#view` 0×0 ölçülüyor, `scale` 0 çıkıyor ve editör tamamen boş
+/// kalıyor — üstelik sekmeye geçince kendiliğinden düzelmiyordu.
+let fitted = false;
+function fitView() {
+  const r = view.getBoundingClientRect();
+  // Sıfır boyutta ölçmek scale=0 üretir ve her şeyi yok eder.
+  // Ölçüm anlamsızsa DOKUNMA; ResizeObserver gerçek boyut gelince
+  // yeniden çağıracak.
+  if (r.width < 2 || r.height < 2) return;
+  scale = Math.min(r.width / S.width, r.height / S.height);
+  tx = (r.width - S.width * scale) / 2;
+  ty = (r.height - S.height * scale) / 2;
+  fitted = true;
+  applyView();
+}
+function zoomAt(cx, cy, f) {
+  const ix = (cx - tx) / scale, iy = (cy - ty) / scale;
+  scale = Math.min(16, Math.max(0.05, scale * f));
+  tx = cx - ix * scale; ty = cy - iy * scale;
+  applyView();
 }
 
-function place() {
-  for (const k in marks) marks[k].remove();
-  marks = {};
-  for (const b of S.bindings) {
-    if (b.sensitivity != null) {
-      const sw = document.createElement('div');
-      sw.className = 'radrow';
-      sw.innerHTML = `<label>hassasiyet</label>
-        <input type="range" min="0.0002" max="0.0030" step="0.0001" value="${b.sensitivity}">
-        <span class="c">${b.sensitivity.toFixed(4)}</span>`;
-      const i1 = sw.querySelector('input'), o1 = sw.querySelector('span');
-      i1.oninput = () => { b.sensitivity = parseFloat(i1.value);
-                           o1.textContent = b.sensitivity.toFixed(4); };
-      i1.onpointerdown = e => e.stopPropagation();
-      d.appendChild(sw);
+/* --- bağlantı başına düzenlenebilir noktalar ------------------- */
+function pointsOf(b) {
+  switch (b.type) {
+    case 'tap': case 'toggle': return [['at', '']];
+    case 'aim': return [['origin', 'başlangıç']];
+    case 'joystick': return [['center', 'merkez']];
+    case 'swipe': return [['from', 'başlangıç'], ['to', 'bitiş']];
+    default: return [];
+  }
+}
+function triggersOf(b) {
+  switch (b.type) {
+    case 'tap': case 'toggle': case 'swipe': return [['trigger', 'tuş']];
+    case 'joystick': return [['up','yukarı'],['down','aşağı'],['left','sol'],['right','sağ']];
+    case 'aim': return [['toggle', 'basılı tut (isteğe bağlı)']];
+    default: return [];
+  }
+}
 
-      const mw = document.createElement('div');
-      mw.className = 'radrow';
-      mw.innerHTML = `<label>kenar payı</label>
-        <input type="range" min="0.01" max="0.20" step="0.005" value="${b.recenter_margin}">
-        <span class="c">${b.recenter_margin.toFixed(3)}</span>`;
-      const i2 = mw.querySelector('input'), o2 = mw.querySelector('span');
-      i2.oninput = () => { b.recenter_margin = parseFloat(i2.value);
-                           o2.textContent = b.recenter_margin.toFixed(3); };
-      i2.onpointerdown = e => e.stopPropagation();
-      d.appendChild(mw);
+/* ============================================================
+   İşaretçiler
+   ============================================================ */
+let marks = [];
+function placeMarkers() {
+  for (const m of marks) m.remove();
+  marks = [];
+  link.innerHTML = '';
+  const r = view.getBoundingClientRect();
+  link.setAttribute('viewBox', `0 0 ${r.width} ${r.height}`);
+  link.setAttribute('width', r.width); link.setAttribute('height', r.height);
 
-      const info = document.createElement('div');
-      info.className = 'c';
-      info.style.marginTop = '4px';
-      const upd = () => {
-        const px = Math.round((1 - 2*b.recenter_margin) / b.sensitivity);
-        info.textContent = `yerleşmeler arası ~${px} px fare yolu`;
-      };
-      upd(); i1.addEventListener('input', upd); i2.addEventListener('input', upd);
-      d.appendChild(info);
+  for (const [name, b] of Object.entries(B)) {
+    const pts = pointsOf(b);
+    // Kaydırma jestinde yön okunu çiz: iki noktanın ilişkisi gözle
+    // görülmezse yanlış yöne kaydıran bir profil fark edilmiyor.
+    if (b.type === 'swipe' && pts.length === 2) {
+      const a = toScreen(b.from.x, b.from.y), c = toScreen(b.to.x, b.to.y);
+      const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      l.setAttribute('x1', a[0]); l.setAttribute('y1', a[1]);
+      l.setAttribute('x2', c[0]); l.setAttribute('y2', c[1]);
+      l.setAttribute('stroke', name === sel ? '#35d07f' : 'rgba(77,163,255,.6)');
+      l.setAttribute('stroke-width', '2');
+      l.setAttribute('stroke-dasharray', '6 4');
+      link.appendChild(l);
     }
-    if (b.radius != null) {
-      const r = document.createElement('div');
-      r.className = 'm rad';
+    if (b.type === 'joystick') {
+      const c = toScreen(b.center.x, b.center.y);
       const ring = document.createElement('div');
       ring.className = 'ring';
-      const px = b.radius * img.clientWidth * 2;
-      ring.style.width = px + 'px'; ring.style.height = px + 'px';
-      r.appendChild(ring);
-      r.style.left = (b.x * img.clientWidth) + 'px';
-      r.style.top  = (b.y * img.clientHeight) + 'px';
-      wrap.appendChild(r); marks[b.name + '_r'] = r;
+      // Yarıçap YATAY eksende normalize; dikeyde en-boy oranıyla
+      // ölçekleniyor (motor da öyle yapıyor). Daire çizmek yanlış
+      // olurdu: ekranda gerçekten daire, normalize uzayda elips.
+      const d = b.radius * S.width * scale * 2;
+      ring.style.width = d + 'px'; ring.style.height = d + 'px';
+      ring.style.left = c[0] + 'px'; ring.style.top = c[1] + 'px';
+      ov.appendChild(ring); marks.push(ring);
     }
-    const m = document.createElement('div');
-    m.className = 'm' + (b.name === sel ? ' sel' : '');
-    m.innerHTML = `<div class="dot"></div><div class="lbl">${b.name}</div>`;
-    m.style.left = (b.x * img.clientWidth) + 'px';
-    m.style.top  = (b.y * img.clientHeight) + 'px';
-    m.onpointerdown = e => {
-      e.preventDefault(); sel = b.name; render();
-      m.setPointerCapture(e.pointerId);
-      const move = ev => {
-        const r = img.getBoundingClientRect();
-        b.x = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
-        b.y = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height));
-        render();
-      };
-      const up = () => { m.removeEventListener('pointermove', move);
-                         m.removeEventListener('pointerup', up); };
-      m.addEventListener('pointermove', move);
-      m.addEventListener('pointerup', up);
-    };
-    wrap.appendChild(m); marks[b.name] = m;
+    for (const [field, sub] of pts) {
+      const p = b[field]; if (!p) continue;
+      const s = toScreen(p.x, p.y);
+      const m = document.createElement('div');
+      const isSel = name === sel && (selPt === field || pts.length === 1);
+      m.className = 'mk' + (isSel ? ' sel' : '');
+      m.style.left = s[0] + 'px'; m.style.top = s[1] + 'px';
+      m.innerHTML = `<div class="dot"></div><div class="tip">${name}${sub ? ' · ' + sub : ''}</div>`;
+      m.onpointerdown = e => startDrag(e, m, name, field);
+      ov.appendChild(m); marks.push(m);
+
+      if (isSel) {
+        for (const horiz of [true, false]) {
+          const g = document.createElement('div');
+          g.className = 'guide';
+          if (horiz) { g.style.left = '0'; g.style.right = '0';
+                       g.style.top = s[1] + 'px'; g.style.height = '1px'; }
+          else { g.style.top = '0'; g.style.bottom = '0';
+                 g.style.left = s[0] + 'px'; g.style.width = '1px'; }
+          ov.appendChild(g); marks.push(g);
+        }
+      }
+    }
   }
+  updateReadout();
 }
 
-img.onclick = e => {
-  if (!sel) return;
-  const b = S.bindings.find(x => x.name === sel);
-  const r = img.getBoundingClientRect();
-  b.x = (e.clientX - r.left) / r.width;
-  b.y = (e.clientY - r.top) / r.height;
-  render();
-};
+/* --- sürükleme + büyüteç -------------------------------------
+   Büyüteç şart: sığdırma ölçeğinde bir ekran pikseli 2-3 kaynak
+   pikseline denk geliyor ve düğme kenarını gözle ayırt etmek
+   imkânsızlaşıyor. Büyüteç kaynak görüntüyü 8× çizip artı işareti
+   koyuyor, yani hedefin tam neresine bastığın görünür oluyor.      */
+function startDrag(e, el, name, field) {
+  e.preventDefault(); e.stopPropagation();
+  select(name, field);
+  el.setPointerCapture(e.pointerId);
+  const r = view.getBoundingClientRect();
+  const move = ev => {
+    const [nx, ny] = toNorm(ev.clientX - r.left, ev.clientY - r.top);
+    B[name][field] = { x: clamp01(nx), y: clamp01(ny) };
+    dirty = true;
+    // Liste BİLEREK yeniden çizilmiyor: her hareket için tüm kenar
+    // çubuğunu kurmak sürüklemeyi takılmalı yapıyor ve takılan bir
+    // sürükleme doğrudan isabetsiz koordinat demek.
+    placeMarkers();
+    showLoupe(ev.clientX - r.left, ev.clientY - r.top);
+  };
+  const up = () => {
+    el.removeEventListener('pointermove', move);
+    el.removeEventListener('pointerup', up);
+    loupe.style.display = 'none';
+    renderList();   // sayısal kutular ancak şimdi tazelenir
+  };
+  el.addEventListener('pointermove', move);
+  el.addEventListener('pointerup', up);
+  showLoupe(e.clientX - r.left, e.clientY - r.top);
+}
 
-addEventListener('keydown', e => {
-  if (!sel) return;
-  const b = S.bindings.find(x => x.name === sel);
-  const step = (e.shiftKey ? 0.01 : 0.001);
-  if (e.key === 'ArrowLeft')  b.x -= step; else if (e.key === 'ArrowRight') b.x += step;
-  else if (e.key === 'ArrowUp') b.y -= step; else if (e.key === 'ArrowDown') b.y += step;
-  // Yarıçap: [ küçült, ] büyüt (yalnızca joystick'te anlamlı)
-  else if ((e.key === '[' || e.key === ']') && b.radius != null) {
-    b.radius = Math.min(0.30, Math.max(0.02,
-      b.radius + (e.key === ']' ? step : -step)));
+const LOUPE_Z = 8;
+function showLoupe(vx, vy) {
+  if (!img.naturalWidth) return;
+  const [nx, ny] = toNorm(vx, vy);
+  const ix = nx * S.width, iy = ny * S.height;
+  const half = loupe.width / (2 * LOUPE_Z);
+  lctx.imageSmoothingEnabled = false;
+  lctx.fillStyle = '#000';
+  lctx.fillRect(0, 0, loupe.width, loupe.height);
+  lctx.drawImage(img, ix - half, iy - half, half * 2, half * 2,
+                 0, 0, loupe.width, loupe.height);
+  lctx.strokeStyle = 'rgba(53,208,127,.95)'; lctx.lineWidth = 1;
+  lctx.beginPath();
+  lctx.moveTo(loupe.width / 2 + .5, 0); lctx.lineTo(loupe.width / 2 + .5, loupe.height);
+  lctx.moveTo(0, loupe.height / 2 + .5); lctx.lineTo(loupe.width, loupe.height / 2 + .5);
+  lctx.stroke();
+  const r = view.getBoundingClientRect();
+  // Büyüteci imleçten kaçır: üstüne binerse hedefi kapatır.
+  const lx = vx + 190 < r.width ? vx + 24 : vx - 204;
+  const ly = vy + 100 < r.height ? vy - 90 : r.height - 190;
+  loupe.style.left = Math.max(4, lx) + 'px';
+  loupe.style.top = Math.max(4, ly) + 'px';
+  loupe.style.display = 'block';
+}
+
+function updateReadout() {
+  const b = sel && B[sel];
+  if (!b) { $('#readout').textContent = '—'; return; }
+  const pts = pointsOf(b);
+  const f = selPt && b[selPt] ? selPt : (pts[0] && pts[0][0]);
+  const p = f && b[f];
+  if (!p) { $('#readout').textContent = sel; return; }
+  $('#readout').innerHTML =
+    `${sel}·${f} &nbsp; <b>${px(p.x, S.width)}</b>,<b>${px(p.y, S.height)}</b> px` +
+    ` &nbsp; <span>(${p.x.toFixed(4)}, ${p.y.toFixed(4)})</span>`;
+}
+
+/* ============================================================
+   Kenar çubuğu
+   ============================================================ */
+function select(name, field) {
+  sel = name; selPt = field || (pointsOf(B[name] || {})[0] || [null])[0];
+  renderList(); placeMarkers();
+}
+
+function pxRow(label, b, field, axis) {
+  const size = axis === 'x' ? S.width : S.height;
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.innerHTML = `<label>${label}</label>`;
+  const wrap = document.createElement('div'); wrap.className = 'xy';
+  const box = document.createElement('div');
+  const inp = document.createElement('input');
+  inp.type = 'number'; inp.step = '1'; inp.min = '0'; inp.max = String(size);
+  inp.value = px(b[field][axis], size);
+  // Piksel cinsinden giriş: normalize sayı yazmak insan için hatalı,
+  // piksel ise ekran görüntüsünde doğrudan sayılabilir bir birim.
+  inp.oninput = () => {
+    const v = parseFloat(inp.value);
+    if (!isFinite(v)) return;
+    b[field][axis] = clamp01(v / size);
+    dirty = true; placeMarkers(); updateReadout();
+  };
+  inp.onpointerdown = e => e.stopPropagation();
+  box.appendChild(inp);
+  const u = document.createElement('span'); u.textContent = 'px';
+  box.appendChild(u);
+  wrap.appendChild(box); row.appendChild(wrap);
+  return row;
+}
+
+function numRow(label, obj, key, opts) {
+  const o = opts || {};
+  const row = document.createElement('div'); row.className = 'row';
+  row.innerHTML = `<label>${label}</label>`;
+  const inp = document.createElement('input');
+  inp.type = 'number';
+  if (o.step != null) inp.step = String(o.step);
+  if (o.min != null) inp.min = String(o.min);
+  if (o.max != null) inp.max = String(o.max);
+  inp.value = obj[key];
+  inp.oninput = () => {
+    const v = parseFloat(inp.value);
+    if (isFinite(v)) { obj[key] = v; dirty = true; placeMarkers(); if (o.on) o.on(); }
+  };
+  inp.onpointerdown = e => e.stopPropagation();
+  row.appendChild(inp);
+  if (o.note) {
+    const n = document.createElement('div'); n.className = 'val'; n.textContent = o.note;
+    row.appendChild(n);
   }
-  else return;
-  e.preventDefault();
-  b.x = Math.min(1, Math.max(0, b.x)); b.y = Math.min(1, Math.max(0, b.y));
-  render();
-});
+  return row;
+}
 
-document.getElementById('save').onclick = async () => {
-  msg.textContent = 'kaydediliyor...';
+function boolRow(label, obj, key, note) {
+  const row = document.createElement('div'); row.className = 'row';
+  row.innerHTML = `<label>${label}</label>`;
+  const inp = document.createElement('input');
+  inp.type = 'checkbox'; inp.checked = !!obj[key]; inp.style.width = 'auto';
+  inp.onchange = () => { obj[key] = inp.checked; dirty = true; renderList(); };
+  inp.onpointerdown = e => e.stopPropagation();
+  row.appendChild(inp);
+  if (note) { const n = document.createElement('div');
+              n.className = 'val'; n.textContent = note; row.appendChild(n); }
+  return row;
+}
+
+function keyRow(label, b, field) {
+  const row = document.createElement('div'); row.className = 'row';
+  row.innerHTML = `<label>${label}</label>`;
+  const btn = document.createElement('button');
+  const t = b[field];
+  // `toggle` isteğe bağlı: boş olması HATA değil, "nişan sürekli açık"
+  // demek. Uyarı rengi vermek kullanıcıyı olmayan bir eksiği aramaya iter.
+  const optional = field === 'toggle';
+  btn.className = 'key' + (isUnset(t) && !optional ? ' none' : '');
+  btn.textContent = optional && t == null ? 'yok — sürekli açık' : trigLabel(t);
+  btn.style.flex = '1';
+  btn.onclick = e => { e.stopPropagation(); capture(label, t2 => {
+    b[field] = t2; dirty = true; renderList(); }); };
+  btn.onpointerdown = e => e.stopPropagation();
+  row.appendChild(btn);
+  if (field === 'toggle') {
+    const clr = document.createElement('button');
+    clr.textContent = '×'; clr.title = 'kaldır (nişan sürekli açık olur)';
+    clr.onclick = e => { e.stopPropagation(); b.toggle = null; dirty = true; renderList(); };
+    row.appendChild(clr);
+  }
+  return row;
+}
+
+function renderList() {
+  const list = $('#list');
+  const scroll = list.scrollTop;
+  list.innerHTML = '';
+  for (const name of Object.keys(B).sort()) {
+    const b = B[name];
+    const card = document.createElement('div');
+    card.className = 'card' + (name === sel ? ' sel' : '');
+
+    const top = document.createElement('div');
+    top.className = 'top';
+    top.innerHTML = `<span class="nm">${name}</span><span class="tag">${b.type}</span>`;
+    top.onclick = () => select(name === sel ? null : name);
+    card.appendChild(top);
+
+    const body = document.createElement('div');
+    body.className = 'body';
+
+    for (const [f, lbl] of triggersOf(b)) body.appendChild(keyRow(lbl, b, f));
+
+    for (const [f, sub] of pointsOf(b)) {
+      const h = document.createElement('div');
+      h.className = 'row'; h.style.marginTop = '10px';
+      h.innerHTML = `<label style="width:auto;color:var(--fg)">${sub || 'konum'}</label>`;
+      const pick = document.createElement('button');
+      pick.textContent = 'seç';
+      pick.onclick = e => { e.stopPropagation(); select(name, f); };
+      h.appendChild(pick);
+      body.appendChild(h);
+      body.appendChild(pxRow('X', b, f, 'x'));
+      body.appendChild(pxRow('Y', b, f, 'y'));
+    }
+
+    if (b.type === 'joystick') {
+      body.appendChild(numRow('yarıçap', b, 'radius',
+        { step: 0.005, min: 0.02, max: 0.5,
+          note: Math.round(b.radius * S.width) + ' px' }));
+    }
+    if (b.type === 'swipe') {
+      body.appendChild(numRow('süre (ms)', b, 'duration_ms', { step: 5, min: 5, max: 2000 }));
+      const r = document.createElement('div'); r.className = 'row';
+      r.innerHTML = `<label>eğri</label>`;
+      const sl = document.createElement('select');
+      for (const v of ['linear', 'ease_out', 'ease_out_strong']) {
+        const o = document.createElement('option'); o.value = v; o.textContent = v;
+        if (b.easing === v) o.selected = true; sl.appendChild(o);
+      }
+      sl.onchange = () => { b.easing = sl.value; dirty = true; };
+      sl.onpointerdown = e => e.stopPropagation();
+      r.appendChild(sl); body.appendChild(r);
+
+      const g = document.createElement('div'); g.className = 'row';
+      g.innerHTML = `<label>grup</label>`;
+      const gi = document.createElement('input');
+      gi.type = 'text'; gi.value = b.group || '';
+      gi.placeholder = 'boş = dışlayıcı değil';
+      gi.oninput = () => { b.group = gi.value.trim() || null; dirty = true; };
+      gi.onpointerdown = e => e.stopPropagation();
+      g.appendChild(gi); body.appendChild(g);
+    }
+    if (b.type === 'aim') {
+      const note = document.createElement('div');
+      note.className = 'hint';
+      const upd = () => {
+        const perCount = (b.sensitivity * S.width).toFixed(2);
+        note.textContent = `1 fare sayımı = ${perCount} px` +
+          (b.unbounded ? '  ·  sınırsız: kenarda sıfırlama yok'
+                       : '  ·  SINIRLI: parmak kenarda sıfırlanır');
+      };
+      body.appendChild(numRow('hassasiyet', b, 'sensitivity',
+        { step: 0.0001, min: 0.0001, max: 0.01, on: upd }));
+      body.appendChild(note); upd();
+      body.appendChild(boolRow('sınırsız', b, 'unbounded',
+        'ekran dışına çıkabilir'));
+      body.appendChild(numRow('emniyet', b, 'safety_span', { step: 1, min: 1, max: 256 }));
+      body.appendChild(boolRow('nonlinear', b, 'nonlinear',
+        'kapalı tut — his kayar'));
+      const det = document.createElement('details');
+      det.innerHTML = '<summary class="hint">sınırlı kip yedeği</summary>';
+      det.appendChild(numRow('kenar payı', b, 'recenter_margin',
+        { step: 0.005, min: 0.01, max: 0.45 }));
+      det.appendChild(numRow('iniş gecikmesi', b, 'reset_delay_ms',
+        { step: 1, min: 0, max: 200 }));
+      det.appendChild(boolRow('devir teslim', b, 'handoff'));
+      det.appendChild(numRow('ölü bölge', b, 'deadzone', { step: 0.1, min: 0, max: 5 }));
+      body.appendChild(det);
+    }
+
+    const acts = document.createElement('div');
+    acts.className = 'row'; acts.style.marginTop = '12px';
+    const del = document.createElement('button');
+    del.className = 'd'; del.textContent = 'Sil';
+    del.onclick = e => {
+      e.stopPropagation();
+      if (!confirm(`'${name}' silinsin mi?`)) return;
+      delete B[name]; if (sel === name) sel = null;
+      dirty = true; renderList(); placeMarkers();
+    };
+    const ren = document.createElement('button');
+    ren.textContent = 'Yeniden adlandır';
+    ren.onclick = e => {
+      e.stopPropagation();
+      const n = prompt('yeni ad', name); if (!n || n === name) return;
+      if (B[n]) { flash('bu ad zaten var', true); return; }
+      B[n] = B[name]; delete B[name]; sel = n; dirty = true;
+      renderList(); placeMarkers();
+    };
+    acts.appendChild(ren); acts.appendChild(del);
+    body.appendChild(acts);
+
+    card.appendChild(body);
+    list.appendChild(card);
+  }
+  list.scrollTop = scroll;
+  updateReadout();
+}
+
+/* ============================================================
+   Tuş yakalama
+   ============================================================ */
+let onCapture = null;
+function capture(label, cb) {
+  onCapture = cb;
+  $('#gtitle').textContent = label + ' için gir';
+  $('#grab').style.display = 'flex';
+}
+function endCapture(t) {
+  $('#grab').style.display = 'none';
+  const cb = onCapture; onCapture = null;
+  if (cb && t) cb(t);
+}
+addEventListener('keydown', e => {
+  if (onCapture) {
+    e.preventDefault(); e.stopPropagation();
+    if (e.code === 'Escape') return endCapture(null);
+    const c = EVDEV[e.code];
+    // Bilinmeyen tuşu SESSİZCE kabul etmek 0 kodu yazar ve profil
+    // "tuşa basıyorum ama olmuyor" hâline gelir. Söyle.
+    if (!c) { $('#gtitle').textContent = 'bu tuş tanınmadı: ' + e.code; return; }
+    return endCapture({ Key: c });
+  }
+  nudge(e);
+}, true);
+$('#grab').addEventListener('pointerdown', e => {
+  e.preventDefault();
+  endCapture(['MouseLeft', 'MouseMiddle', 'MouseRight'][e.button] || null);
+});
+$('#grab').addEventListener('wheel', e => {
+  e.preventDefault();
+  endCapture(e.deltaY < 0 ? 'WheelUp' : 'WheelDown');
+}, { passive: false });
+
+/* --- ok tuşlarıyla ince ayar ---------------------------------
+   Adım TAM 1 kaynak piksel. Yakınlaştırmadan bağımsız olması
+   önemli: sığdırma ölçeğinde fareyle 1 piksel hedeflemek mümkün
+   değil, ok tuşuyla her zaman mümkün.                            */
+function nudge(e) {
+  if (!sel || !B[sel]) return;
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test((e.target || {}).tagName || '')) return;
+  const b = B[sel];
+  const f = selPt && b[selPt] ? selPt : (pointsOf(b)[0] || [null])[0];
+  if (!f) return;
+  const step = e.shiftKey ? 10 : 1;
+  let dx = 0, dy = 0;
+  if (e.code === 'ArrowLeft') dx = -step;
+  else if (e.code === 'ArrowRight') dx = step;
+  else if (e.code === 'ArrowUp') dy = -step;
+  else if (e.code === 'ArrowDown') dy = step;
+  else if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && b.radius != null) {
+    b.radius = Math.min(0.5, Math.max(0.02,
+      b.radius + (e.code === 'BracketRight' ? 0.005 : -0.005)));
+    e.preventDefault(); dirty = true; renderList(); placeMarkers(); return;
+  } else return;
+  e.preventDefault();
+  b[f] = { x: clamp01(b[f].x + dx / S.width), y: clamp01(b[f].y + dy / S.height) };
+  dirty = true; renderList(); placeMarkers();
+}
+
+/* ============================================================
+   Sahne etkileşimi
+   ============================================================ */
+view.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = view.getBoundingClientRect();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.15 : 1 / 1.15);
+}, { passive: false });
+
+/// Sürükleme mi tıklama mı: bu eşiğin altında hareket TIKLAMA sayılır.
+/// Ayrım şart — aynı düğme hem kaydırmayı hem yerleştirmeyi yapıyor ve
+/// yanlış ayrım ya kaydırırken noktayı kaçırtır ya da tıklarken kaydırır.
+const CLICK_SLOP = 4;
+view.addEventListener('pointerdown', e => {
+  if (e.target.closest('.mk')) return;
+  view.classList.add('pan');
+  view.setPointerCapture(e.pointerId);
+  const sx = e.clientX - tx, sy = e.clientY - ty;
+  const ox = e.clientX, oy = e.clientY;
+  let moved = 0;
+  const mv = ev => {
+    moved = Math.max(moved, Math.hypot(ev.clientX - ox, ev.clientY - oy));
+    tx = ev.clientX - sx; ty = ev.clientY - sy; applyView();
+  };
+  const up = ev => {
+    view.classList.remove('pan');
+    view.removeEventListener('pointermove', mv);
+    view.removeEventListener('pointerup', up);
+    if (moved > CLICK_SLOP) return;
+    // Tıklama: seçili noktayı buraya taşı. Düğmeyi gözle bulup tek
+    // tıkla yerleştirmek en sık yapılan iş.
+    const b = sel && B[sel]; if (!b) return;
+    const f = selPt && b[selPt] ? selPt : (pointsOf(b)[0] || [null])[0];
+    if (!f) return;
+    const r = view.getBoundingClientRect();
+    const [nx, ny] = toNorm(ev.clientX - r.left, ev.clientY - r.top);
+    if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
+    b[f] = { x: clamp01(nx), y: clamp01(ny) };
+    dirty = true; renderList(); placeMarkers();
+  };
+  view.addEventListener('pointermove', mv);
+  view.addEventListener('pointerup', up);
+});
+view.addEventListener('pointermove', e => {
+  if (!S) return;
+  const r = view.getBoundingClientRect();
+  const [nx, ny] = toNorm(e.clientX - r.left, e.clientY - r.top);
+  if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
+  $('#readout').innerHTML =
+    `imleç &nbsp; <b>${px(nx, S.width)}</b>,<b>${px(ny, S.height)}</b> px` +
+    ` &nbsp; <span>(${nx.toFixed(4)}, ${ny.toFixed(4)})</span>`;
+});
+view.addEventListener('pointerleave', updateReadout);
+
+$('#fit').onclick = fitView;
+$('#one').onclick = () => { const r = view.getBoundingClientRect();
+  zoomAt(r.width / 2, r.height / 2, 1 / scale); };
+$('#zin').onclick = () => { const r = view.getBoundingClientRect();
+  zoomAt(r.width / 2, r.height / 2, 1.25); };
+$('#zout').onclick = () => { const r = view.getBoundingClientRect();
+  zoomAt(r.width / 2, r.height / 2, 1 / 1.25); };
+
+/* ============================================================
+   Sunucu
+   ============================================================ */
+function flash(t, bad) {
+  const m = $('#msg'); m.textContent = t; m.className = bad ? 'bad' : 'ok';
+}
+
+$('#add').onclick = () => {
+  const name = $('#newname').value.trim();
+  if (!name) return flash('ad gerekli', true);
+  if (B[name]) return flash('bu ad zaten var', true);
+  const t = $('#newtype').value;
+  const c = { x: 0.5, y: 0.5 };
+  const mk = {
+    tap: () => ({ type: 'tap', trigger: UNSET(), at: { ...c } }),
+    toggle: () => ({ type: 'toggle', trigger: UNSET(), at: { ...c } }),
+    joystick: () => ({ type: 'joystick', up: UNSET(), down: UNSET(),
+      left: UNSET(), right: UNSET(), center: { x: 0.15, y: 0.74 }, radius: 0.085 }),
+    swipe: () => ({ type: 'swipe', trigger: UNSET(),
+      from: { x: 0.5, y: 0.55 }, to: { x: 0.3, y: 0.55 },
+      duration_ms: 45, group: null, easing: 'ease_out' }),
+    // Sınırsız nişan varsayılanı: sıfırlama düzeneğinin tamamı kapalı.
+    aim: () => ({ type: 'aim', toggle: null,
+      origin: { x: 0.5004, y: 0.5 }, sensitivity: 0.0006, deadzone: 0.4,
+      recenter_margin: 0.03, handoff: false, nonlinear: false,
+      reset_delay_ms: 12, unbounded: true, safety_span: 32 }),
+  }[t];
+  B[name] = mk();
+  $('#newname').value = '';
+  dirty = true; select(name); flash('eklendi — tuş atamayı unutma');
+};
+
+$('#save').onclick = async () => {
+  const missing = Object.entries(B).filter(([, b]) =>
+    triggersOf(b).some(([f]) => f !== 'toggle' && isUnset(b[f]))).map(([n]) => n);
+  if (missing.length) return flash('tuş atanmamış: ' + missing.join(', '), true);
+  flash('kaydediliyor…');
   const r = await fetch('/save', { method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(S.bindings) });
-  msg.textContent = r.ok ? 'kaydedildi — keymapper yeniden başlatılmalı'
-                         : 'HATA: ' + await r.text();
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(B) });
+  if (r.ok) { dirty = false; flash('kaydedildi — etkili olması için:\nliw keymap stop && liw keymap start --grab'); }
+  else flash('HATA: ' + await r.text(), true);
 };
-document.getElementById('test').onclick = async () => {
-  if (!sel) { msg.textContent = 'önce bir bağlantı seç'; return; }
-  msg.textContent = '3 sn içinde oyun penceresine geç...';
-  const r = await fetch('/poke?b=' + encodeURIComponent(sel), { method: 'POST' });
-  msg.textContent = r.ok ? 'dokunuldu' : 'HATA: ' + await r.text();
+
+$('#test').onclick = async () => {
+  if (!sel || !B[sel]) return flash('önce bir bağlantı seç', true);
+  const b = B[sel];
+  const f = selPt && b[selPt] ? selPt : (pointsOf(b)[0] || [null])[0];
+  if (!f) return flash('bu türde dokunulacak nokta yok', true);
+  const body = { x: b[f].x, y: b[f].y, hold_ms: 250 };
+  if (b.type === 'swipe') { body.x = b.from.x; body.y = b.from.y;
+                            body.to = [b.to.x, b.to.y]; body.hold_ms = b.duration_ms; }
+  const r = await fetch('/poke', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  flash(r.ok ? 'dokunuldu — oyunda tepki verdi mi?' : 'HATA: ' + await r.text(), !r.ok);
 };
-render();
-addEventListener('resize', render);
+
+$('#reshot').onclick = async () => {
+  flash('görüntü alınıyor…');
+  const r = await fetch('/reshot', { method: 'POST' });
+  if (!r.ok) return flash('HATA: ' + await r.text(), true);
+  const j = await r.json();
+  S.width = j.width; S.height = j.height; S.shot = j.shot;
+  img.src = '/shot.png?v=' + j.shot;
+  img.onload = () => { sizeCanvas(); fitView(); flash('görüntü yenilendi'); };
+};
+
+addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+// `resize` YETMİYOR: sekme arka planda açıldığında pencere boyutu hiç
+// değişmiyor ama `#view` 0'dan gerçek boyuta geçiyor. ResizeObserver
+// tam olarak bu geçişi görüyor.
+new ResizeObserver(() => {
+  if (!S) return;
+  if (!fitted) fitView(); else placeMarkers();
+}).observe(view);
+
+function sizeCanvas() {
+  img.width = S.width; img.height = S.height;
+}
+
+(async function boot() {
+  S = await (await fetch('/state.json')).json();
+  B = S.bindings;
+  $('#pname').textContent = S.name;
+  $('#ppkg').textContent = S.package;
+  img.src = '/shot.png?v=' + S.shot;
+  img.onload = () => { sizeCanvas(); fitView(); renderList(); };
+  if (img.complete && img.naturalWidth) { sizeCanvas(); fitView(); renderList(); }
+})();
 </script></body></html>

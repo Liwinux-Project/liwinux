@@ -20,6 +20,28 @@ impl Norm {
     pub fn new(x: f32, y: f32) -> Self {
         Self { x: x.clamp(0.0, 1.0), y: y.clamp(0.0, 1.0) }
     }
+
+    /// Ekran DIŞINA çıkabilen koordinat.
+    ///
+    /// Normalde 0..1 kısıtı doğrudur: dokunuş ekranda olmalı. Ama Waydroid'in
+    /// dokunuş borusunda kırpma yapan hiçbir katman yok (çekirdek evdev
+    /// devrede değil, `TouchInputMapper` kırpmıyor, `InputDispatcher` MOVE'da
+    /// pencereyi yeniden seçmiyor). Parmak bir kez oyunun içinde indiyse
+    /// sonraki hareketleri ekran dışına çıksa da aynı pencereye ulaşır.
+    ///
+    /// Bu, FPS nişanında kenarda ortalama zorunluluğunu tamamen kaldırır;
+    /// ayrıntı için `docs/fare-nisan.md`.
+    ///
+    /// Yalnızca kırpmayan arka uçlarla anlamlıdır. uinput arka ucunda
+    /// libinput ve KWin zaten ekran uzayına sıkıştırır.
+    pub fn unclamped(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    /// Koordinat ekranın dışında mı (teşhis ve arka uç seçimi için).
+    pub fn is_offscreen(self) -> bool {
+        !(0.0..=1.0).contains(&self.x) || !(0.0..=1.0).contains(&self.y)
+    }
     /// Piksel koordinatına çevirir.
     pub fn to_px(self, w: u32, h: u32) -> (i32, i32) {
         ((self.x * w as f32).round() as i32, (self.y * h as f32).round() as i32)
@@ -127,6 +149,23 @@ mod tests {
     #[test]
     fn norm_clamps_out_of_range() {
         assert_eq!(Norm::new(-0.5, 2.0), Norm { x: 0.0, y: 1.0 });
+    }
+
+    /// Sınırsız nişan bu davranışa dayanıyor: kırpma YAPILMAMALI.
+    #[test]
+    fn unclamped_keeps_offscreen_coordinates() {
+        let n = Norm::unclamped(2.5, -0.4);
+        assert_eq!(n.x, 2.5);
+        assert_eq!(n.y, -0.4);
+        assert!(n.is_offscreen());
+        assert!(!Norm::new(0.5, 0.5).is_offscreen());
+    }
+
+    /// Ekran dışı koordinat piksele çevrilirken de korunmalı; arka uç
+    /// bu değeri olduğu gibi Android'e verecek.
+    #[test]
+    fn offscreen_pixels_are_not_clamped() {
+        assert_eq!(Norm::unclamped(1.5, -0.5).to_px(2560, 1440), (3840, -720));
     }
 
     #[test]

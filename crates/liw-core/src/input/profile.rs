@@ -124,6 +124,31 @@ pub enum Binding {
         /// olarak işlemesine fırsat vermiyor; oyun ışınlanma görüyor.
         #[serde(default = "default_reset_delay_ms")]
         reset_delay_ms: u32,
+        /// Parmak ekranın DIŞINA çıkabilsin mi.
+        ///
+        /// Açıkken yukarıdaki sıfırlama düzeneğinin tamamı (kenar payı,
+        /// devir teslim, doğrusal olmayan ölçekleme, gecikmeli iniş)
+        /// devre dışı kalır: parmak bir kez iner ve nişan bırakılana kadar
+        /// sınırsız düzlemde gezer. Kaldırılacak parmak olmadığı için
+        /// "algılamıyor" ve "aim kayıyor" belirtileri kökten kalkar.
+        ///
+        /// Dayanağı Waydroid'e özgü: dokunuş borusunda kırpma yapan
+        /// katman yok ve `InputDispatcher` MOVE'da pencere aramıyor.
+        /// Bu yüzden yalnızca kırpmayan arka uçlarda geçerlidir —
+        /// `Engine::set_offscreen_ok` ile açılır. Kapalıysa motor sessizce
+        /// sınırlı kipe düşer; uinput yolunda ekran dışı koordinat
+        /// libinput'ta sıkışır ve parmak kenarda takılı kalırdı.
+        #[serde(default = "default_unbounded")]
+        unbounded: bool,
+        /// Emniyet kutusunun yarı genişliği (ekran katı).
+        ///
+        /// Sınırsız kipin tek sayısal sınırı. Amacı his değil taşma
+        /// koruması: `input_event.value` i32 ve konum f32. 32 ekran ≈
+        /// 82000 piksel; f32 hassasiyeti orada hâlâ 0.01 pikselin
+        /// altında. Bu kadar NET (gidiş-dönüş farkı) sürüklenmek pratikte
+        /// olmaz; olursa fare ilk durduğunda sessizce ortalanır.
+        #[serde(default = "default_safety_span")]
+        safety_span: f32,
     },
 
     /// Kaydırma jesti (Subway Surfers gibi oyunlar için).
@@ -169,6 +194,13 @@ fn default_recenter_margin() -> f32 { 0.12 }
 fn default_true_handoff() -> bool { false }
 fn default_true_nonlinear() -> bool { true }
 fn default_reset_delay_ms() -> u32 { 12 }
+/// Varsayılan AÇIK.
+///
+/// Sınırlı kip bu belirtileri üretiyordu ve hepsi kaçınılmazdı; korunacak
+/// bir davranış değil. Arka uç desteklemiyorsa motor zaten sınırlı kipe
+/// düşüyor, yani açık varsayılan hiçbir yolda kırılmıyor.
+fn default_unbounded() -> bool { true }
+fn default_safety_span() -> f32 { 32.0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {

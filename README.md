@@ -36,6 +36,36 @@ liw session health    # hangi göstergenin düştüğünü söyler
 liw session restart   # tam kurtarma
 ```
 
+## FPS fare/nişan
+
+Nişan parmağı ekranın **dışına** çıkabilir; kenarda ortalama yoktur.
+Dayanağı Waydroid'e özgü: dokunuş `/dev/input/wl_touch_events` borusuna
+doğrudan yazılır, compositor zinciri atlanır ve o yolda koordinatı kırpan
+hiçbir katman kalmaz. Böylece parmak hiç kaldırılmaz — "fare algılanmıyor",
+"birkaç saniye ölü kalıyor" ve "aim kayıyor" belirtilerinin ortak kaynağı
+ortadan kalkar.
+
+Ayrıntı, ölçüm ve doğrulama yöntemi: [docs/fare-nisan.md](docs/fare-nisan.md)
+
+## Görsel profil düzenleyici
+
+```bash
+liw profile edit com.ForgeGames.SpecialForcesGroup2
+```
+
+Oyunun ekran görüntüsünü tarayıcıda açar. Görüntü pencereye **sığdırılır**,
+kaydırma gerekmez; yakınlaştırma, kaydırma ve sürüklerken açılan büyüteç var.
+Koordinat her zaman KAYNAK piksele geri çevrildiği için yakınlık ne olursa
+olsun yazılan değer aynı — bir kaç piksellik kayma oyunda düğmeyi ıskalatır.
+
+* Ok tuşları tam **1 piksel** oynatır (<kbd>Shift</kbd> = 10).
+* Konum piksel cinsinden de yazılabilir.
+* Bağlantı ekle/sil/yeniden adlandır; tuş ataması fiziksel tuşa basarak
+  yapılır (evdev kodu, klavye düzeninden bağımsız).
+* "Seçiliye dokun" gerçek dokunuşu Android'e gönderir — artık compositor
+  atlandığı için oyun penceresinin önde olması gerekmiyor.
+* Kayıt TOML'daki yorumları korur ve çakışan tuş atamasını reddeder.
+
 ## Neden session sahipliği önemli
 
 `waydroid session start` ön planda çalışan bir süreçtir. Ölürse:

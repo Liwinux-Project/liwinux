@@ -27,16 +27,63 @@ const ACT_FOREGROUND: &str = "id.liwinux.helper.foreground-app";
 const ACT_PERF: &str = "id.liwinux.helper.performance";
 const ACT_LOG: &str = "id.liwinux.helper.read-log";
 const ACT_AUDIO: &str = "id.liwinux.helper.restart-audio";
+const ACT_TOUCH: &str = "id.liwinux.helper.touch-pipe";
 
 /// Ses HAL'inin init'teki tam yolu. Sabit: kullanıcıdan süreç adı almak,
 /// istediği şeyi öldürtmek demekti.
 const AUDIO_HAL: &str = "/vendor/bin/hw/android.hardware.audio.service";
+
+/// Waydroid'in dokunuş borusunun konteyner içindeki yolu.
+///
+/// Boruyu hwcomposer kurar (`mkfifo` 0660, `chown` system:system) ve
+/// Android'in yamalı `EventHub`'ı `wayland_touch` cihazı olarak dinler.
+/// Buraya yazmak compositor zincirini tamamen atlar; gerekçe
+/// `docs/fare-nisan.md`.
+const TOUCH_PIPE: &str = "dev/input/wl_touch_events";
+
+/// Konteyner içindeki bir sürecin adı — boruya `/proc/<pid>/root` üzerinden
+/// ulaşmak için gerekiyor. Konteynerin kendi mount namespace'i var ama root
+/// oraya namespace değiştirmeden erişebilir.
+///
+/// `surfaceflinger` seçildi çünkü konteyner dışında var olamaz ve o ölmüşse
+/// zaten enjekte edecek bir ekran yoktur.
+const CONTAINER_ANCHOR: &str = "surfaceflinger";
 
 struct Helper {
     conn: Connection,
 }
 
 impl Helper {
+    /// Android ekran boyutu (`waydroid.display_width`/`height`).
+    ///
+    /// Host penceresinin boyutu DEĞİL: dokunuş borusunun koordinat uzayı
+    /// Android ekranıdır.
+    ///
+    /// `waydroid prop get` KULLANILAMAZ: o komut `DBusSessionService` ile
+    /// oturum veri yoluna bağlanıyor (`tools/actions/prop.py`). Bu servis
+    /// root olarak çalışıyor ve oturum veri yolu yok — komut sessizce boş
+    /// çıktı verip stderr'e "WayDroid session is stopped" yazıyor. Gerçekte
+    /// yaşandı: session yeniden başlatıldıktan sonra keymapper her seferinde
+    /// uinput'a düştü ve kullanıcı nedenini göremedi.
+    ///
+    /// `waydroid shell -- getprop` ise lxc-attach kullanıyor; root'ta
+    /// çalışan yol bu.
+    async fn display_px(&self) -> zbus::fdo::Result<(u32, u32)> {
+        let w = shell_getprop("waydroid.display_width").await?;
+        let h = shell_getprop("waydroid.display_height").await?;
+        let parse = |v: String, key: &str| v.trim().parse::<u32>()
+            .map_err(|_| zbus::fdo::Error::Failed(format!(
+                "{key} sayı değil: {v:?} — hwcomposer henüz hotplug \
+                 yapmamış olabilir")));
+        let (w, h) = (parse(w, "waydroid.display_width")?,
+                      parse(h, "waydroid.display_height")?);
+        if w == 0 || h == 0 {
+            return Err(zbus::fdo::Error::Failed(
+                "ekran boyutu 0 — hwcomposer henüz hotplug yapmamış".into()));
+        }
+        Ok((w, h))
+    }
+
     async fn authorize(&self, hdr: &Header<'_>, action: &str, interactive: bool)
         -> zbus::fdo::Result<()>
     {
@@ -58,8 +105,89 @@ impl Helper {
     }
 }
 
+/// `waydroid shell -- getprop <key>` — root'ta çalışan property okuma yolu.
+///
+/// Çıktıdan lxc gürültüsü ayıklanır: `waydroid --details-to-stdout`
+/// lxc-info satırlarını da stdout'a karıştırıyor ve bunlar sayı
+/// ayrıştırmayı sessizce bozar.
+async fn shell_getprop(key: &str) -> zbus::fdo::Result<String> {
+    let out = Command::new("waydroid")
+        .args(["--details-to-stdout", "shell", "--", "getprop", key])
+        .stdin(Stdio::null())
+        .output().await
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(zbus::fdo::Error::Failed(format!(
+            "getprop {key} başarısız (kod {:?}): {err}", out.status.code())));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.contains("% lxc-info") && !l.trim_end().ends_with("] RUNNING"))
+        .collect::<Vec<_>>()
+        .join(""))
+}
+
+/// Konteynerin görünür olduğu bir pid bul.
+async fn container_pid() -> Option<u32> {
+    let out = Command::new("pgrep").args(["-x", CONTAINER_ANCHOR])
+        .stdin(Stdio::null()).output().await.ok()?;
+    String::from_utf8_lossy(&out.stdout).split_whitespace().next()?.parse().ok()
+}
+
 #[interface(name = "id.liwinux.Helper1")]
 impl Helper {
+    /// Waydroid'in dokunuş borusunu açıp YAZMA tanıtıcısını devreder.
+    ///
+    /// Tanıtıcı döndürmenin nedeni hız: keymapper saniyede ~200 kare yazar
+    /// ve her karenin D-Bus'tan geçmesi hem gecikme hem de bu servisi
+    /// girdi yolunun ortasına koymak demekti. Tanıtıcıyla yetki bir kez
+    /// sorulur, veri hiç buradan geçmez.
+    ///
+    /// Ekran boyutu da dönüyor: boru koordinatları doğrudan Android ekran
+    /// uzayındadır ve `EventHub` eksen aralığını bu property'lerden üretir,
+    /// cihazdan sormaz. Çağıranın host pencere boyutunu kullanması yanlış
+    /// yere dokunmak demek olurdu.
+    async fn open_touch_pipe(
+        &self,
+        #[zbus(header)] hdr: Header<'_>,
+    ) -> zbus::fdo::Result<(zbus::zvariant::OwnedFd, u32, u32)> {
+        self.authorize(&hdr, ACT_TOUCH, false).await?;
+
+        let pid = container_pid().await.ok_or_else(|| zbus::fdo::Error::Failed(
+            "Waydroid konteyneri çalışmıyor (surfaceflinger yok)".into()))?;
+        let path = format!("/proc/{pid}/root/{TOUCH_PIPE}");
+
+        let (w, h) = self.display_px().await?;
+
+        // O_NONBLOCK iki işe birden yarıyor:
+        //  * Okuyucu yoksa açma ENXIO ile ANINDA başarısız olur. Bloklamak,
+        //    "keymapper açılışta donuyor" gibi görünürdü.
+        //  * Boru dolduğunda yazma bloklamaz; çağıran kareyi düşürür.
+        //    Girdi döngüsünü kilitlemek fareyi tamamen durdururdu.
+        let file = tokio::task::spawn_blocking({
+            let path = path.clone();
+            move || {
+                use std::os::unix::fs::OpenOptionsExt;
+                std::fs::OpenOptions::new().write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&path)
+            }
+        }).await
+          .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
+          .map_err(|e| {
+              let hint = if e.raw_os_error() == Some(libc::ENXIO) {
+                  " — borunun okuyucusu yok; Android'in girdi okuyucusu bu \
+                     boruyu açmamış, session'ı yeniden başlatmayı dene"
+              } else { "" };
+              zbus::fdo::Error::Failed(format!("{path} açılamadı: {e}{hint}"))
+          })?;
+
+        tracing::info!(%path, genişlik = w, yükseklik = h,
+            "dokunuş borusu devredildi");
+        Ok((std::os::fd::OwnedFd::from(file).into(), w, h))
+    }
+
     /// Android property okur. Anahtar karakter kümesi doğrulanır.
     async fn get_prop(
         &self,

@@ -9,6 +9,7 @@ pub mod runner;
 pub mod store;
 pub mod touch;
 pub mod uinput;
+pub mod wl_touch;
 
 pub use backend::{BackendError, DebugBackend, TouchBackend};
 pub use capture::{discover, DeviceInfo, DeviceKind, GrabbedDevice};
@@ -19,3 +20,4 @@ pub use runner::{Runner, RunnerConfig, RunnerError, RunnerEvent, RunnerState};
 pub use store::{Entry, Origin, Store};
 pub use touch::{Norm, PointerPool, TouchAction, MAX_POINTERS};
 pub use uinput::{ScreenMap, UinputBackend};
+pub use wl_touch::{WlTouchBackend, TOUCH_PIPE};

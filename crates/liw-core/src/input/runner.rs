@@ -15,6 +15,7 @@ use super::engine::{Engine, InputEvent, TriggerKind};
 use super::latency::LatencyStats;
 use super::store::Store;
 use super::uinput::{ScreenMap, UinputBackend};
+use super::wl_touch::WlTouchBackend;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -117,11 +118,32 @@ pub struct Runner {
     cfg: RunnerConfig,
     store: Store,
     state: Arc<RwLock<RunnerState>>,
+    /// Waydroid'in dokunuş borusu ve Android ekran boyutu.
+    ///
+    /// Verilirse compositor zinciri (uinput → libinput → KWin → wl_touch)
+    /// tamamen atlanır ve ekran dışı koordinat mümkün olur — sınırsız
+    /// nişanın ön şartı. `RunnerConfig` içinde DEĞİL çünkü `File` klonlanamaz
+    /// ve yapılandırma klonlanabilir olmalı.
+    touch_pipe: Option<(std::fs::File, (u32, u32))>,
 }
 
 impl Runner {
     pub fn new(cfg: RunnerConfig, store: Store) -> Self {
-        Self { cfg, store, state: Arc::new(RwLock::new(RunnerState::default())) }
+        Self {
+            cfg, store,
+            state: Arc::new(RwLock::new(RunnerState::default())),
+            touch_pipe: None,
+        }
+    }
+
+    /// Waydroid'in dokunuş borusunu kullan (compositor'ı atla).
+    ///
+    /// `px` Android ekran boyutudur (`waydroid.display_width`/`height`),
+    /// host penceresininki değil: boru koordinatları doğrudan Android
+    /// ekran uzayındadır, pencere geometrisi hesaba katılmaz.
+    pub fn with_touch_pipe(mut self, pipe: std::fs::File, px: (u32, u32)) -> Self {
+        self.touch_pipe = Some((pipe, px));
+        self
     }
 
     pub fn state(&self) -> Arc<RwLock<RunnerState>> { self.state.clone() }
@@ -145,9 +167,27 @@ impl Runner {
         mut shutdown: tokio::sync::watch::Receiver<bool>,
         events: Option<mpsc::Sender<RunnerEvent>>,
     ) -> Result<LatencyStats, RunnerError> {
-        let mut backend = UinputBackend::new(self.cfg.screen_map)?;
-        // libinput/KWin'in cihazı tanıması birkaç yüz ms sürebilir.
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        // Arka uç seçimi girdi yolunun TAMAMINI belirliyor.
+        //
+        // Dokunuş borusu varsa compositor zinciri devre dışı kalır ve
+        // koordinat kırpılmaz; sınırsız nişan ancak o zaman güvenli.
+        // uinput yolunda libinput ekrana sıkıştırdığı için motor sınırlı
+        // kipte kalmalı (`docs/fare-nisan.md`).
+        let (mut backend, offscreen_ok): (Box<dyn TouchBackend>, bool) =
+            match self.touch_pipe.take() {
+                Some((pipe, (w, h))) => {
+                    tracing::info!(genişlik = w, yükseklik = h,
+                        "dokunuş borusu kullanılıyor — compositor atlanıyor");
+                    (Box::new(WlTouchBackend::from_pipe(pipe, w, h)?), true)
+                }
+                None => {
+                    let b = UinputBackend::new(self.cfg.screen_map)?;
+                    // libinput/KWin'in cihazı tanıması birkaç yüz ms sürebilir.
+                    // Boru yolunda tanıtılacak cihaz yok, beklemek gereksiz.
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                    (Box::new(b), false)
+                }
+            };
 
         // Yanlış cihaz açıldığında GÜRÜLTÜLÜ başarısız ol. Doğrulamamak,
         // ses jakı cihazından tuş beklemek ve sessizce hiç çalışmamak
@@ -259,6 +299,7 @@ impl Runner {
                                 engine = Some({
                                     let mut e = Engine::new(entry.profile.clone());
                                     e.set_aspect(self.cfg.screen_px.0, self.cfg.screen_px.1);
+                                    e.set_offscreen_ok(offscreen_ok);
                                     e
                                 });
                                 if self.cfg.grab && !grabbed
@@ -308,6 +349,7 @@ impl Runner {
                             engine = Some({
                                 let mut e = Engine::new(p.clone());
                                 e.set_aspect(self.cfg.screen_px.0, self.cfg.screen_px.1);
+                                e.set_offscreen_ok(offscreen_ok);
                                 e
                             });
                             if self.cfg.grab && !grabbed
@@ -371,10 +413,12 @@ impl Runner {
                                 if let Some(p) = &profile {
                                     if focused {
                                         engine = Some({
-                                let mut e = Engine::new(p.clone());
-                                e.set_aspect(self.cfg.screen_px.0, self.cfg.screen_px.1);
-                                e
-                            });
+                                            let mut e = Engine::new(p.clone());
+                                            e.set_aspect(
+                                                self.cfg.screen_px.0, self.cfg.screen_px.1);
+                                            e.set_offscreen_ok(offscreen_ok);
+                                            e
+                                        });
                                         if self.cfg.grab && !grabbed
                                             && stream.device_mut().grab().is_ok()
                                         {

@@ -64,6 +64,25 @@ impl HelperClient {
             .await.map_err(|e| HelperError::Call(e.to_string()))
     }
 
+    /// Waydroid'in dokunuş borusuna YAZMA tanıtıcısı ister.
+    ///
+    /// Başarılıysa keymapper compositor zincirini tamamen atlar ve
+    /// koordinat kırpılmaz — sınırsız nişanın ön şartı
+    /// (`docs/fare-nisan.md`). Dönen boyut ANDROID ekranıdır; host
+    /// penceresininki değil.
+    ///
+    /// Başarısızlık ölümcül DEĞİL: çağıran uinput yoluna düşebilir. Ama
+    /// sessizce düşmemeli — kullanıcı hangi yolda olduğunu bilmeli, çünkü
+    /// nişanın hissi tamamen buna bağlı.
+    pub async fn open_touch_pipe(&self)
+        -> Result<(std::fs::File, u32, u32), HelperError>
+    {
+        let (fd, w, h): (zbus::zvariant::OwnedFd, u32, u32) =
+            self.proxy.call("OpenTouchPipe", &())
+                .await.map_err(|e| HelperError::Call(e.to_string()))?;
+        Ok((std::fs::File::from(std::os::fd::OwnedFd::from(fd)), w, h))
+    }
+
     pub async fn net_diagnose(&self) -> Result<String, HelperError> {
         self.proxy.call("NetDiagnose", &())
             .await.map_err(|e| HelperError::Call(e.to_string()))

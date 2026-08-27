@@ -96,4 +96,25 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
+  <!-- Dokunuş borusuna YAZMA tanıtıcısı verir.
+
+       auth_admin DEĞİL, bilerek: bu yetki kullanıcının kendi Waydroid
+       oturumuna dokunuş göndermeyi sağlar ve aktif oturumdaki kullanıcı
+       bunu zaten faresiyle yapabiliyor. Parola sormak, keymapper'ı her
+       başlatışta engel çıkarır ve karşılığında yeni bir şey korumaz.
+
+       Kapsam yine de dar: yalnızca AKTİF yerel oturum, yalnızca dokunuş
+       borusu; helper genel bir yazma arayüzü sunmuyor. -->
+  <action id="id.liwinux.helper.touch-pipe">
+    <description>Android dokunuş borusuna eriş</description>
+    <description xml:lang="en">Access the Android touch pipe</description>
+    <message>liwinux'un tuş eşlemesi için Android'e dokunuş göndermesi gerekiyor</message>
+    <message xml:lang="en">liwinux needs to send touch input to Android for key mapping</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
 </policyconfig>
