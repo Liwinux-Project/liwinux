@@ -26,6 +26,11 @@ const ACT_OVERLAY: &str = "id.liwinux.helper.debug-overlay";
 const ACT_FOREGROUND: &str = "id.liwinux.helper.foreground-app";
 const ACT_PERF: &str = "id.liwinux.helper.performance";
 const ACT_LOG: &str = "id.liwinux.helper.read-log";
+const ACT_AUDIO: &str = "id.liwinux.helper.restart-audio";
+
+/// Ses HAL'inin init'teki tam yolu. Sabit: kullanıcıdan süreç adı almak,
+/// istediği şeyi öldürtmek demekti.
+const AUDIO_HAL: &str = "/vendor/bin/hw/android.hardware.audio.service";
 
 struct Helper {
     conn: Connection,
@@ -200,6 +205,41 @@ impl Helper {
         self.authorize(&hdr, ACT_LOG, false).await?;
         let n = n.to_string();
         run_dumpsys(&["logcat", "-d", "-b", buf, "-t", &n]).await
+    }
+
+    /// Kilitlenmiş ses HAL'ini yeniden başlatır.
+    ///
+    /// Ölçülen arıza: HAL kilitlenince `audioserver` ona yaptığı
+    /// `registerClient` çağrısında takılıyor, gözcü 5 saniye sonra onu
+    /// abort ediyor, yeniden başlıyor ve aynı yerde takılıyor. Sonuç:
+    /// `AudioFlinger` hiç yayınlanamıyor ve sese dokunan HER uygulama
+    /// sonsuza kadar bekliyor — kullanıcıya "oyun açılmıyor" olarak
+    /// görünüyor.
+    ///
+    /// HAL öldürülünce Android'in init'i onu hemen yeniden başlatır.
+    /// Tüm oturumu yeniden başlatmaktan çok daha az yıkıcı.
+    ///
+    /// Süreç adı SABİT: parametre olarak almak, çağırana istediği süreci
+    /// root olarak öldürtmek demekti.
+    async fn restart_audio(
+        &self,
+        #[zbus(header)] hdr: Header<'_>,
+    ) -> zbus::fdo::Result<String> {
+        self.authorize(&hdr, ACT_AUDIO, true).await?;
+        let out = Command::new("pkill").args(["-f", AUDIO_HAL])
+            .stdin(Stdio::null()).output().await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        // pkill: 0 = eşleşti ve sinyal gönderildi, 1 = eşleşme yok.
+        // 1'i hata saymak yanlış olurdu ama "yeniden başlatıldı" demek de
+        // yalan olur — ayrı raporlanıyor.
+        match out.status.code() {
+            Some(0) => {
+                tracing::info!("ses HAL'i yeniden başlatıldı");
+                Ok("ses HAL'i öldürüldü — init yeniden başlatacak".into())
+            }
+            Some(1) => Ok("ses HAL'i zaten çalışmıyor".into()),
+            c => Err(zbus::fdo::Error::Failed(format!("pkill başarısız: {c:?}"))),
+        }
     }
 
     async fn net_diagnose(

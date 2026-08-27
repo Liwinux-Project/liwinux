@@ -84,4 +84,16 @@
       <allow_active>yes</allow_active>
     </defaults>
   </action>
+
+  <action id="id.liwinux.helper.restart-audio">
+    <description>Kilitlenmiş ses HAL'ini yeniden başlat</description>
+    <description xml:lang="en">Restart wedged audio HAL</description>
+    <message>Kilitlenen ses altyapısı yeniden başlatılacak</message>
+    <message xml:lang="en">Restarting the wedged audio subsystem</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
 </policyconfig>

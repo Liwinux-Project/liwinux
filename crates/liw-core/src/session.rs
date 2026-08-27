@@ -88,6 +88,27 @@ impl Health {
     }
 }
 
+/// Android günlüğünde AudioFlinger'ın yayınlanamadığı işareti.
+const AF_MARKER: &str = "AudioFlinger not published";
+
+/// Ses altyapısının kilitlenip kilitlenmediğini günlükten anlar.
+///
+/// Zincir şöyle işliyor ve tamamı ölçüldü: ses HAL'i kilitlenir →
+/// `audioserver` ona `registerClient` çağrısında takılır → `mediautils`
+/// gözcüsü 5 saniye sonra süreci abort eder → yeniden başlar, aynı yerde
+/// takılır. Sonuç: `AudioFlinger` servis yöneticisine HİÇ yayınlanamaz ve
+/// sese dokunan her uygulama sonsuza kadar bekler.
+///
+/// Belirti kullanıcıya "oyun açılış ekranında donuyor" olarak görünür;
+/// sesle ilgisi olduğu hiçbir yerden anlaşılmaz. Bu yüzden tespit şart.
+///
+/// Tek satır YETMEZ: açılış sırasında AudioFlinger gerçekten birkaç kez
+/// beklenir ve bu normaldir. Yalnızca ısrarlı tekrar sorunu gösterir.
+pub fn audio_flinger_stalled(log: &str) -> bool {
+    const MIN_REPEATS: usize = 5;
+    log.lines().filter(|l| l.contains(AF_MARKER)).count() >= MIN_REPEATS
+}
+
 #[derive(Debug, Clone)]
 pub struct SupervisorConfig {
     pub poll_interval: Duration,
@@ -267,6 +288,32 @@ impl Supervisor {
 
 #[cfg(test)]
 mod tests {
+    /// Gerçek ölçüm: HAL kilitliyken günlük bu satırla dolar.
+    #[test]
+    fn detects_wedged_audio_from_real_log() {
+        let real = "08-27 17:26:45.329  1086 20805 W AudioSystem: AudioFlinger not published, waiting...\n\
+                    08-27 17:26:50.830  1086 20805 W AudioSystem: AudioFlinger not published, waiting...\n\
+                    08-27 17:26:56.331  1086 20805 W AudioSystem: AudioFlinger not published, waiting...\n\
+                    08-27 17:27:01.832  1086 20805 W AudioSystem: AudioFlinger not published, waiting...\n\
+                    08-27 17:27:07.333  1086 20805 W AudioSystem: AudioFlinger not published, waiting...\n";
+        assert!(super::audio_flinger_stalled(real));
+    }
+
+    /// Açılışta birkaç kez beklemek NORMAL — panik yapmamalı.
+    #[test]
+    fn a_few_waits_during_boot_are_normal() {
+        let boot = "W AudioSystem: AudioFlinger not published, waiting...\n\
+                    I boot: devam\n\
+                    W AudioSystem: AudioFlinger not published, waiting...\n";
+        assert!(!super::audio_flinger_stalled(boot));
+    }
+
+    #[test]
+    fn healthy_log_is_not_flagged() {
+        assert!(!super::audio_flinger_stalled("I ActivityManager: her şey yolunda"));
+        assert!(!super::audio_flinger_stalled(""));
+    }
+
     use super::*;
 
     #[test]
