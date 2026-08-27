@@ -25,6 +25,7 @@ const ACT_REPAIR: &str = "id.liwinux.helper.net-repair";
 const ACT_OVERLAY: &str = "id.liwinux.helper.debug-overlay";
 const ACT_FOREGROUND: &str = "id.liwinux.helper.foreground-app";
 const ACT_PERF: &str = "id.liwinux.helper.performance";
+const ACT_LOG: &str = "id.liwinux.helper.read-log";
 
 struct Helper {
     conn: Connection,
@@ -179,6 +180,28 @@ impl Helper {
     }
 
     /// Salt okunur ağ teşhisi (JSON). Sistemi değiştirmez, etkileşim istemez.
+    /// Android günlüğünün son satırları.
+    ///
+    /// Uygulama donmalarını teşhis etmenin tek yolu bu. Genel bir `Shell()`
+    /// açmamak için argümanlar SIKI kısıtlı: tampon adı sabit listeden
+    /// seçilir, satır sayısı sınırlanır. Kullanıcı metni komut satırına
+    /// serbestçe geçmiyor.
+    async fn logcat(
+        &self,
+        buffer: &str,
+        lines: u32,
+        #[zbus(header)] hdr: Header<'_>,
+    ) -> zbus::fdo::Result<String> {
+        let Some(buf) = valid_log_buffer(buffer) else {
+            return Err(zbus::fdo::Error::InvalidArgs(format!(
+                "geçersiz tampon: {buffer:?} (main|crash|system|events|all)")));
+        };
+        let n = clamp_log_lines(lines);
+        self.authorize(&hdr, ACT_LOG, false).await?;
+        let n = n.to_string();
+        run_dumpsys(&["logcat", "-d", "-b", buf, "-t", &n]).await
+    }
+
     async fn net_diagnose(
         &self,
         #[zbus(header)] hdr: Header<'_>,
@@ -240,6 +263,28 @@ impl Helper {
 ///
 /// "--" ayracı ŞART: waydroid shell argparse kullanır, tireli argümanları
 /// aksi halde yutar.
+/// Logcat tampon adını sabit listeye karşı doğrular.
+///
+/// Serbest metin kabul etmek, argümanın komut satırına geçmesi demekti.
+/// Sabit listeden DÖNDÜRÜLEN dize kullanılır; girdinin kendisi asla
+/// komuta gitmez.
+fn valid_log_buffer(b: &str) -> Option<&'static str> {
+    match b {
+        "main" => Some("main"),
+        "crash" => Some("crash"),
+        "system" => Some("system"),
+        "events" => Some("events"),
+        "all" => Some("all"),
+        _ => None,
+    }
+}
+
+/// Satır sayısını makul aralığa sıkıştırır.
+///
+/// Üst sınır şart: sınırsız logcat D-Bus mesaj boyutunu aşar ve çağrı
+/// sessizce başarısız olur.
+fn clamp_log_lines(n: u32) -> u32 { n.clamp(1, 2000) }
+
 async fn run_dumpsys(argv: &[&str]) -> zbus::fdo::Result<String> {
     let mut args = vec!["--details-to-stdout", "shell", "--"];
     args.extend_from_slice(argv);
@@ -288,6 +333,26 @@ fn extract_pkg(s: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::{clamp_log_lines, valid_log_buffer};
+    #[test]
+    fn log_buffer_allowlist_rejects_injection() {
+        for bad in ["main; rm -rf /", "--help", "", "MAIN", "main main",
+                    "-b", "../etc/passwd"] {
+            assert!(valid_log_buffer(bad).is_none(), "{bad:?} reddedilmeliydi");
+        }
+        for good in ["main", "crash", "system", "events", "all"] {
+            assert_eq!(valid_log_buffer(good), Some(good));
+        }
+    }
+
+    /// Sınırsız logcat D-Bus mesaj sınırını aşar ve çağrı sessizce ölür.
+    #[test]
+    fn log_lines_are_bounded() {
+        assert_eq!(clamp_log_lines(0), 1);
+        assert_eq!(clamp_log_lines(500), 500);
+        assert_eq!(clamp_log_lines(u32::MAX), 2000);
+    }
+
     use super::{extract_pkg, parse_foreground};
 
     const REAL: &str = "  mResumedActivity: ActivityRecord{ef108a1 u0 com.kiloo.subwaysurf/com.sybogames.chili.multidex.ChiliMultidexSupportActivity t42}";

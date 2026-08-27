@@ -72,4 +72,16 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
+
+  <action id="id.liwinux.helper.read-log">
+    <description>Android günlüğünü oku</description>
+    <description xml:lang="en">Read Android log</description>
+    <message>Uygulama donmalarını teşhis etmek için Android günlüğü okunacak</message>
+    <message xml:lang="en">Reading the Android log to diagnose application hangs</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
 </policyconfig>
