@@ -157,6 +157,20 @@ impl Handle {
         if let Some((f, px)) = pipe {
             runner = runner.with_touch_pipe(f, px);
         }
+
+        // Boru koptuğunda (ekran hotplug'ı FIFO'yu siliyor) Runner
+        // yenisini isteyebilsin. Kanal tutan görev helper'ı sahiplenir;
+        // Runner'ın D-Bus'ı bilmemesi böyle korunuyor.
+        let (pipe_tx, mut pipe_rx) =
+            mpsc::channel::<liw_core::input::PipeRequest>(2);
+        let helper_pipe = helper.clone();
+        let pipe_task = tokio::spawn(async move {
+            while let Some(reply) = pipe_rx.recv().await {
+                let _ = reply.send(Self::acquire_pipe(&helper_pipe).await);
+            }
+        });
+        runner = runner.with_pipe_provider(pipe_tx);
+
         let state = runner.state();
 
         // Odak başlangıçta BİLİNMİYOR; KWin script'i ilk bildirimi yapana
@@ -223,7 +237,7 @@ impl Handle {
 
         *guard = Some(Running {
             shutdown: sd_tx, focus: focus_tx, state,
-            tasks: vec![poll, log, main],
+            tasks: vec![poll, log, main, pipe_task],
         });
         Ok(())
     }

@@ -10,14 +10,14 @@ use liw_core::HelperClient;
 /// Ad'a bakarak seçmek yanlış katmanı verir — `ActivityRecord{...}` bir
 /// pencere kaydıdır, buffer katmanı değildir ve `--latency` üretmez.
 /// Gerçekte yaşandı: seçim ad'a göre yapılınca 0 kare yakalandı.
-async fn probe(h: &HelperClient, layer: &str) -> usize {
+pub(crate) async fn probe(h: &HelperClient, layer: &str) -> usize {
     match h.surface_latency(layer).await {
         Ok(raw) => parse_latency(&raw).map(|s| s.presents.len()).unwrap_or(0),
         Err(_) => 0,
     }
 }
 
-async fn pick_layer(h: &HelperClient, pkg: &str) -> Result<String> {
+pub(crate) async fn pick_layer(h: &HelperClient, pkg: &str) -> Result<String> {
     let list = h.surface_layers().await.context("katman listesi alınamadı")?;
     let mut cands: Vec<&str> = list.lines()
         .map(str::trim)

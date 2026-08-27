@@ -12,6 +12,7 @@ pub mod helper;
 pub mod input;
 pub mod polkit;
 pub mod session;
+pub mod trace;
 pub mod waydroid;
 
 pub use config::Config;

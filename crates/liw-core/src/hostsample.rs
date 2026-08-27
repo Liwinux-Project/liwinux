@@ -7,6 +7,9 @@ use tokio::process::Command;
 pub struct HostSample {
     pub gpu_pct: f64,
     pub vram_mb: f64,
+    /// Toplam VRAM. Kullanılanı TEK BAŞINA göstermek yanıltıyor:
+    /// "4094 MB" doluymuş gibi okunuyor, oysa 12288'in üçte biri.
+    pub vram_total_mb: f64,
     pub cpu_pct: f64,
     pub ram_used_mb: f64,
     pub mem_pressure: f64,
@@ -62,10 +65,10 @@ pub fn parse_pressure_some_avg10(pressure: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// `nvidia-smi` çıktısı: "39, 3493"
-pub fn parse_nvidia(csv: &str) -> (f64, f64) {
+/// `nvidia-smi` çıktısı: "39, 3493, 12288" -> (gpu%, kullanılan, toplam)
+pub fn parse_nvidia(csv: &str) -> (f64, f64, f64) {
     let mut it = csv.trim().split(',').map(|x| x.trim().parse::<f64>().unwrap_or(0.0));
-    (it.next().unwrap_or(0.0), it.next().unwrap_or(0.0))
+    (it.next().unwrap_or(0.0), it.next().unwrap_or(0.0), it.next().unwrap_or(0.0))
 }
 
 pub async fn sample(cpu: &mut CpuMeter) -> HostSample {
@@ -73,20 +76,49 @@ pub async fn sample(cpu: &mut CpuMeter) -> HostSample {
     let mem = tokio::fs::read_to_string("/proc/meminfo").await.unwrap_or_default();
     let psi = tokio::fs::read_to_string("/proc/pressure/memory").await.unwrap_or_default();
     let nv = Command::new("nvidia-smi")
-        .args(["--query-gpu=utilization.gpu,memory.used",
+        .args(["--query-gpu=utilization.gpu,memory.used,memory.total",
                "--format=csv,noheader,nounits"])
         .stdin(Stdio::null()).stderr(Stdio::null())
         .output().await
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default();
-    let (gpu, vram) = parse_nvidia(&nv);
+    let (gpu, vram, vram_total) = parse_nvidia(&nv);
     HostSample {
         gpu_pct: gpu,
         vram_mb: vram,
+        vram_total_mb: vram_total,
         cpu_pct: cpu.sample(stat.lines().next().unwrap_or("")),
         ram_used_mb: parse_meminfo_used_mb(&mem),
         mem_pressure: parse_pressure_some_avg10(&psi),
     }
+}
+
+/// Boottan beri geçen süre (ms), `CLOCK_MONOTONIC`.
+///
+/// Kare zaman damgaları ve `logcat -v monotonic` bu eksende; host
+/// örneklerini de aynı eksene koymadan korelasyon yapılamaz.
+pub fn monotonic_ms() -> f64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: geçerli bir timespec'e yazıyoruz.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as f64 * 1000.0 + ts.tv_nsec as f64 / 1e6
+}
+
+/// YEREL saatle gün içi saniye.
+///
+/// Yalnızca duvar saatli logcat çıktısını hizalamak için gerekiyor
+/// (helper'ın eski sürümü). Konteyner host çekirdeğini ve aynı saat
+/// dilimini kullandığı için bu karşılaştırma geçerli.
+pub fn local_secs_of_day() -> f64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let t = now.as_secs() as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: geçerli bir time_t ve tm veriyoruz; localtime_r yeniden
+    // girişli, global durum kullanmıyor.
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    tm.tm_hour as f64 * 3600.0 + tm.tm_min as f64 * 60.0 + tm.tm_sec as f64
+        + now.subsec_millis() as f64 / 1000.0
 }
 
 /// Örnek dizisinden ortalama ve tepe.
@@ -132,15 +164,39 @@ mod tests {
 
     #[test]
     fn nvidia_csv_parses() {
-        assert_eq!(parse_nvidia("39, 3493"), (39.0, 3493.0));
+        assert_eq!(parse_nvidia("39, 3493, 12288"), (39.0, 3493.0, 12288.0));
+    }
+
+    /// Toplam yoksa 0 dönmeli — uydurma bir toplam "VRAM dolu" yalanı
+    /// söyletirdi.
+    #[test]
+    fn missing_vram_total_is_zero_not_guessed() {
+        assert_eq!(parse_nvidia("39, 3493"), (39.0, 3493.0, 0.0));
     }
 
     #[test]
     fn missing_inputs_yield_zero_not_panic() {
-        assert_eq!(parse_nvidia(""), (0.0, 0.0));
+        assert_eq!(parse_nvidia(""), (0.0, 0.0, 0.0));
         assert_eq!(parse_meminfo_used_mb(""), 0.0);
         assert_eq!(parse_pressure_some_avg10(""), 0.0);
         assert_eq!(summarise(&[]), (0.0, 0.0));
+    }
+
+    /// Monotonik saat ilerlemeli ve makul olmalı; korelasyonun ekseni bu.
+    #[test]
+    fn monotonic_clock_advances() {
+        let a = monotonic_ms();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let b = monotonic_ms();
+        assert!(b > a, "{a} -> {b}");
+        assert!(b - a >= 4.0 && b - a < 500.0, "{}", b - a);
+        assert!(a > 0.0);
+    }
+
+    #[test]
+    fn local_time_is_within_a_day() {
+        let s = local_secs_of_day();
+        assert!((0.0..86400.0).contains(&s), "{s}");
     }
 
     #[test]

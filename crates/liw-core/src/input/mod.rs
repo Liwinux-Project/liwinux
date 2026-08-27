@@ -16,7 +16,7 @@ pub use capture::{discover, DeviceInfo, DeviceKind, GrabbedDevice};
 pub use engine::{Engine, InputEvent, TriggerKind};
 pub use latency::LatencyStats;
 pub use profile::{Binding, Easing, Profile, ProfileError, Trigger};
-pub use runner::{Runner, RunnerConfig, RunnerError, RunnerEvent, RunnerState};
+pub use runner::{PipeRequest, Runner, RunnerConfig, RunnerError, RunnerEvent, RunnerState};
 pub use store::{Entry, Origin, Store};
 pub use touch::{Norm, PointerPool, TouchAction, MAX_POINTERS};
 pub use uinput::{ScreenMap, UinputBackend};

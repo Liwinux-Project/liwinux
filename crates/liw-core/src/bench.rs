@@ -65,6 +65,12 @@ pub struct FrameData {
     intervals: std::collections::BTreeMap<i64, f64>,
     /// Görülen tekil kareler; kapsam hesabı için.
     frames: BTreeSet<i64>,
+    /// 1 sn'yi aşan boşluklar: DONMA (menü yükleniyor, ANR, ağ zaman aşımı).
+    ///
+    /// Yüzdeliklerin dışında tutuluyorlar — tek bir 60 saniyelik donma
+    /// p99'u anlamsız kılardı. Ama atılmamaları da şart: kullanıcının
+    /// "ESC menüsünde bir dakika bekliyorum" dediği şey tam olarak bu.
+    stalls: std::collections::BTreeMap<i64, f64>,
     refresh_ns: u64,
 }
 
@@ -83,11 +89,32 @@ impl FrameData {
                 // Başlangıç karesi anahtarı: aynı aralık kaç örnekte
                 // görünürse görünsün bir kez sayılır.
                 self.intervals.insert(w[0], d);
+            } else if d >= 1000.0 && d < 600_000.0 {
+                self.stalls.insert(w[0], d);
             }
         }
     }
 
     pub fn interval_count(&self) -> usize { self.intervals.len() }
+
+    /// Zaman damgalı aralıklar: (monotonik ms, süre ms).
+    ///
+    /// Teşhis için şart: "p99 12 ms" bir takılmanın NE ZAMAN olduğunu
+    /// söylemez, dolayısıyla o anda ne olduğuyla eşleştirilemez.
+    pub fn intervals_ms(&self) -> Vec<(f64, f64)> {
+        self.intervals.iter().map(|(t, d)| (*t as f64 / 1e6, *d)).collect()
+    }
+
+    /// 1 sn'yi aşan donmalar: (monotonik ms, süre ms).
+    pub fn stalls_ms(&self) -> Vec<(f64, f64)> {
+        self.stalls.iter().map(|(t, d)| (*t as f64 / 1e6, *d)).collect()
+    }
+
+    /// En son görülen karenin zamanı (monotonik ms). Yeni kare gelip
+    /// gelmediğini anlamak için.
+    pub fn last_frame_ms(&self) -> Option<f64> {
+        self.frames.iter().next_back().map(|t| *t as f64 / 1e6)
+    }
     pub fn frame_count(&self) -> usize { self.frames.len() }
     pub fn refresh_ms(&self) -> f64 { self.refresh_ns as f64 / 1e6 }
 
@@ -147,6 +174,54 @@ pub fn sample_interval_ms(refresh_ns: u64) -> u64 {
     let refresh_ms = refresh_ns as f64 / 1e6;
     let v = BUFFER_FRAMES * refresh_ms * SAFETY;
     v.clamp(80.0, 1000.0) as u64
+}
+
+#[cfg(test)]
+mod stall_tests {
+    use super::*;
+
+    fn snap(refresh_ns: u64, presents: &[i64]) -> Snapshot {
+        Snapshot { refresh_ns, presents: presents.to_vec() }
+    }
+
+    /// Donma yüzdeliklere KARIŞMAMALI ama KAYBOLMAMALI da.
+    ///
+    /// Tek bir 60 saniyelik menü donması p99'u anlamsız kılar; atmak ise
+    /// kullanıcının asıl şikâyetini görünmez yapar.
+    #[test]
+    fn stalls_are_kept_apart_from_intervals() {
+        let mut f = FrameData::new();
+        // 3 normal kare (16 ms), sonra 5 sn boşluk, sonra 1 kare daha.
+        f.add(&snap(16_666_666, &[0, 16_000_000, 32_000_000,
+                                  5_032_000_000, 5_048_000_000]));
+        assert_eq!(f.interval_count(), 3, "donma aralıklara girmemeli");
+        let st = f.stalls_ms();
+        assert_eq!(st.len(), 1);
+        assert!((st[0].1 - 5000.0).abs() < 1.0, "{st:?}");
+        assert!((st[0].0 - 32.0).abs() < 0.1, "donmanın başlangıcı: {st:?}");
+    }
+
+    /// Aralıklar zaman damgasıyla çıkmalı; yoksa korelasyon imkânsız.
+    #[test]
+    fn intervals_carry_their_timestamp() {
+        let mut f = FrameData::new();
+        f.add(&snap(16_666_666, &[1_000_000, 17_000_000, 50_000_000]));
+        let iv = f.intervals_ms();
+        assert_eq!(iv.len(), 2);
+        assert!((iv[0].0 - 1.0).abs() < 1e-6, "{iv:?}");
+        assert!((iv[0].1 - 16.0).abs() < 1e-6, "{iv:?}");
+        assert!((iv[1].1 - 33.0).abs() < 1e-6, "{iv:?}");
+        assert!((f.last_frame_ms().unwrap() - 50.0).abs() < 1e-6);
+    }
+
+    /// Absürt uzun boşluk (10 dk) donma bile sayılmamalı: uygulama arka
+    /// plana gitmiş demektir, ölçüm değil.
+    #[test]
+    fn absurd_gaps_are_not_stalls() {
+        let mut f = FrameData::new();
+        f.add(&snap(16_666_666, &[0, 700_000_000_000]));
+        assert!(f.stalls_ms().is_empty());
+    }
 }
 
 #[cfg(test)]

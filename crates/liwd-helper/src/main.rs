@@ -335,6 +335,38 @@ impl Helper {
         run_dumpsys(&["logcat", "-d", "-b", buf, "-t", &n]).await
     }
 
+    /// MONOTONİK zaman damgalı logcat — teşhis korelasyonu için.
+    ///
+    /// `Logcat`ten ayrı bir metot çünkü biçim farkı anlam farkı:
+    /// varsayılan çıktı duvar saati veriyor ve kare zaman damgaları
+    /// `CLOCK_MONOTONIC`. İkisini hizalamak için saat dilimi ve gün
+    /// sınırı tahmini gerekiyordu; `-v monotonic` bunu tamamen kaldırıyor.
+    async fn log_trace(
+        &self,
+        buffer: &str,
+        lines: u32,
+        #[zbus(header)] hdr: Header<'_>,
+    ) -> zbus::fdo::Result<String> {
+        let Some(buf) = valid_log_buffer(buffer) else {
+            return Err(zbus::fdo::Error::InvalidArgs(format!(
+                "geçersiz tampon: {buffer:?} (main|crash|system|events|all)")));
+        };
+        let n = clamp_log_lines(lines);
+        self.authorize(&hdr, ACT_LOG, false).await?;
+        let n = n.to_string();
+        // hwcomposer SUSTURULUYOR — ölçülen: kare başına iki satır yazıyor
+        // (`attach dmabuf: ...`). 180 Hz'de saniyede ~360 satır eder ve
+        // 400 satırlık kuyruk yalnızca BİR saniyeyi kapsar; teşhis için
+        // aradığımız olaylar (GC, Skipped frames, ağ zaman aşımı) daha
+        // görülmeden halkadan düşer.
+        //
+        // `*:I` şart: bir filtre verildiği anda logcat'in varsayılanı
+        // "hepsi sessiz" oluyor. Onsuz çıktı tamamen boşalırdı.
+        run_dumpsys(&["logcat", "-d", "-b", buf,
+                      "-v", "monotonic", "-v", "threadtime", "-t", &n,
+                      "hwcomposer:S", "*:I"]).await
+    }
+
     /// Kilitlenmiş ses HAL'ini yeniden başlatır.
     ///
     /// Ölçülen arıza: HAL kilitlenince `audioserver` ona yaptığı

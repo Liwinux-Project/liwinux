@@ -114,6 +114,25 @@ pub fn is_system_overlay(pkg: &str) -> bool {
         | "com.android.systemui")
 }
 
+/// Yeni bir dokunuş borusu isteği; yanıt kanalıyla birlikte gelir.
+///
+/// Runner'ın D-Bus'ı bilmemesi bilinçli: boruyu kim, hangi yetkiyle
+/// açtığı çağıranın sorunu. Runner yalnızca "bana taze bir tanıtıcı ver"
+/// diyebiliyor.
+pub type PipeRequest =
+    tokio::sync::oneshot::Sender<Option<(std::fs::File, (u32, u32))>>;
+
+/// Bir gönderim hatası borunun ÖLDÜĞÜ anlamına mı geliyor.
+///
+/// Ayrım şart: dolu boru (`WouldBlock`) geçici ve zaten arka uçta
+/// yutuluyor; kopmuş boru kalıcı ve yeniden açmak gerekiyor. İkisini
+/// karıştırmak ya gereksiz yeniden açma ya da sessizce ölü kalma demek.
+fn pipe_is_dead(e: &super::backend::BackendError) -> bool {
+    let s = e.to_string();
+    s.contains("Broken pipe") || s.contains("os error 32")
+        || s.contains("hizası bozuldu")
+}
+
 pub struct Runner {
     cfg: RunnerConfig,
     store: Store,
@@ -125,6 +144,8 @@ pub struct Runner {
     /// nişanın ön şartı. `RunnerConfig` içinde DEĞİL çünkü `File` klonlanamaz
     /// ve yapılandırma klonlanabilir olmalı.
     touch_pipe: Option<(std::fs::File, (u32, u32))>,
+    /// Boru koptuğunda yenisini istemek için.
+    pipe_provider: Option<mpsc::Sender<PipeRequest>>,
 }
 
 impl Runner {
@@ -133,7 +154,20 @@ impl Runner {
             cfg, store,
             state: Arc::new(RwLock::new(RunnerState::default())),
             touch_pipe: None,
+            pipe_provider: None,
         }
+    }
+
+    /// Boru koptuğunda yenisini isteyeceği kanal.
+    ///
+    /// Gerçekte yaşandı: ekran hotplug'ında hwcomposer FIFO'yu silip
+    /// yeniden yaratıyor (`EventHub: Removing device
+    /// '/dev/input/wl_touch_events'`). Elimizdeki tanıtıcı sahipsiz
+    /// kalıyor ve enjeksiyon SESSİZCE duruyor — kullanıcı bunu "fare
+    /// birden çalışmaz oldu" diye yaşıyor.
+    pub fn with_pipe_provider(mut self, tx: mpsc::Sender<PipeRequest>) -> Self {
+        self.pipe_provider = Some(tx);
+        self
     }
 
     /// Waydroid'in dokunuş borusunu kullan (compositor'ı atla).
@@ -231,11 +265,38 @@ impl Runner {
         let mut grabbed = false;
         let mut esc = 0u8;
         let mut lat = LatencyStats::new();
+        // Boru koptu mu. Kopunca yeniden açılana kadar gönderim anlamsız.
+        let mut pipe_dead = false;
+        // Gönderim sarmalayıcı: hatayı yutmak yerine SINIFLANDIRIR.
+        // Eskiden her çağrı `let _ =` ile atılıyordu; boru koptuğunda
+        // hiçbir yerde iz kalmıyor ve enjeksiyon sessizce ölüyordu.
+        macro_rules! emit_touch {
+            ($acts:expr) => {{
+                let acts = $acts;
+                if acts.is_empty() { true } else {
+                    match backend.dispatch(&acts) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            if pipe_is_dead(&e) {
+                                pipe_dead = true;
+                                tracing::error!(hata = %e,
+                                    "dokunuş borusu koptu — yenisi istenecek");
+                            } else {
+                                tracing::warn!(hata = %e, "dokunuş gönderilemedi");
+                            }
+                            false
+                        }
+                    }
+                }
+            }};
+        }
 
         let t0 = std::time::Instant::now();
         // Kare başına tek dokunuş hareketi göndermek için: gerçek
         // dokunmatik ekranlar 60-240 Hz raporlar, 1000 Hz fare hızında
         // değil. 5 ms ~ 200 Hz.
+        let mut repair_tick = tokio::time::interval(std::time::Duration::from_secs(2));
+        repair_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut ticker = tokio::time::interval(std::time::Duration::from_millis(5));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -260,7 +321,7 @@ impl Runner {
                     if is_system_overlay(&pkg) && profile.is_some() {
                         if let Some(e) = engine.as_mut() {
                             let acts = e.set_enabled(false);
-                            let _ = backend.dispatch(&acts);
+                            let _ = emit_touch!(acts);
                         }
                         let _ = backend.release_all();
                         engine = None;
@@ -283,7 +344,7 @@ impl Runner {
                     // değişirken ekranda asılı parmak kalmamalı.
                     if let Some(e) = engine.as_mut() {
                         let acts = e.set_enabled(false);
-                        let _ = backend.dispatch(&acts);
+                        let _ = emit_touch!(acts);
                     }
                     let _ = backend.release_all();
 
@@ -369,7 +430,7 @@ impl Runner {
                         // enjekte etmeye devam eder.
                         if let Some(e) = engine.as_mut() {
                             let acts = e.set_enabled(false);
-                            let _ = backend.dispatch(&acts);
+                            let _ = emit_touch!(acts);
                         }
                         engine = None;
                         let _ = backend.release_all();
@@ -388,11 +449,52 @@ impl Runner {
                     s.grabbed = grabbed;
                 }
 
+                // --- kopmuş boruyu yenile ---
+                //
+                // Ayrı ve yavaş bir saatte: jest saatine bağlamak,
+                // jest yokken (tam da enjeksiyonun durduğu anda)
+                // hiç çalışmaması demekti.
+                _ = repair_tick.tick(), if pipe_dead => {
+                    let Some(tx) = self.pipe_provider.clone() else {
+                        tracing::error!("boru koptu ve yenileyecek kanal yok \
+                                         — keymapper yeniden başlatılmalı");
+                        pipe_dead = false;
+                        continue;
+                    };
+                    let (rtx, rrx) = tokio::sync::oneshot::channel();
+                    if tx.send(rtx).await.is_err() { continue; }
+                    match rrx.await {
+                        Ok(Some((f, (w, h)))) => {
+                            match WlTouchBackend::from_pipe(f, w, h) {
+                                Ok(b) => {
+                                    backend = Box::new(b);
+                                    pipe_dead = false;
+                                    // Motorun parmak durumu artık GEÇERSİZ:
+                                    // Android cihazı kaldırdığında bütün
+                                    // dokunuşlarımızı unuttu. Sıfırdan
+                                    // başlamazsak havuz sızar ve nişan ölür.
+                                    if let Some(e) = engine.as_mut() {
+                                        let _ = e.set_enabled(false);
+                                        let _ = e.set_enabled(true);
+                                    }
+                                    tracing::info!(genişlik = w, yükseklik = h,
+                                        "dokunuş borusu yenilendi");
+                                }
+                                Err(e) => tracing::error!(hata = %e,
+                                    "yeni boru kurulamadı"),
+                            }
+                        }
+                        Ok(None) => tracing::warn!("boru henüz alınamadı, \
+                                                    tekrar denenecek"),
+                        Err(_) => {}
+                    }
+                }
+
                 // --- jest saati ---
                 _ = ticker.tick(), if engine.as_ref().is_some_and(|e| e.has_pending()) => {
                     if let Some(e) = engine.as_mut() {
                         let acts = e.tick(t0.elapsed().as_millis() as u64);
-                        if !acts.is_empty() { let _ = backend.dispatch(&acts); }
+                        if !acts.is_empty() { let _ = emit_touch!(acts); }
                     }
                 }
 
@@ -436,7 +538,7 @@ impl Runner {
                                 // menüye dönüldüğünde ekranda asılı kalır.
                                 if let Some(e) = engine.as_mut() {
                                     let acts = e.set_enabled(false);
-                                    let _ = backend.dispatch(&acts);
+                                    let _ = emit_touch!(acts);
                                 }
                                 engine = None;
                                 let _ = backend.release_all();
@@ -476,7 +578,7 @@ impl Runner {
                         // tick eylemleri ATILMAMALI: önceki jestin UP'ı orada olabilir.
                         let mut acts = e.tick(t0.elapsed().as_millis() as u64);
                         acts.extend(e.handle(input));
-                        if !acts.is_empty() && backend.dispatch(&acts).is_ok() {
+                        if !acts.is_empty() && emit_touch!(acts) {
                             lat.record(ev_time);
                         }
                     }
@@ -496,7 +598,7 @@ impl Runner {
                         // Fare hareketi motorda BİRİKİR; uygulama tick'te.
                         // Tuş olayları (fare düğmeleri) anında işlenir.
                         let acts = e.handle(input);
-                        if !acts.is_empty() && backend.dispatch(&acts).is_ok() {
+                        if !acts.is_empty() && emit_touch!(acts) {
                             lat.record(ev_time);
                         }
                     }
@@ -509,9 +611,13 @@ impl Runner {
         }
 
         // Temiz çıkış.
+        //
+        // Burada `emit_touch!` KULLANILMIYOR: çıkarken borunun ölü olup
+        // olmadığını öğrenmenin bir değeri yok, sınıflandırma yalnızca
+        // "hiç okunmayan atama" uyarısı üretirdi.
         if let Some(e) = engine.as_mut() {
             let acts = e.set_enabled(false);
-            let _ = backend.dispatch(&acts);
+            if !acts.is_empty() { let _ = backend.dispatch(&acts); }
         }
         let _ = backend.release_all();
         if grabbed {
@@ -533,6 +639,26 @@ impl Runner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Kopmuş boru ile DOLU boru ayrılmalı.
+    ///
+    /// Dolu boru geçicidir ve arka uçta zaten yutuluyor; onu da "koptu"
+    /// saymak her yük anında gereksiz yere boru yenilettirirdi. Tersi de
+    /// kötü: gerçek kopmayı görmezden gelmek enjeksiyonu sessizce
+    /// öldürüyordu (ekran hotplug'ında ölçüldü).
+    #[test]
+    fn only_a_real_break_counts_as_dead() {
+        use super::super::backend::BackendError;
+        let dead = BackendError::Dispatch(
+            "boruya yazılamadı: Broken pipe (os error 32)".into());
+        assert!(pipe_is_dead(&dead));
+        let misaligned = BackendError::Dispatch(
+            "kısmi yazma: 12/24 bayt — boru hizası bozuldu".into());
+        assert!(pipe_is_dead(&misaligned), "hizası bozulmuş boru da ölüdür");
+        let busy = BackendError::Dispatch("geçersiz işaretçi kimliği 12".into());
+        assert!(!pipe_is_dead(&busy));
+        // Dolu boru arka uçta Ok(()) dönüyor; buraya hiç gelmiyor.
+    }
 
     #[test]
     fn default_state_is_idle() {

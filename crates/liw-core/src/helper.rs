@@ -83,6 +83,25 @@ impl HelperClient {
         Ok((std::fs::File::from(std::os::fd::OwnedFd::from(fd)), w, h))
     }
 
+    /// Monotonik zaman damgalı logcat (teşhis korelasyonu).
+    ///
+    /// Helper eski sürümdeyse bu metot yoktur; çağıran `Logcat`e
+    /// düşmelidir. Sessizce boş dönmek, "hiç olay yok" gibi görünüp
+    /// teşhisi tamamen yanlış yönlendirirdi.
+    pub async fn log_trace(&self, buffer: &str, lines: u32)
+        -> Result<String, HelperError>
+    {
+        self.proxy.call("LogTrace", &(buffer, lines))
+            .await.map_err(|e| HelperError::Call(e.to_string()))
+    }
+
+    pub async fn logcat(&self, buffer: &str, lines: u32)
+        -> Result<String, HelperError>
+    {
+        self.proxy.call("Logcat", &(buffer, lines))
+            .await.map_err(|e| HelperError::Call(e.to_string()))
+    }
+
     pub async fn net_diagnose(&self) -> Result<String, HelperError> {
         self.proxy.call("NetDiagnose", &())
             .await.map_err(|e| HelperError::Call(e.to_string()))

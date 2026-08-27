@@ -47,6 +47,32 @@ ortadan kalkar.
 
 Ayrıntı, ölçüm ve doğrulama yöntemi: [docs/fare-nisan.md](docs/fare-nisan.md)
 
+## Takılma teşhisi
+
+```bash
+liw trace com.ForgeGames.SpecialForcesGroup2 --duration 90
+```
+
+`liw bench` "ne kadar kötü", `liw perf` "hangi kaldıraçlar açık" der.
+`liw trace` **neden** sorusuna bakar: kare sunum zamanlarını, Android
+günlüğünü ve host kaynaklarını AYNI saate (`CLOCK_MONOTONIC`) koyup
+takılma anında ne olduğunu eşleştirir.
+
+* Her takılmanın yanında o anki günlük olayı ve host örneği yazılır.
+* **Donma** ayrı ele alınır: 60 saniye kare gelmiyorsa ortada "uzun
+  aralık" yoktur, hiç aralık yoktur. Döngü "en son ne zaman yeni kare
+  gördüm" diye ayrıca bakar ve donma SÜRERKEN günlüğü yakalar —
+  sonradan bakmak çoğu zaman geç kalıyor, logcat halkası kanıtı
+  düşürüyor.
+* Tanıdığı imzalar: ağ zaman aşımı, ANR, çökme, kilit çekişmesi, GC,
+  ana iş parçacığı aşımı (`Choreographer`/`Davey!`), ARM köprüsü ve
+  derleme, binder, **girdi yolu kaybı**.
+* Kanıt yoksa suçlama yok: "muhtemelen GPU" demek yerine açıkça
+  "açıklanamadı" der ve host verisine bakar.
+
+"Fare sisteminden mi geliyor?" sorusunun doğrudan cevabı *girdi yolu*
+imzasıdır: Android dokunuş cihazımızı kaybettiyse günlüğe yazar.
+
 ## Görsel profil düzenleyici
 
 ```bash

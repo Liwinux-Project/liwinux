@@ -2,6 +2,7 @@
 
 mod bench;
 mod perf;
+mod trace;
 mod editor;
 mod keymap;
 mod profile;
@@ -35,6 +36,17 @@ enum Cmd {
         /// Ölçüm süresi (saniye)
         #[arg(short, long, default_value_t = 60)]
         duration: u64,
+    },
+    /// Takılmanın NEDENİNİ bul: kare + Android günlüğü + host, aynı saatte
+    Trace {
+        /// Android paket adı
+        package: String,
+        /// İzleme süresi (saniye)
+        #[arg(short, long, default_value_t = 90)]
+        duration: u64,
+        /// Takılma eşiği (ms). Verilmezse yenileme hızından türetilir.
+        #[arg(long)]
+        jank_ms: Option<f64>,
     },
     /// Performans kaldıraçlarının teşhisi (hiçbir şey değiştirmez)
     Perf {
@@ -254,6 +266,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let action = match cli.cmd {
         Cmd::Bench { package, duration } => return bench::run(package, duration).await,
+        Cmd::Trace { package, duration, jank_ms } =>
+            return trace::run(package, duration, jank_ms).await,
         Cmd::Perf { action } => return match action {
             PerfAction::Status => perf::status(),
         },
