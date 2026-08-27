@@ -13,6 +13,13 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use zbus::{connection, interface};
 
+/// Pencere yoklaması kaç sağlık turunda bir yapılsın.
+///
+/// Sağlık turu 5 sn; 6 turda bir = 30 sn. Kullanıcı pencereyi kapatıp
+/// açtığında en geç yarım dakikada fark edilir — tam ekran zaten pencere
+/// açıldıktan sonra uygulanacak, gecikme hissedilmez.
+const WINDOW_POLL_EVERY: u32 = 6;
+
 const BUS_NAME: &str = "id.liwinux.Manager1";
 const OBJ_PATH: &str = "/id/liwinux/Manager1";
 
@@ -203,6 +210,7 @@ async fn main() -> Result<()> {
     let mut unhealthy = 0u32;
     let mut attempts = 0u32;
     let mut was_running = false;
+    let mut win_tick: u32 = 0;
     let mut ticker = tokio::time::interval(cfg.poll_interval);
     let mut sigterm = tokio::signal::unix::signal(
         tokio::signal::unix::SignalKind::terminate())?;
@@ -220,10 +228,21 @@ async fn main() -> Result<()> {
                     if unhealthy > 0 { tracing::info!("session toparlandı"); }
                     unhealthy = 0; attempts = 0;
 
-                    // Pencere durumunu yokla. Kullanıcı session'ı ayakta
-                    // tutup pencereyi kapatıp açabiliyor; bunu görmezsek
-                    // yeni pencere hiç tam ekran yapılmıyor.
-                    if was_running {
+                    // Pencere durumunu SEYREK yokla.
+                    //
+                    // Sağlık döngüsü 5 saniyede bir dönüyor; her turda KWin
+                    // betiği yüklemek saatte 720 yükleme demekti. KWin'in
+                    // scripting motorunu bu kadar sık meşgul etmek gereksiz
+                    // ve riskli — pencerenin kaybolduğunu fark etmek 5
+                    // saniyelik çözünürlük istemiyor.
+                    //
+                    // Ayrıca YALNIZCA tam ekran denenmişse yoklanır:
+                    // denenmediyse sıfırlanacak bir şey de yok.
+                    win_tick = win_tick.wrapping_add(1);
+                    if was_running
+                        && win_tick % WINDOW_POLL_EVERY == 0
+                        && win.fullscreen_attempted().await
+                    {
                         let _ = window::request_report().await;
                         if win.note_window_gone().await {
                             tracing::info!(
