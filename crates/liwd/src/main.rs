@@ -169,6 +169,27 @@ async fn main() -> Result<()> {
         .await?;
     tracing::info!("liwd hazır — {BUS_NAME} {OBJ_PATH}");
 
+    // Keymapper'ı kendiliğinden başlat.
+    //
+    // Önceden yalnızca açık D-Bus çağrısıyla başlıyordu; her
+    // `systemctl --user restart liwd` sonrası SESSİZCE kayboluyordu.
+    // Kullanıcının gördüğü tek şey "girdileri almıyor" oluyordu.
+    //
+    // Klavye yapılandırılmamışsa başlatmayı denemek anlamsız — ama bunu
+    // sessizce geçmek de aynı hatayı tekrarlamak olurdu, o yüzden söyle.
+    {
+        let c = liw_core::Config::load();
+        if !c.keymapper_on_start {
+            tracing::info!("keymapper otomatik başlatma kapalı (keymapper_on_start = false)");
+        } else if c.keyboard.is_none() {
+            tracing::warn!(
+                "keymapper başlatılmadı: yapılandırılmış klavye yok \
+                 — `liw keymap detect --save` ile kalibre et");
+        } else if let Err(e) = km.start(true).await {
+            tracing::error!(hata = %e, "keymapper otomatik başlatılamadı");
+        }
+    }
+
     // Adımızı kaybedersek ÇIKMALIYIZ.
     //
     // Gerçekte oldu: eski bir liwd adını kaybetti ama çalışmaya devam etti.

@@ -17,6 +17,14 @@ pub struct Config {
     /// tercih meselesi — kullanıcı pencere modunda çalışmak isteyebilir.
     #[serde(default = "default_true")]
     pub fullscreen_on_start: bool,
+    /// liwd açılırken keymapper da başlasın mı.
+    ///
+    /// Varsayılan açık: daemon'un var oluş sebeplerinden biri eşleme.
+    /// Kapalıyken her `systemctl --user restart liwd` sonrası keymapper
+    /// SESSİZCE kayboluyordu — kullanıcı "girdileri almıyor" görüyor,
+    /// nedenini hiçbir yerden anlayamıyordu. Gerçekte yaşandı.
+    #[serde(default = "default_true")]
+    pub keymapper_on_start: bool,
     /// Oyun kipini açıp kapatan tuşun evdev kodu.
     ///
     /// Oyun kipi = cihazlar kilitli + eşleme etkin. Kapalıyken fare
@@ -33,7 +41,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             keyboard: None, mouse: None,
-            fullscreen_on_start: true, hotkey_game_mode: None,
+            fullscreen_on_start: true, keymapper_on_start: true,
+            hotkey_game_mode: None,
         }
     }
 }
@@ -74,6 +83,20 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    /// Eksik alan AÇIK varsayılmalı: kapalı varsaymak, eski config'i olan
+    /// kullanıcılarda keymapper'ın sessizce başlamaması demekti.
+    #[test]
+    fn missing_keymapper_field_defaults_to_true() {
+        let c: super::Config = toml::from_str("keyboard = \"/dev/input/event1\"").unwrap();
+        assert!(c.keymapper_on_start);
+    }
+
+    #[test]
+    fn keymapper_autostart_can_be_disabled() {
+        let c: super::Config = toml::from_str("keymapper_on_start = false").unwrap();
+        assert!(!c.keymapper_on_start);
+    }
+
     use super::*;
 
     #[test]
@@ -95,6 +118,7 @@ mod tests {
             keyboard: Some(PathBuf::from("/dev/input/event23")),
             mouse: None,
             fullscreen_on_start: true,
+            keymapper_on_start: true,
             hotkey_game_mode: Some(40),
         };
         let s = toml::to_string(&c).unwrap();
