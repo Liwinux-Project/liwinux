@@ -189,6 +189,10 @@ impl Engine {
         if let Some(name) = self.joystick_pending.take() {
             acts.extend(self.recompute_joystick(&name));
         }
+        // Sızıntı onarımı ÖNCE: havuz dolarsa nişan işaretçi alamaz ve
+        // fare tamamen ölür.
+        acts.extend(self.reconcile_pointers());
+
         // Gecikmeli iniş: kalkıştan sonra Android'in dokunuşu gerçekten
         // bitirmesi için zaman tanınır. Aynı karede göndermek oyunun
         // ışınlanma görmesine yol açıyor.
@@ -200,9 +204,14 @@ impl Engine {
                         .find(|(_, b)| matches!(b, Binding::Aim { .. }))
                         .map(|(n, b)| (n.clone(), b.clone()))
                 {
-                    if let Some(id) = self.pool.acquire(&name) {
-                        self.aim_pos = Some(origin);
-                        acts.push(TouchAction::Down { id, at: origin });
+                    match self.pool.acquire(&name) {
+                        Some(id) => {
+                            self.aim_pos = Some(origin);
+                            acts.push(TouchAction::Down { id, at: origin });
+                        }
+                        None => tracing::error!(
+                            kullanımda = self.pool.active_count(),
+                            "nişan inişi yapılamadı — havuz dolu"),
                     }
                 }
             }
@@ -285,6 +294,39 @@ impl Engine {
     ///
     /// Gerçek hata: gecikmeli iniş beklenirken tick erken çıkıyordu ve
     /// joystick'in bekleyen yönü hiç uygulanmıyordu.
+    /// Sahipsiz kalmış işaretçileri bulur ve bırakır.
+    ///
+    /// `Tap`/`Toggle` bağlantıları basışta işaretçi alır, bırakışta verir.
+    /// Bırakma olayı KAYBOLURSA (oyun kipi geçişi, odak değişimi, kilit
+    /// alma/bırakma sırasında olabiliyor) işaretçi sonsuza kadar tutulu
+    /// kalır. Birkaç sızıntıdan sonra havuz dolar ve nişan yeni işaretçi
+    /// alamaz — fare TAMAMEN ölür. Gerçekte yaşandı.
+    ///
+    /// Bu yüzden her tick'te tutulan işaretçilerle basılı tuşlar
+    /// karşılaştırılır; karşılığı olmayan bırakılır.
+    fn reconcile_pointers(&mut self) -> Vec<TouchAction> {
+        let mut acts = Vec::new();
+        let names: Vec<String> = self.profile.bindings.keys().cloned().collect();
+        for name in names {
+            // Nişan, joystick ve süren kaydırmalar kendi ömrünü yönetir.
+            let Some(b) = self.profile.bindings.get(&name) else { continue };
+            let expects_hold = match b {
+                Binding::Tap { trigger, .. } | Binding::Toggle { trigger, .. } =>
+                    Some(TriggerKind::from(trigger)),
+                _ => None,
+            };
+            let Some(t) = expects_hold else { continue };
+            if self.pool.get(&name).is_some() && !self.held.contains(&t) {
+                if let Some(id) = self.pool.release(&name) {
+                    tracing::warn!(bağlantı = %name,
+                        "sahipsiz işaretçi bırakıldı (kayıp tuş bırakma olayı)");
+                    acts.push(TouchAction::Up { id });
+                }
+            }
+        }
+        acts
+    }
+
     /// Nişan dışındaki bekleyen işler (joystick yönü, kaydırma adımları).
     fn tick_gestures(&mut self, now_ms: u64, mut acts: Vec<TouchAction>) -> Vec<TouchAction> {
         if let Some(name) = self.joystick_pending.take() {
@@ -340,6 +382,12 @@ impl Engine {
 
     /// Motorun bildiği son zaman (test/teşhis).
     pub fn now_ms(&self) -> u64 { self.now_ms }
+
+    /// Kullanımdaki işaretçi sayısı (teşhis).
+    pub fn active_pointers(&self) -> usize { self.pool.active_count() }
+
+    #[cfg(test)]
+    fn forget_held_for_test(&mut self) { self.held.clear(); }
 
     /// Devir teslim için ikinci parmak indirilmiş mi (test/teşhis).
     pub fn aim_has_second(&self) -> bool { self.aim_second.is_some() }
@@ -503,7 +551,12 @@ impl Engine {
         let mut acts = Vec::new();
         if self.aim_pos.is_none() {
             if toggle.is_some() { return acts; }
-            let Some(id) = self.pool.acquire(&name) else { return acts };
+            let Some(id) = self.pool.acquire(&name) else {
+                tracing::error!(
+                    kullanımda = self.pool.active_count(), sınır = MAX_POINTERS,
+                    "nişan işaretçi alamadı — havuz dolu, fare çalışmayacak");
+                return acts;
+            };
             self.aim_pos = Some(origin);
             acts.push(TouchAction::Down { id, at: origin });
         }
@@ -1407,6 +1460,25 @@ mod tests {
         let a = e.tick(e.now_ms() + 1);          // iniş henüz zamanı gelmedi
         assert!(a.iter().any(|x| matches!(x, TouchAction::Move { .. })),
             "nişan sıfırlanırken joystick yönü uygulanmalı: {a:?}");
+    }
+
+    /// Kayıp tuş bırakma olayı işaretçi SIZDIRMAMALI.
+    ///
+    /// Sızıntı birikirse havuz dolar ve nişan işaretçi alamaz — fare
+    /// tamamen ölür. Gerçekte yaşandı.
+    #[test]
+    fn orphaned_pointers_are_reclaimed() {
+        let mut e = Engine::new(joystick_profile());
+        let _ = e.handle(InputEvent::Press(key(SPACE)));
+        assert_eq!(e.active_pointers(), 1);
+
+        // Bırakma olayını "kaybet": held setini doğrudan temizle.
+        e.forget_held_for_test();
+
+        let a = e.tick(10);
+        assert!(a.iter().any(|x| matches!(x, TouchAction::Up { .. })),
+            "sahipsiz işaretçi bırakılmalı: {a:?}");
+        assert_eq!(e.active_pointers(), 0, "havuz temizlenmeli");
     }
 
     #[test]
