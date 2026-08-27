@@ -132,6 +132,10 @@ impl Handle {
                         tracing::info!(paket = %package, %profile, "profil etkin"),
                     RunnerEvent::ProfileCleared { package } =>
                         tracing::info!(paket = %package, "profil yok — eşleme kapalı"),
+                    RunnerEvent::OverlayPaused { package } => tracing::warn!(
+                        paket = %package,
+                        "sistem katmanı oyunun üstüne çıktı — eşleme duraklatıldı, \
+                         fare serbest"),
                     RunnerEvent::Grabbed => tracing::info!("cihaz kilitlendi"),
                     RunnerEvent::Ungrabbed => tracing::info!("cihaz kilidi bırakıldı"),
                     RunnerEvent::GameModeOn =>

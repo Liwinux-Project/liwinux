@@ -89,6 +89,28 @@ pub enum RunnerEvent {
     FocusGained,
     FocusLost,
     EscapeRequested,
+    /// Sistem katmanı (asistan, bildirim paneli) oyunun üstüne çıktı.
+    ///
+    /// `ProfileCleared`'dan ayrı tutuluyor çünkü nedeni tamamen farklı:
+    /// oyun kapanmadı, üstüne bir şey geldi. Kullanıcı farenin neden
+    /// öldüğünü bilmeli.
+    OverlayPaused { package: String },
+}
+
+/// Oyunun ÜSTÜNE çıkan geçici sistem katmanları.
+///
+/// Bunlar ön plana geçtiğinde oyun kapanmış olmuyor, sadece üstü
+/// örtülüyor. Profili silmek yerine duraklatıyoruz ki katman kalkınca
+/// anında geri dönsün.
+///
+/// Liste dar tutuluyor: izin diyalogları gibi gerçekten kullanıcı
+/// girdisi bekleyen şeyler BURAYA GİRMEMELİ.
+pub fn is_system_overlay(pkg: &str) -> bool {
+    matches!(pkg,
+        // Google Asistan / arama — oyun sırasında kendiliğinden açılıyor.
+        "com.google.android.googlequicksearchbox"
+        // Bildirim paneli, son kullanılanlar, ses kontrolü.
+        | "com.android.systemui")
 }
 
 pub struct Runner {
@@ -176,6 +198,32 @@ impl Runner {
                 // --- ön plan değişimi ---
                 Some(pkg) = foreground.recv() => {
                     if current.as_deref() == Some(pkg.as_str()) { continue; }
+
+                    // Sistem katmanı: oyun kapanmadı, üstü örtüldü.
+                    // Profili KORU ki katman kalkınca anında dönsün.
+                    // Kilidi bırak ki kullanıcı katmanı fareyle kapatabilsin
+                    // — yoksa fare kilitli kalır ve asistan kapatılamaz.
+                    if is_system_overlay(&pkg) && profile.is_some() {
+                        if let Some(e) = engine.as_mut() {
+                            let acts = e.set_enabled(false);
+                            let _ = backend.dispatch(&acts);
+                        }
+                        let _ = backend.release_all();
+                        engine = None;
+                        if grabbed {
+                            let _ = stream.device_mut().ungrab();
+                            if let Some(m) = mouse_stream.as_mut() {
+                                let _ = m.device_mut().ungrab();
+                            }
+                            grabbed = false;
+                            emit(RunnerEvent::Ungrabbed);
+                        }
+                        emit(RunnerEvent::OverlayPaused { package: pkg.clone() });
+                        let mut s = self.state.write().await;
+                        s.foreground = Some(pkg);
+                        s.grabbed = false;
+                        continue;
+                    }
 
                     // Eski profili kapat ve parmakları bırak: uygulama
                     // değişirken ekranda asılı parmak kalmamalı.
@@ -444,6 +492,26 @@ mod tests {
     #[test]
     fn escape_requires_repeated_presses() {
         assert!(ESC_STREAK > 1);
+    }
+
+    /// Asistan oyunun üstüne çıkınca profil DÜŞMEMELİ.
+    ///
+    /// Gerçekte yaşandı: asistan kendiliğinden açıldı, ön plan paketi
+    /// değişti, keymapper kapandı ve fare sessizce öldü.
+    #[test]
+    fn assistant_and_systemui_are_overlays() {
+        assert!(is_system_overlay("com.google.android.googlequicksearchbox"));
+        assert!(is_system_overlay("com.android.systemui"));
+    }
+
+    /// Gerçek uygulamalar katman sayılmamalı — yoksa oyundan çıkınca
+    /// eşleme açık kalır ve tuşlar masaüstüne sızar.
+    #[test]
+    fn real_apps_are_not_overlays() {
+        for p in ["com.ForgeGames.SpecialForcesGroup2", "com.android.settings",
+                  "com.android.permissioncontroller", "com.android.vending"] {
+            assert!(!is_system_overlay(p), "{p} katman sayılmamalı");
+        }
     }
 
     #[test]

@@ -526,6 +526,9 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
                     println!("[{package}] profil ETKİN: {profile}"),
                 RunnerEvent::ProfileCleared { package } =>
                     println!("[{package}] profil yok — eşleme kapalı"),
+                RunnerEvent::OverlayPaused { package } => println!(
+                    "\n  ⏸  {package} oyunun üstüne çıktı — eşleme duraklatıldı.\n\
+                     \x20    Fare serbest bırakıldı; katmanı kapatınca kendiliğinden dönecek.\n"),
                 RunnerEvent::Grabbed => println!("  kilit alındı"),
                 RunnerEvent::Ungrabbed => println!("  kilit bırakıldı"),
                 RunnerEvent::GameModeOn => println!("  OYUN KİPİ AÇIK (kilit + eşleme)"),
