@@ -60,11 +60,18 @@ olsun yazılan değer aynı — bir kaç piksellik kayma oyunda düğmeyi ıskal
 
 * Ok tuşları tam **1 piksel** oynatır (<kbd>Shift</kbd> = 10).
 * Konum piksel cinsinden de yazılabilir.
-* Bağlantı ekle/sil/yeniden adlandır; tuş ataması fiziksel tuşa basarak
-  yapılır (evdev kodu, klavye düzeninden bağımsız).
+* Her kartın başlığında **tuş rozeti** var: tıkla, yeni tuşa bas, bitti.
+  Ada tıklayınca satır içinde yeniden adlandırılır, **×** siler.
+  Tuş ataması fiziksel tuş kodudur (evdev), klavye düzeninden bağımsız.
+* Yeni bağlantı eklerken tuş hemen sorulur ve nokta görünen alanın
+  ortasına konur.
+* Aynı tuş iki bağlantıda kullanılırsa **yazarken** uyarır — kayıtta
+  öğrenip hangisi olduğunu aramak zorunda kalmazsın.
 * "Seçiliye dokun" gerçek dokunuşu Android'e gönderir — artık compositor
   atlandığı için oyun penceresinin önde olması gerekmiyor.
-* Kayıt TOML'daki yorumları korur ve çakışan tuş atamasını reddeder.
+* "Kaydet ve uygula" keymapper'ı da yeniden başlatır; terminale gitmeden
+  düzenle-dene döngüsü kurulur.
+* Kayıt TOML'daki yorumları (satır sonundakiler dâhil) korur.
 
 ## Neden session sahipliği önemli
 

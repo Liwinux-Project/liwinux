@@ -35,6 +35,23 @@ body{margin:0;background:var(--bg);color:var(--fg);
 .card .body{padding:2px 10px 10px;border-top:1px solid var(--line);display:none}
 .card.sel .body{display:block}
 
+/* Başlıktaki tuş rozetleri: kartı AÇMADAN tuş değiştirebilmek için.
+   En sık yapılan iş bu; kartın dibine gömmek onu görünmez kılıyordu. */
+.keys{display:flex;gap:3px;flex:none}
+.kb{font:600 10px/1.6 ui-monospace,monospace;padding:0 5px;border-radius:4px;
+  background:#232b37;border:1px solid #313a48;color:var(--fg);cursor:pointer;
+  min-width:20px;text-align:center}
+.kb:hover{border-color:var(--acc);color:var(--acc)}
+.kb.none{color:var(--warn);border-color:#4a3a18;background:#2a2314}
+.kb.dup{color:#fff;background:#7a2230;border-color:var(--bad)}
+.kb.opt{color:var(--mut);font-weight:400}
+.xbtn{flex:none;border:0;background:none;color:var(--mut);font-size:15px;
+  line-height:1;padding:2px 4px;cursor:pointer;border-radius:4px}
+.xbtn:hover{background:#3a2427;color:var(--bad)}
+.nmedit{font:inherit;font-weight:650;background:#0d1015;color:var(--fg);
+  border:1px solid var(--acc);border-radius:4px;padding:1px 5px;width:100%}
+#conflict{color:var(--bad);font-size:11px;padding:6px 12px 0;display:none}
+
 .row{display:flex;align-items:center;gap:8px;margin-top:8px}
 .row label{width:82px;flex:none;color:var(--mut);font-size:11px}
 .row .val{font-family:ui-monospace,monospace;font-size:11px;color:var(--mut)}
@@ -119,9 +136,18 @@ kbd{background:#222935;border:1px solid var(--line);border-radius:4px;
     </select>
     <button id="add">Ekle</button>
   </div>
+  <div class="hint" style="padding:0 12px 8px">
+    Tuş rozetine tıkla → tuşu değiştir · ada tıkla → yeniden adlandır ·
+    <b>×</b> → sil.  Görüntüye tıkla → seçili noktayı oraya taşı.
+    Ok tuşları 1 px (<kbd>Shift</kbd> 10).
+  </div>
+  <div id="conflict"></div>
   <div id="list"></div>
   <div id="foot">
-    <button class="p wide" id="save">Kaydet</button>
+    <div style="display:flex;gap:6px">
+      <button id="save" style="flex:1">Kaydet</button>
+      <button class="p" id="apply" style="flex:1.4">Kaydet ve uygula</button>
+    </div>
     <div id="msg"></div>
   </div>
 </aside>
@@ -207,6 +233,39 @@ function trigLabel(t) {
 }
 const UNSET = () => ({ Key: 0 });
 const isUnset = t => t == null || (typeof t === 'object' && !t.Key);
+/// Rozet için kısa etiket. Başlıkta yer az; "Sol Ctrl (29)" sığmıyor.
+function shortLabel(t) {
+  if (t == null) return '—';
+  if (typeof t === 'string') return {
+    MouseLeft:'M1', MouseRight:'M2', MouseMiddle:'M3',
+    WheelUp:'W↑', WheelDown:'W↓' }[t] || t;
+  const c = t.Key;
+  if (!c) return '?';
+  const short = { 1:'Esc', 14:'⌫', 15:'Tab', 28:'⏎', 29:'Ctrl', 42:'Shift',
+    54:'RShift', 56:'Alt', 57:'Space', 58:'Caps', 97:'RCtrl', 100:'RAlt',
+    103:'↑', 105:'←', 106:'→', 108:'↓', 41:'`' }[c];
+  if (short) return short;
+  const n = CODE2NAME[c] || ('#' + c);
+  return n.replace(/^Key|^Digit|^Numpad/, '') || ('#' + c);
+}
+/// Aynı tetikleyiciyi kullanan bağlantılar.
+///
+/// Kayıt anında reddetmek yetmiyor: kullanıcı hangi ikisinin çakıştığını
+/// aramak zorunda kalıyor. Çakışmayı DÜZENLERKEN göstermek, hatayı hiç
+/// oluşturmamayı sağlıyor.
+function conflicts() {
+  const seen = {}, dup = {};
+  for (const [name, b] of Object.entries(B)) {
+    for (const [f] of triggersOf(b)) {
+      const t = b[f];
+      if (isUnset(t)) continue;
+      const k = JSON.stringify(t);
+      if (seen[k]) { (dup[k] = dup[k] || [seen[k]]).push(name); }
+      else seen[k] = name;
+    }
+  }
+  return dup;
+}
 
 /* ============================================================ */
 const $ = s => document.querySelector(s);
@@ -506,10 +565,19 @@ function keyRow(label, b, field) {
   return row;
 }
 
+let DUP = {};
 function renderList() {
   const list = $('#list');
   const scroll = list.scrollTop;
   list.innerHTML = '';
+  DUP = conflicts();
+  const cbar = $('#conflict');
+  const groups = Object.values(DUP);
+  if (groups.length) {
+    cbar.style.display = 'block';
+    cbar.textContent = '⚠ aynı tuş birden fazla bağlantıda: ' +
+      groups.map(g => g.join(' = ')).join('  ·  ');
+  } else cbar.style.display = 'none';
   for (const name of Object.keys(B).sort()) {
     const b = B[name];
     const card = document.createElement('div');
@@ -517,8 +585,71 @@ function renderList() {
 
     const top = document.createElement('div');
     top.className = 'top';
-    top.innerHTML = `<span class="nm">${name}</span><span class="tag">${b.type}</span>`;
     top.onclick = () => select(name === sel ? null : name);
+
+    // Ad: TIKLA-DÜZENLE. `prompt()` hem çirkin hem bazı tarayıcılarda
+    // engelleniyor; yeniden adlandırma sık yapılan bir iş.
+    const nm = document.createElement('span');
+    nm.className = 'nm'; nm.textContent = name; nm.title = 'adı değiştirmek için tıkla';
+    nm.onclick = e => {
+      e.stopPropagation();
+      const inp = document.createElement('input');
+      inp.className = 'nmedit'; inp.value = name;
+      const commit = ok => {
+        const v = inp.value.trim();
+        if (!ok || !v || v === name) return renderList();
+        if (B[v]) { flash(`'${v}' adı zaten var`, true); return renderList(); }
+        // Sıra korunmuyor (BTreeMap zaten ada göre sıralıyor), yalnızca
+        // anahtar değişiyor.
+        B[v] = B[name]; delete B[name];
+        if (sel === name) sel = v;
+        dirty = true; renderList(); placeMarkers();
+      };
+      inp.onkeydown = ev => {
+        ev.stopPropagation();
+        if (ev.key === 'Enter') commit(true);
+        else if (ev.key === 'Escape') commit(false);
+      };
+      inp.onblur = () => commit(true);
+      inp.onclick = ev => ev.stopPropagation();
+      nm.replaceWith(inp); inp.focus(); inp.select();
+    };
+    top.appendChild(nm);
+
+    // Tuş rozetleri: kartı açmadan tıklayıp değiştirebilirsin.
+    const keys = document.createElement('div');
+    keys.className = 'keys';
+    for (const [f, lbl] of triggersOf(b)) {
+      const t = b[f];
+      const optional = f === 'toggle';
+      if (optional && t == null) continue;   // nişanda boş olması normal
+      const kb = document.createElement('span');
+      const k = isUnset(t) ? null : JSON.stringify(t);
+      kb.className = 'kb' + (isUnset(t) ? ' none' : '')
+        + (k && DUP[k] ? ' dup' : '') + (optional ? ' opt' : '');
+      kb.textContent = shortLabel(t);
+      kb.title = lbl + ': ' + trigLabel(t)
+        + (k && DUP[k] ? '  ⚠ çakışma: ' + DUP[k].join(', ') : '')
+        + '  — değiştirmek için tıkla';
+      kb.onclick = e => { e.stopPropagation();
+        capture(name + ' · ' + lbl, t2 => { b[f] = t2; dirty = true; renderList(); }); };
+      keys.appendChild(kb);
+    }
+    top.appendChild(keys);
+
+    const tag = document.createElement('span');
+    tag.className = 'tag'; tag.textContent = b.type;
+    top.appendChild(tag);
+
+    const x = document.createElement('button');
+    x.className = 'xbtn'; x.textContent = '×'; x.title = 'sil';
+    x.onclick = e => {
+      e.stopPropagation();
+      if (!confirm(`'${name}' bağlantısı silinsin mi?`)) return;
+      delete B[name]; if (sel === name) sel = null;
+      dirty = true; renderList(); placeMarkers();
+    };
+    top.appendChild(x);
     card.appendChild(top);
 
     const body = document.createElement('div');
@@ -594,28 +725,8 @@ function renderList() {
       body.appendChild(det);
     }
 
-    const acts = document.createElement('div');
-    acts.className = 'row'; acts.style.marginTop = '12px';
-    const del = document.createElement('button');
-    del.className = 'd'; del.textContent = 'Sil';
-    del.onclick = e => {
-      e.stopPropagation();
-      if (!confirm(`'${name}' silinsin mi?`)) return;
-      delete B[name]; if (sel === name) sel = null;
-      dirty = true; renderList(); placeMarkers();
-    };
-    const ren = document.createElement('button');
-    ren.textContent = 'Yeniden adlandır';
-    ren.onclick = e => {
-      e.stopPropagation();
-      const n = prompt('yeni ad', name); if (!n || n === name) return;
-      if (B[n]) { flash('bu ad zaten var', true); return; }
-      B[n] = B[name]; delete B[name]; sel = n; dirty = true;
-      renderList(); placeMarkers();
-    };
-    acts.appendChild(ren); acts.appendChild(del);
-    body.appendChild(acts);
-
+    // Sil ve yeniden adlandır artık BAŞLIKTA: kartın dibinde
+    // olduklarında kullanıcı varlıklarını fark etmiyordu.
     card.appendChild(body);
     list.appendChild(card);
   }
@@ -758,7 +869,12 @@ $('#add').onclick = () => {
   if (!name) return flash('ad gerekli', true);
   if (B[name]) return flash('bu ad zaten var', true);
   const t = $('#newtype').value;
-  const c = { x: 0.5, y: 0.5 };
+  // Yeni nokta GÖRÜNEN alanın ortasına konur. Sabit 0.5,0.5 kullanmak
+  // yakınlaştırılmış görünümde işaretçiyi ekran dışında bırakıyor ve
+  // kullanıcı eklediği şeyi bulamıyordu.
+  const r = view.getBoundingClientRect();
+  const [vx, vy] = toNorm(r.width / 2, r.height / 2);
+  const c = { x: clamp01(vx), y: clamp01(vy) };
   const mk = {
     tap: () => ({ type: 'tap', trigger: UNSET(), at: { ...c } }),
     toggle: () => ({ type: 'toggle', trigger: UNSET(), at: { ...c } }),
@@ -775,18 +891,50 @@ $('#add').onclick = () => {
   }[t];
   B[name] = mk();
   $('#newname').value = '';
-  dirty = true; select(name); flash('eklendi — tuş atamayı unutma');
+  dirty = true; select(name);
+  // Tuşu HEMEN sor: atanmamış bağlantı kaydı engelliyor ve kullanıcıyı
+  // sonradan geri dönmeye zorlamak gereksiz bir adım.
+  const first = triggersOf(B[name]).find(([f]) => f !== 'toggle');
+  if (first) {
+    capture(name + ' · ' + first[1], t2 => {
+      B[name][first[0]] = t2; dirty = true; renderList();
+      flash('eklendi — konumu sürükleyerek ya da görüntüye tıklayarak ayarla');
+    });
+  } else flash('eklendi — konumu ayarla');
 };
 
-$('#save').onclick = async () => {
+async function doSave() {
   const missing = Object.entries(B).filter(([, b]) =>
     triggersOf(b).some(([f]) => f !== 'toggle' && isUnset(b[f]))).map(([n]) => n);
-  if (missing.length) return flash('tuş atanmamış: ' + missing.join(', '), true);
+  if (missing.length) { flash('tuş atanmamış: ' + missing.join(', '), true); return false; }
+  const dups = Object.values(conflicts());
+  if (dups.length) {
+    flash('aynı tuş birden fazla bağlantıda: ' +
+          dups.map(g => g.join(' = ')).join(', '), true);
+    return false;
+  }
   flash('kaydediliyor…');
   const r = await fetch('/save', { method: 'POST',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(B) });
-  if (r.ok) { dirty = false; flash('kaydedildi — etkili olması için:\nliw keymap stop && liw keymap start --grab'); }
-  else flash('HATA: ' + await r.text(), true);
+  if (!r.ok) { flash('HATA: ' + await r.text(), true); return false; }
+  dirty = false;
+  return true;
+}
+
+$('#save').onclick = async () => {
+  if (await doSave())
+    flash('kaydedildi — etkili olması için "Kaydet ve uygula" ya da:\n' +
+          'liw keymap stop && liw keymap start --grab');
+};
+
+// Kaydet + keymapper'ı yeniden başlat. Düzenle-dene döngüsünde
+// terminale gitmek gerekmesin diye.
+$('#apply').onclick = async () => {
+  if (!await doSave()) return;
+  flash('uygulanıyor…');
+  const r = await fetch('/apply', { method: 'POST' });
+  flash(r.ok ? 'kaydedildi ve uygulandı — ' + await r.text()
+             : 'kaydedildi ama uygulanamadı: ' + await r.text(), !r.ok);
 };
 
 $('#test').onclick = async () => {

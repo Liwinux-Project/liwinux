@@ -114,6 +114,36 @@ fn png_size(p: &Path) -> Option<(u32, u32)> {
     Some((rd(16), rd(20)))
 }
 
+/// Keymapper'ı yeniden başlatır (kaydedilen profili yükletmek için).
+///
+/// Kayıttan sonra profilin etkili olması `liw keymap stop && start` ile
+/// yapılıyordu; düzenleyicide çalışıp terminale gitmek düzenleme-dene
+/// döngüsünü kırıyor. Burada aynı D-Bus çağrıları yapılıyor.
+///
+/// Zaten çalışmıyorsa BAŞLATMIYORUZ: kullanıcı bilerek kapatmış olabilir
+/// ve düzenleyicinin kendiliğinden cihaz kilitlemesi sürpriz olurdu.
+async fn reload_keymapper() -> Result<&'static str> {
+    let conn = zbus::Connection::session().await?;
+    let p = zbus::Proxy::new(&conn, "id.liwinux.Manager1",
+        "/id/liwinux/Manager1", "id.liwinux.Manager1").await
+        .context("liwd'ye bağlanılamadı")?;
+    let st: String = p.call("KeymapperStatus", &()).await
+        .context("keymapper durumu okunamadı")?;
+    let running = serde_json::from_str::<serde_json::Value>(&st)
+        .map(|v| v["running"].as_bool().unwrap_or(false)).unwrap_or(false);
+    if !running { return Ok("keymapper zaten kapalı — açmadım"); }
+
+    let grabbed = serde_json::from_str::<serde_json::Value>(&st)
+        .map(|v| v["grabbed"].as_bool().unwrap_or(false)).unwrap_or(false);
+    p.call::<_, _, ()>("StopKeymapper", &()).await
+        .context("keymapper durdurulamadı")?;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    p.call::<_, _, ()>("StartKeymapper", &(true,)).await
+        .context("keymapper başlatılamadı")?;
+    Ok(if grabbed { "keymapper yeniden başlatıldı" }
+       else { "keymapper yeniden başlatıldı (kilit oyun kipinde alınır)" })
+}
+
 async fn activate_window() -> Result<()> {
     let conn = zbus::Connection::session().await?;
     let p = zbus::Proxy::new(&conn, "id.liwinux.Manager1",
@@ -378,6 +408,12 @@ async fn serve(sock: &mut tokio::net::TcpStream, ed: Arc<Editor>) -> Result<()> 
                                format!("{e:#}").into_bytes()),
                 },
                 Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+            }
+        } else if line.starts_with("POST /apply") {
+            match reload_keymapper().await {
+                Ok(m) => ("200 OK", "text/plain", m.as_bytes().to_vec()),
+                Err(e) => ("500 Internal Server Error", "text/plain",
+                           format!("{e:#}").into_bytes()),
             }
         } else if line.starts_with("POST /poke") {
             match serde_json::from_str::<Poke>(&body) {
