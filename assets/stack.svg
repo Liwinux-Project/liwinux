@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720"
+     role="img" aria-label="The liwinux stack, from the game down to the hardware, and what liwinux does at each layer">
+  <rect width="1280" height="720" rx="20" fill="#12151f"/>
+  <g font-family="DejaVu Sans, Segoe UI, Helvetica, Arial, sans-serif">
+    <text x="48" y="56" font-size="26" font-weight="700" fill="#f2f4fa">The stack</text>
+    <text x="48" y="86" font-size="17" fill="#9aa4c0">liwinux does not ship its own Android. It assembles this stack, keeps it alive, and measures it.</text>
+
+    <text x="48"  y="128" font-size="13" font-weight="700" fill="#6f7ba0" letter-spacing="1.5">LAYER</text>
+    <text x="700" y="128" font-size="13" font-weight="700" fill="#ffc65c" letter-spacing="1.5">WHAT liwinux DOES HERE</text>
+
+    <!-- rows -->
+    <g font-size="15">
+      <!-- 1 game -->
+      <rect x="48" y="146" width="600" height="62" rx="10" fill="#1b2030" stroke="#4fd1c5"/>
+      <text x="72" y="172" fill="#4fd1c5" font-size="16">Your game</text>
+      <text x="72" y="194" fill="#9aa4c0" font-size="13">an arm64-v8a APK, built for a phone</text>
+      <text x="700" y="172" fill="#c8cfe4">per-game profiles, a visual editor</text>
+      <text x="700" y="194" fill="#6f7ba0" font-size="13">keyboard, mouse and gestures mapped to its own layout</text>
+
+      <!-- 2 android -->
+      <rect x="48" y="222" width="600" height="62" rx="10" fill="#1b2030" stroke="#3a4258"/>
+      <text x="72" y="248" fill="#c8cfe4" font-size="16">Android 13 — LineageOS 20 GAPPS</text>
+      <text x="72" y="270" fill="#9aa4c0" font-size="13">Play Store, Play Services, the usual app world</text>
+      <text x="700" y="248" fill="#c8cfe4">image selection and rebuild</text>
+      <text x="700" y="270" fill="#6f7ba0" font-size="13">VANILLA cannot run Play Store — the switch to GAPPS is scripted</text>
+
+      <!-- 3 arm -->
+      <rect x="48" y="298" width="600" height="62" rx="10" fill="#1b2030" stroke="#3a4258"/>
+      <text x="72" y="324" fill="#c8cfe4" font-size="16">ARM translation — libhoudini 14</text>
+      <text x="72" y="346" fill="#9aa4c0" font-size="13">arm64-v8a instructions on an x86_64 CPU</text>
+      <text x="700" y="324" fill="#c8cfe4">installed and verified against real games</text>
+      <text x="700" y="346" fill="#6f7ba0" font-size="13">without it most games do not start at all</text>
+
+      <!-- 4 graphics -->
+      <rect x="48" y="374" width="600" height="62" rx="10" fill="#1b2030" stroke="#3a4258"/>
+      <text x="72" y="400" fill="#c8cfe4" font-size="16">Graphics — ANGLE → Mesa Venus → Vulkan</text>
+      <text x="72" y="422" fill="#9aa4c0" font-size="13">GLES on Vulkan, forwarded to the host GPU</text>
+      <text x="700" y="400" fill="#c8cfe4">NVIDIA path set up and measured</text>
+      <text x="700" y="422" fill="#6f7ba0" font-size="13">verified: Vulkan 1.3.341 on an RTX 3060, GPU rendering confirmed</text>
+
+      <!-- 5 waydroid -->
+      <rect x="48" y="450" width="600" height="62" rx="10" fill="#1b2030" stroke="#ffc65c"/>
+      <text x="72" y="476" fill="#ffc65c" font-size="16">Waydroid — the LXC container</text>
+      <text x="72" y="498" fill="#9aa4c0" font-size="13">the session, the composer HAL, the input pipes</text>
+      <text x="700" y="476" fill="#c8cfe4">supervision, crash-chain detection, recovery</text>
+      <text x="700" y="498" fill="#6f7ba0" font-size="13">a session tied to a terminal takes the whole of Android down with it</text>
+
+      <!-- 6 host -->
+      <rect x="48" y="526" width="600" height="62" rx="10" fill="#1b2030" stroke="#3a4258"/>
+      <text x="72" y="552" fill="#c8cfe4" font-size="16">Linux host — Wayland, evdev, nftables, audio</text>
+      <text x="72" y="574" fill="#9aa4c0" font-size="13">the compositor, your devices, the firewall, PipeWire</text>
+      <text x="700" y="552" fill="#c8cfe4">network repair, audio-wedge repair, window control</text>
+      <text x="700" y="574" fill="#6f7ba0" font-size="13">a foreign nftables table can kill DNS while your own rules are correct</text>
+    </g>
+
+    <!-- measurement spine -->
+    <rect x="48" y="614" width="1184" height="62" rx="10" fill="#151a26" stroke="#4fd1c5"/>
+    <text x="72" y="640" font-size="16" fill="#4fd1c5">Measurement runs through all of it</text>
+    <text x="72" y="662" font-size="13" fill="#9aa4c0">frame timing, host resources and the Android log on one clock — so a stutter can be explained instead of guessed at</text>
+  </g>
+</svg>

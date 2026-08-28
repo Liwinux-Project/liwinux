@@ -11,14 +11,14 @@
 
 ---
 
-**liwinux** runs Android games on Linux with a keyboard and mouse, on top of
-[Waydroid](https://waydro.id/). It is what GameLoop or BlueStacks are on
-Windows — except it does not ship its own Android. It supervises the one you
-already have, maps your input into it, and **measures** whether any of it
-actually helped.
+**liwinux** is an Android gaming layer for Linux. It is what GameLoop or
+BlueStacks are on Windows: you install it, your games run, your keyboard and
+mouse work, and the thing stays up.
 
-That last part is the point. Every claim in this repository was measured before
-it was written down, and the tools that did the measuring ship with it.
+Getting there takes more than a key mapper. A phone game is arm64 code
+expecting a GPU, a Play Store account, a network and a touchscreen — on a
+desktop, every one of those has to be arranged. liwinux arranges them, keeps
+them alive when they break, and **measures** whether any of it actually helped.
 
 ```bash
 liw session start            # bring Android up, detached from your terminal
@@ -29,41 +29,42 @@ liw trace com.some.game      # find out WHY it stutters
 
 ---
 
-## Why another one of these
-
-Most keyboard-mapping tools for Android inject at the framework level
-(`InputManager.injectInputEvent`, usually through an `app_process` service).
-That works, but the coordinates have already been fitted into screen space by
-the time they arrive, so the mouse cannot travel past the edge of the display.
-Every one of those projects then has to lift the finger and put it back at the
-centre, and everyone who has used one knows how that feels: the aim stutters,
-sometimes it stops registering for a second, sometimes it drifts.
-
-Waydroid turns out to have a way around this.
+## The stack
 
 <p align="center">
-  <img src="assets/injection-path.svg" alt="Touch injection path: the long chain clamps coordinates at three layers; writing straight to Waydroid's FIFO clamps nowhere" width="100%">
+  <img src="assets/stack.svg" alt="The liwinux stack from the game down to the hardware, and what liwinux does at each layer" width="100%">
 </p>
 
-Waydroid's patched `EventHub` reads touches from a FIFO inside the container.
-Nothing on that path clamps — there is no kernel evdev layer, `TouchInputMapper`
-does not clamp, and `InputDispatcher` does not re-pick a window on MOVE. So a
-finger that goes down inside the game keeps reaching it even when it wanders
-off-screen, and the whole recentring problem simply does not arise.
+liwinux does not ship its own Android, and it does not pretend to have written
+[Waydroid](https://waydro.id/), libhoudini or Mesa. What it does is make that
+stack into something you can actually play on:
 
-The reasoning, the source references and the verification procedure are in
-[`docs/mouse-aim.md`](docs/mouse-aim.md).
+| Layer | What was needed | What liwinux does |
+|---|---|---|
+| **GPU** | mobile games expect a GPU; a container does not have one | sets up and verifies the NVIDIA path — ANGLE (GLES→Vulkan) over Mesa Venus. Measured on this machine: **Vulkan 1.3.341, RTX 3060, GPU rendering confirmed**, not software fallback |
+| **CPU** | games ship arm64-v8a; the host is x86_64 | installs and verifies **libhoudini 14**, then proves it with a real arm64 game rather than a synthetic check |
+| **Android image** | Play Store does not work on the VANILLA image | scripted rebuild to **LineageOS 20 GAPPS**, with the microG/signature-spoofing traps documented |
+| **Network** | the container silently loses DNS | diagnoses and repairs it — including the case where a *foreign* nftables table hijacks DNS while your own firewall rules are perfectly correct |
+| **Audio** | a wedged audio HAL freezes every app at its loading screen | detects the wedge from the log and restarts the HAL, instead of restarting all of Android |
+| **Session** | `waydroid session start` runs in the foreground and takes Android down with it | owns the session detached from any terminal, watches six health signals, recovers |
+| **Input** | there is no keyboard or mouse in a phone game | a mapping engine with joystick, taps, gestures and **unbounded FPS aim** |
+| **Measurement** | "it feels laggy" is not actionable | frame timing, host resources and the Android log on one clock |
+
+Each of those rows is a bug that cost real hours. The network one looked like
+"Play Store has no internet". The audio one looked like "the game will not
+open". Neither symptom resembles its cause, which is why the diagnosis is in
+the tool and not in a wiki page.
 
 ---
 
-## What it does
+## What liwinux itself is
 
-### Session supervision
+### An emulator that supervises rather than reimplements
 
 `waydroid session start` runs in the foreground. When it dies the composer HAL
 goes with it, then `system_server`, then every app — and Android does not fully
 recover: the default route never comes back, leaving a network-less zombie whose
-symptom ("Play Store has no internet") looks nothing like the cause.
+symptom looks nothing like the cause.
 
 `liwd` owns the session instead, detached from any terminal, and watches six
 separate health signals rather than one boolean:
@@ -78,15 +79,39 @@ $ liw session health
   ✓ IP assigned
 ```
 
-The fourth one exists because a composer that restarted *after* the session
-leaves a stale binder connection: everything looks alive, but no window appears
-and `waydroid app launch` returns `Sending reply failed`.
+The fourth exists because a composer that restarted *after* the session leaves a
+stale binder connection: everything looks alive, but no window appears and
+`waydroid app launch` returns `Sending reply failed`.
 
-### Keyboard and mouse mapping
+### A mouse that does not fight you
 
-Profiles are per-game TOML, in normalized coordinates so they survive a
-resolution change. Bindings can be taps, toggles, a WASD joystick, swipe
-gestures with easing curves, and FPS aim.
+This is the part with no equivalent elsewhere.
+
+Keyboard mappers for Android inject at the framework level
+(`InputManager.injectInputEvent`, usually through an `app_process` service). By
+then the coordinates have been fitted into screen space, so the mouse cannot
+travel past the edge of the display. Every such project then has to lift the
+finger and put it back at the centre, and anyone who has used one knows how that
+feels: the aim stutters, sometimes it stops registering for a second, sometimes
+it drifts.
+
+<p align="center">
+  <img src="assets/injection-path.svg" alt="Touch injection path: the long chain clamps coordinates at three layers; writing straight to Waydroid's FIFO clamps nowhere" width="100%">
+</p>
+
+Waydroid's patched `EventHub` reads touches from a FIFO inside the container.
+Nothing on that path clamps — there is no kernel evdev layer,
+`TouchInputMapper` does not clamp, and `InputDispatcher` does not re-pick a
+window on MOVE. So a finger that goes down inside the game keeps reaching it
+even when it wanders off-screen, and the whole recentring problem simply does
+not arise.
+
+The reasoning, the source references and the verification procedure are in
+[`docs/mouse-aim.md`](docs/mouse-aim.md). The engine itself lives in
+**[liwinux-keymapper](https://github.com/Liwinux-Project/liwinux-keymapper)**.
+
+Profiles are per-game TOML in normalized coordinates, so they survive a
+resolution change:
 
 ```toml
 [bindings.move]
@@ -102,17 +127,13 @@ sensitivity = 0.0006
 unbounded = true
 ```
 
-There is a visual editor — take a screenshot of the game, drag the markers onto
-the buttons:
+And you place them by dragging markers over a screenshot of the game:
 
 ```bash
 liw profile edit com.some.game
 ```
 
-The engine lives in its own repository:
-**[liwinux-keymapper](https://github.com/Liwinux-Project/liwinux-keymapper)**.
-
-### Measurement
+### Numbers instead of adjectives
 
 `liw bench` samples `SurfaceFlinger --latency` and correlates it with host GPU,
 CPU, VRAM and memory pressure. A real run, on Special Forces Group 2:
@@ -126,8 +147,9 @@ HOST   GPU  mean 53.6%  peak 82.0%     CPU  mean 37.3%  peak 54.8%
 ```
 
 Jank is measured against the **game's** frame period, not the display refresh.
-That distinction matters: an earlier version compared against the 180 Hz refresh
-and reported 99.8% jank for a game that was drawing perfectly steadily at 60.
+An earlier version compared against the 180 Hz refresh and reported 99.8% jank
+for a game that was drawing perfectly steadily at 60 — the metric was wrong, not
+the game.
 
 `liw trace` goes further and answers *why*. It puts frame timing, the Android
 log and host samples on one clock (`CLOCK_MONOTONIC`) and reports what was
@@ -142,6 +164,10 @@ VERDICT
 
 That verdict is real. An "8-second freeze" that looked like a system fault
 turned out to be the game's own ad SDK.
+
+`liw perf status` reports the tuning levers it can see — CPU governor, EPP,
+NVIDIA PowerMizer, frame budget, container CPU weight — and refuses to claim any
+of them helps until it has been measured.
 
 ---
 
@@ -201,6 +227,11 @@ Calibration writes a stable `/dev/input/by-id/...` path. `eventN` numbers are
 not stable across reboots; on this machine `event23` was the keyboard one day
 and an HDMI audio device the next, and the keymapper silently stopped working.
 
+The stack setup itself is scripted, with what each step verifies written next
+to it: `scripts/poc/poc0-verify.sh` (GPU rendering), `poc1-arm.sh` (houdini),
+`scripts/rebuild-gapps.sh` (the GAPPS image) and `scripts/liw-net-doctor.sh`
+(the network).
+
 ---
 
 ## Status
@@ -211,9 +242,10 @@ RTX 3060 with `waydroid-nvidia`, an Intel i5-12400F.
 
 Known to work:
 
+- the full stack: GPU acceleration, ARM translation, Play Store, networking
 - session supervision, crash-chain detection, automatic recovery
-- container networking repair (including the case where a third-party nftables
-  table hijacks DNS while your own firewall rules are perfectly correct)
+- network repair, including foreign-firewall diagnosis
+- audio-wedge detection and repair
 - keyboard and mouse mapping with sub-millisecond engine latency (p99 0.17 ms
   for our own layer — that measurement covers our layer only, and says so)
 - unbounded FPS aim through the touch pipe
@@ -222,9 +254,9 @@ Known to work:
 Not done:
 
 - the performance levers are diagnosed but not yet applied or measured
-  (`liw perf status` reports them and refuses to promise anything unmeasured)
 - window-mode coordinate mapping is plumbed but untested; fullscreen is assumed
 - tested on KWin only; other compositors need their own focus and geometry scripts
+- AMD and Intel GPU paths are untouched — only the NVIDIA path was built and measured
 - no packaging yet
 
 ---
@@ -240,6 +272,7 @@ crates/liw-input     the mapping engine  (mirrored to liwinux-keymapper)
 docs/mouse-aim.md    why the aim problem exists and how it was removed
 profiles/            example game profiles
 dist/                systemd units, polkit policy, D-Bus config
+scripts/poc/         stack setup and verification: GPU, houdini, GAPPS, DNS
 scripts/kwin/        compositor scripts
 ```
 
@@ -249,8 +282,17 @@ because a measurement once reported 23560 intervals from 7997 frames.
 
 ---
 
+## Credits
+
+liwinux stands on work it did not write, and the setup it automates is largely
+the community's:
+
+- [Waydroid](https://waydro.id/) — the container and the Android integration
+- [waydroid-nvidia](https://github.com/rekulous/waydroid-nvidia) — the NVIDIA/Venus path
+- [waydroid_script](https://github.com/casualsnek/waydroid_script) — houdini and GAPPS installation
+- [XtMapper](https://github.com/Xtr126/XtMapper) (GPL-3) — the non-linear aim scaling and
+  delayed-reset idea, on which the earlier bounded implementation was built
+
 ## License
 
-GPL-3.0-or-later. The non-linear aim scaling and delayed-reset idea came from
-[XtMapper](https://github.com/Xtr126/XtMapper) (GPL-3), and the earlier bounded
-implementation was built on them.
+GPL-3.0-or-later.
