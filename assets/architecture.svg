@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 620" width="1280" height="620"
+     role="img" aria-label="liwinux architecture: CLI, user daemon, root helper behind polkit, and the Waydroid container">
+  <rect width="1280" height="620" rx="20" fill="#12151f"/>
+  <g font-family="DejaVu Sans, Segoe UI, Helvetica, Arial, sans-serif">
+    <text x="48" y="56" font-size="26" font-weight="700" fill="#f2f4fa">Architecture</text>
+    <text x="48" y="86" font-size="17" fill="#9aa4c0">Privilege is split by design. The root service exposes named operations only — never a general-purpose shell.</text>
+
+    <!-- user space -->
+    <rect x="48" y="118" width="560" height="220" rx="14" fill="#171b28" stroke="#2e3648"/>
+    <text x="70" y="146" font-size="13" font-weight="700" fill="#6f7ba0" letter-spacing="1.5">YOUR SESSION  ·  no privileges</text>
+
+    <rect x="70" y="166" width="150" height="62" rx="10" fill="#1b2030" stroke="#3a4258"/>
+    <text x="145" y="196" font-size="16" fill="#c8cfe4" text-anchor="middle">liw</text>
+    <text x="145" y="216" font-size="12" fill="#6f7ba0" text-anchor="middle">command line</text>
+
+    <rect x="256" y="166" width="330" height="62" rx="10" fill="#1b2030" stroke="#ffc65c"/>
+    <text x="421" y="192" font-size="16" fill="#ffc65c" text-anchor="middle">liwd  ·  user service</text>
+    <text x="421" y="214" font-size="12" fill="#9aa4c0" text-anchor="middle">session supervision · keymapper · window control</text>
+
+    <rect x="256" y="248" width="330" height="66" rx="10" fill="#151a26" stroke="#4fd1c5"/>
+    <text x="421" y="274" font-size="15" fill="#4fd1c5" text-anchor="middle">liw-input</text>
+    <text x="421" y="296" font-size="12" fill="#9aa4c0" text-anchor="middle">the mapping engine — separate crate and repository</text>
+
+    <path d="M220 197 h 30" stroke="#4a5470" stroke-width="2" marker-end="url(#ar)"/>
+
+    <!-- trust boundary -->
+    <line x1="648" y1="118" x2="648" y2="560" stroke="#3a4258" stroke-width="2" stroke-dasharray="7 7"/>
+    <text x="662" y="140" font-size="13" font-weight="700" fill="#f08a3c" letter-spacing="1.5">PRIVILEGE BOUNDARY  ·  polkit</text>
+
+    <!-- root -->
+    <rect x="662" y="166" width="330" height="94" rx="10" fill="#1b2030" stroke="#f08a3c"/>
+    <text x="827" y="196" font-size="16" fill="#f08a3c" text-anchor="middle">liwd-helper  ·  system service (root)</text>
+    <text x="827" y="220" font-size="12" fill="#9aa4c0" text-anchor="middle">GetProp · ForegroundPackage · SurfaceLatency</text>
+    <text x="827" y="240" font-size="12" fill="#9aa4c0" text-anchor="middle">Logcat · NetRepair · RestartAudio · OpenTouchPipe</text>
+
+    <path d="M586 197 h 68" stroke="#4a5470" stroke-width="2" marker-end="url(#ar)"/>
+    <text x="620" y="186" font-size="11" fill="#6f7ba0" text-anchor="middle">D-Bus</text>
+
+    <!-- container -->
+    <rect x="662" y="300" width="570" height="238" rx="14" fill="#171b28" stroke="#2e3648"/>
+    <text x="684" y="328" font-size="13" font-weight="700" fill="#6f7ba0" letter-spacing="1.5">WAYDROID CONTAINER</text>
+
+    <rect x="684" y="348" width="240" height="58" rx="10" fill="#1b2030" stroke="#3a4258"/>
+    <text x="804" y="382" font-size="15" fill="#c8cfe4" text-anchor="middle">Android + the game</text>
+
+    <rect x="948" y="348" width="262" height="58" rx="10" fill="#151a26" stroke="#4fd1c5"/>
+    <text x="1079" y="374" font-size="14" fill="#4fd1c5" text-anchor="middle">wl_touch_events</text>
+    <text x="1079" y="394" font-size="11" fill="#9aa4c0" text-anchor="middle">FIFO — the touch pipe</text>
+
+    <rect x="684" y="426" width="240" height="58" rx="10" fill="#1b2030" stroke="#3a4258"/>
+    <text x="804" y="452" font-size="14" fill="#c8cfe4" text-anchor="middle">SurfaceFlinger</text>
+    <text x="804" y="472" font-size="11" fill="#9aa4c0" text-anchor="middle">frame timing source</text>
+
+    <rect x="948" y="426" width="262" height="58" rx="10" fill="#1b2030" stroke="#3a4258"/>
+    <text x="1079" y="452" font-size="14" fill="#c8cfe4" text-anchor="middle">logcat</text>
+    <text x="1079" y="472" font-size="11" fill="#9aa4c0" text-anchor="middle">stall diagnosis</text>
+
+    <path d="M827 260 v 84" stroke="#4a5470" stroke-width="2" marker-end="url(#ar)"/>
+
+    <!-- direct write -->
+    <path d="M586 276 C 730 268, 900 262, 1010 342" fill="none" stroke="#4fd1c5"
+          stroke-width="2.5" stroke-dasharray="6 6" marker-end="url(#ac)"/>
+
+    <!-- kwin -->
+    <rect x="70" y="360" width="516" height="58" rx="10" fill="#1b2030" stroke="#3a4258"/>
+    <text x="328" y="386" font-size="14" fill="#c8cfe4" text-anchor="middle">KWin scripts</text>
+    <text x="328" y="406" font-size="11" fill="#9aa4c0" text-anchor="middle">focus reporting · fullscreen · window geometry</text>
+    <path d="M421 338 v 18" stroke="#4a5470" stroke-width="2" marker-end="url(#ar)"/>
+
+    <text x="70" y="456" font-size="13" fill="#6f7ba0">Focus matters: Android does not know the window was minimised.</text>
+    <text x="70" y="476" font-size="13" fill="#6f7ba0">Without that gate, keys would inject touches into your real desktop.</text>
+  </g>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4a5470"/>
+    </marker>
+    <marker id="ac" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4fd1c5"/>
+    </marker>
+  </defs>
+</svg>

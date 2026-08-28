@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="liwinux logo">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#232838"/>
+      <stop offset="1" stop-color="#12151f"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffc65c"/>
+      <stop offset="1" stop-color="#f08a3c"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect x="8" y="8" width="496" height="496" rx="106" fill="none" stroke="#3a4258" stroke-width="3"/>
+
+  <!-- keycap: the host side -->
+  <g>
+    <rect x="96" y="108" width="150" height="150" rx="30" fill="url(#amber)"/>
+    <rect x="112" y="122" width="118" height="112" rx="20" fill="#12151f" opacity="0.22"/>
+    <path d="M138 152 l20 60 l13 -38 l13 38 l20 -60"
+          fill="none" stroke="#12151f" stroke-width="15"
+          stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/>
+  </g>
+
+  <!-- flow: key becomes touch -->
+  <path d="M256 236 C 302 272, 300 300, 320 330"
+        fill="none" stroke="#6f7ba0" stroke-width="12"
+        stroke-linecap="round" stroke-dasharray="2 30"/>
+
+  <!-- touch ripple: the Android side. Concentric rings read as "touch". -->
+  <g fill="none" stroke="#4fd1c5">
+    <circle cx="348" cy="360" r="30" stroke-width="13" opacity="1"/>
+    <circle cx="348" cy="360" r="55" stroke-width="11" opacity="0.5"/>
+    <circle cx="348" cy="360" r="80" stroke-width="9"  opacity="0.22"/>
+  </g>
+  <circle cx="348" cy="360" r="11" fill="#4fd1c5"/>
+</svg>

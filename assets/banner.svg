@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 340" width="1280" height="340" role="img" aria-label="liwinux — Android games on Linux, with keyboard and mouse">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#232838"/><stop offset="1" stop-color="#12151f"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffc65c"/><stop offset="1" stop-color="#f08a3c"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="340" rx="24" fill="url(#bg)"/>
+
+  <!-- mark -->
+  <g transform="translate(20 32) scale(0.5)">
+    <rect x="96" y="108" width="150" height="150" rx="30" fill="url(#amber)"/>
+    <path d="M138 152 l20 60 l13 -38 l13 38 l20 -60" fill="none" stroke="#12151f"
+          stroke-width="15" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/>
+    <path d="M256 236 C 302 272, 300 300, 320 330" fill="none" stroke="#6f7ba0"
+          stroke-width="12" stroke-linecap="round" stroke-dasharray="2 30"/>
+    <g fill="none" stroke="#4fd1c5">
+      <circle cx="348" cy="360" r="30" stroke-width="13"/>
+      <circle cx="348" cy="360" r="55" stroke-width="11" opacity="0.5"/>
+      <circle cx="348" cy="360" r="80" stroke-width="9" opacity="0.22"/>
+    </g>
+    <circle cx="348" cy="360" r="11" fill="#4fd1c5"/>
+  </g>
+
+  <text x="292" y="158" font-family="DejaVu Sans, Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="86" font-weight="700" fill="#f2f4fa" letter-spacing="-2">liwinux</text>
+  <text x="294" y="206" font-family="DejaVu Sans, Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="27" fill="#9aa4c0">Android games on Linux — keyboard, mouse, and measurements.</text>
+
+  <g font-family="DejaVu Sans Mono, Consolas, monospace" font-size="21" fill="#6f7ba0">
+    <rect x="294" y="238" width="176" height="40" rx="10" fill="#1b2030" stroke="#333c54"/>
+    <text x="314" y="264" fill="#4fd1c5">Waydroid</text>
+    <rect x="484" y="238" width="150" height="40" rx="10" fill="#1b2030" stroke="#333c54"/>
+    <text x="504" y="264" fill="#ffc65c">keymapper</text>
+    <rect x="648" y="238" width="196" height="40" rx="10" fill="#1b2030" stroke="#333c54"/>
+    <text x="668" y="264" fill="#9aa4c0">frame timing</text>
+  </g>
+</svg>

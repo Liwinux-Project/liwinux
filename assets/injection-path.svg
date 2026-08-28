@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 560" width="1280" height="560"
+     role="img" aria-label="Touch injection path: the long chain versus writing straight to Waydroid's FIFO">
+  <rect width="1280" height="560" rx="20" fill="#12151f"/>
+  <g font-family="DejaVu Sans, Segoe UI, Helvetica, Arial, sans-serif">
+
+    <text x="48" y="56" font-size="26" font-weight="700" fill="#f2f4fa">Touch injection path</text>
+    <text x="48" y="86" font-size="17" fill="#9aa4c0">Waydroid already writes touches into a FIFO inside the container. The long way round adds four links — and every one of them clamps.</text>
+
+    <!-- BEFORE -->
+    <text x="48" y="146" font-size="15" font-weight="700" fill="#f08a3c" letter-spacing="1.5">THE LONG WAY  ·  coordinates get clamped</text>
+    <g font-size="15">
+      <g fill="#1b2030" stroke="#3a4258">
+        <rect x="48"  y="166" width="132" height="56" rx="10"/>
+        <rect x="204" y="166" width="118" height="56" rx="10"/>
+        <rect x="346" y="166" width="126" height="56" rx="10"/>
+        <rect x="496" y="166" width="104" height="56" rx="10"/>
+        <rect x="624" y="166" width="126" height="56" rx="10"/>
+        <rect x="774" y="166" width="150" height="56" rx="10"/>
+        <rect x="948" y="166" width="284" height="56" rx="10" stroke="#4fd1c5"/>
+      </g>
+      <g fill="#c8cfe4" text-anchor="middle">
+        <text x="114"  y="200">liwinux engine</text>
+        <text x="263"  y="200">uinput</text>
+        <text x="409"  y="200">libinput</text>
+        <text x="548"  y="200">KWin</text>
+        <text x="687"  y="200">wl_touch</text>
+        <text x="849"  y="200">hwcomposer</text>
+        <text x="1090" y="200" fill="#4fd1c5">/dev/input/wl_touch_events</text>
+      </g>
+      <g stroke="#4a5470" stroke-width="2" fill="none" marker-end="url(#a)">
+        <path d="M180 194 h 20"/><path d="M322 194 h 20"/><path d="M472 194 h 20"/>
+        <path d="M600 194 h 20"/><path d="M750 194 h 20"/><path d="M924 194 h 20"/>
+      </g>
+      <!-- clamp markers -->
+      <g font-size="13" fill="#f0705c" text-anchor="middle">
+        <text x="263" y="248">clamps</text>
+        <text x="409" y="248">clamps</text>
+        <text x="548" y="248">clamps</text>
+      </g>
+      <text x="48" y="286" font-size="15" fill="#9aa4c0">The finger cannot leave the screen, so the engine must lift and recentre at the edge — the source of every aim symptom.</text>
+    </g>
+
+    <!-- AFTER -->
+    <text x="48" y="366" font-size="15" font-weight="700" fill="#4fd1c5" letter-spacing="1.5">WHAT liwinux DOES  ·  nothing clamps</text>
+    <g font-size="15">
+      <g fill="#1b2030" stroke="#3a4258">
+        <rect x="48"  y="386" width="132" height="56" rx="10"/>
+        <rect x="948" y="386" width="284" height="56" rx="10" stroke="#4fd1c5"/>
+      </g>
+      <g fill="#c8cfe4" text-anchor="middle">
+        <text x="114"  y="420">liwinux engine</text>
+        <text x="1090" y="420" fill="#4fd1c5">/dev/input/wl_touch_events</text>
+      </g>
+      <path d="M180 414 h 750" stroke="#4fd1c5" stroke-width="3" fill="none" marker-end="url(#b)"/>
+      <text x="556" y="404" font-size="14" fill="#4fd1c5" text-anchor="middle">one write(), root fd handed over by liwd-helper</text>
+      <text x="48" y="486" font-size="15" fill="#9aa4c0">No kernel evdev, no libinput, no compositor. The finger can travel off-screen and the touch still reaches the game,</text>
+      <text x="48" y="510" font-size="15" fill="#9aa4c0">so recentring at the edge is never needed. Details: <tspan fill="#ffc65c">docs/mouse-aim.md</tspan></text>
+    </g>
+  </g>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4a5470"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4fd1c5"/>
+    </marker>
+  </defs>
+</svg>
