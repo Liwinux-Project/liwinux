@@ -93,9 +93,10 @@ pub async fn run(pkg: String, duration_s: u64, jank_ms: Option<f64>) -> Result<(
         .context("ilk anlık görüntü ayrıştırılamadı")?;
     let interval = sample_interval_ms(first.refresh_ns);
     let refresh_ms = first.refresh_ns as f64 / 1e6;
-    // Eşik yenilemeden türetiliyor: 60 Hz'de 33 ms takılma değil,
-    // 180 Hz'de kesinlikle takılma.
-    let jank_ms = jank_ms.unwrap_or((refresh_ms * 2.0).max(20.0));
+    // Canlı gösterim için KABA eşik: oyunun gerçek kadansını ancak
+    // ölçtükten sonra biliyoruz. Nihai rapor onu kullanır.
+    let jank_arg = jank_ms;
+    let jank_ms = jank_arg.unwrap_or((refresh_ms * 2.0).max(20.0));
 
     // Monotonik günlük var mı? Bir kez dene ve sonucu SÖYLE.
     let mono = h.log_trace("main", 1).await.is_ok();
@@ -103,7 +104,12 @@ pub async fn run(pkg: String, duration_s: u64, jank_ms: Option<f64>) -> Result<(
     println!("Katman : {layer}");
     println!("Refresh: {refresh_ms:.2} ms ({:.1} Hz)  ->  örnekleme {interval} ms",
         1000.0 / refresh_ms.max(0.001));
-    println!("Eşik   : takılma >{jank_ms:.1} ms   donma >{:.0} ms", STALL_MS);
+    if jank_arg.is_some() {
+        println!("Eşik   : takılma >{jank_ms:.1} ms   donma >{:.0} ms", STALL_MS);
+    } else {
+        println!("Eşik   : donma >{:.0} ms — takılma eşiği ölçülen kadanstan \
+                  türetilecek", STALL_MS);
+    }
     println!("Günlük : {}", if mono { "monotonik (tam hizalı)" }
                             else { "duvar saati (helper eski — hizalama yaklaşık)" });
     println!("Süre   : {duration_s}s — SORUNU YAŞADIĞIN ŞEYİ YAP");
@@ -209,7 +215,7 @@ pub async fn run(pkg: String, duration_s: u64, jank_ms: Option<f64>) -> Result<(
     }
     println!();
     sink.events.retain(|e| e.t_ms >= t_start_ms - 250.0);
-    report(&fd, &host, &sink, &stalls, jank_ms, mono, &noise);
+    report(&fd, &host, &sink, &stalls, jank_arg, mono, &noise);
     Ok(())
 }
 
@@ -231,7 +237,14 @@ async fn measure_log_noise(h: &HelperClient) -> Vec<(String, f64)> {
 }
 
 fn report(fd: &FrameData, host: &[(f64, HostSample)], sink: &LogSink,
-          stalls: &[Stall], jank_ms: f64, mono: bool, noise: &[(String, f64)]) {
+          stalls: &[Stall], jank_arg: Option<f64>, mono: bool, noise: &[(String, f64)]) {
+    // Takılma eşiği OYUNUN ölçülen kare periyodundan türetilir.
+    //
+    // Tazelemeden türetmek yanlış sonuç veriyordu: 180 Hz ekranda 60 FPS'e
+    // kilitli bir oyunda 20 ms eşiği, tamamen normal olan 22 ms'lik
+    // kareleri de takılma sayıyordu. Özet 11 takılma derken hüküm bölümü
+    // 450 diyordu — aynı çalıştırmada iki farklı sayı.
+    let jank_ms = jank_arg.unwrap_or_else(|| (fd.target_period_ms() * 1.5).max(8.0));
     let line = "=".repeat(64);
     println!("{line}");
 
@@ -245,10 +258,11 @@ fn report(fd: &FrameData, host: &[(f64, HostSample)], sink: &LogSink,
     println!("KARE   {} aralık, {} tekil kare, kapsam %{:.0}",
         fd.interval_count(), fd.frame_count(), fd.coverage_pct());
     if fd.is_below_refresh() {
-        println!("       oyun {:.0} FPS'e kilitli (ekran {:.0} Hz) — takılma ölçütü \
-                  oyunun periyodu",
+        println!("       oyun {:.0} FPS'e kilitli (ekran {:.0} Hz)",
             fd.target_fps(), 1000.0 / fd.refresh_ms().max(0.001));
     }
+    println!("       takılma eşiği >{jank_ms:.1} ms (oyunun {:.2} ms periyodunun 1.5 katı)",
+        fd.target_period_ms());
     println!("  p50 {:.2} ms ({:.0} FPS)   p99 {:.2} ms   en kötü {:.2} ms   \
               jank>1.5x %{:.2}",
         fd.percentile(50.0), 1000.0 / fd.percentile(50.0).max(0.001),
