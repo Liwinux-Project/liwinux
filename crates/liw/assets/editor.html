@@ -1,6 +1,6 @@
 <!doctype html><html lang="tr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>liwinux — profil düzenleyici</title>
+<title>liwinux — profile editor</title>
 <style>
 :root{
   --bg:#0f1115; --panel:#161a21; --line:#262c36; --fg:#e7eaf0; --mut:#8d96a5;
@@ -12,7 +12,7 @@ body{margin:0;background:var(--bg);color:var(--fg);
   font:13px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
   display:flex;overflow:hidden}
 
-/* ---------- kenar çubuğu ---------- */
+/* ---------- sidebar ---------- */
 #side{width:340px;flex:none;background:var(--panel);border-right:1px solid var(--line);
   display:flex;flex-direction:column}
 #head{padding:12px 14px;border-bottom:1px solid var(--line)}
@@ -35,8 +35,8 @@ body{margin:0;background:var(--bg);color:var(--fg);
 .card .body{padding:2px 10px 10px;border-top:1px solid var(--line);display:none}
 .card.sel .body{display:block}
 
-/* Başlıktaki tuş rozetleri: kartı AÇMADAN tuş değiştirebilmek için.
-   En sık yapılan iş bu; kartın dibine gömmek onu görünmez kılıyordu. */
+/* Key badges in the header: so a key can be changed WITHOUT opening the card.
+   That is the most common action; burying it at the bottom made it invisible. */
 .keys{display:flex;gap:3px;flex:none}
 .kb{font:600 10px/1.6 ui-monospace,monospace;padding:0 5px;border-radius:4px;
   background:#232b37;border:1px solid #313a48;color:var(--fg);cursor:pointer;
@@ -111,7 +111,7 @@ main{flex:1;display:flex;flex-direction:column;min-width:0}
   border:2px solid var(--line);box-shadow:0 6px 24px rgba(0,0,0,.7);
   display:none;z-index:9;pointer-events:none;background:#000}
 
-/* ---------- tuş yakalama ---------- */
+/* ---------- key capture ---------- */
 #grab{position:fixed;inset:0;background:rgba(6,8,12,.86);z-index:50;
   display:none;align-items:center;justify-content:center;flex-direction:column;gap:10px}
 #grab .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;
@@ -126,7 +126,7 @@ kbd{background:#222935;border:1px solid var(--line);border-radius:4px;
 <aside id="side">
   <div id="head"><h1 id="pname">…</h1><div class="pkg" id="ppkg"></div></div>
   <div id="addbar">
-    <input type="text" id="newname" placeholder="yeni bağlantı adı">
+    <input type="text" id="newname" placeholder="new binding name">
     <select id="newtype" style="width:110px">
       <option value="tap">tap</option>
       <option value="toggle">toggle</option>
@@ -137,9 +137,9 @@ kbd{background:#222935;border:1px solid var(--line);border-radius:4px;
     <button id="add">Ekle</button>
   </div>
   <div class="hint" style="padding:0 12px 8px">
-    Tuş rozetine tıkla → tuşu değiştir · ada tıkla → yeniden adlandır ·
-    <b>×</b> → sil.  Görüntüye tıkla → seçili noktayı oraya taşı.
-    Ok tuşları 1 px (<kbd>Shift</kbd> 10).
+    Click a key badge -> change the key · click the name -> rename ·
+    <b>×</b> -> delete.  Click the image -> move the selected point there.
+    Arrow keys move 1 px (<kbd>Shift</kbd> 10).
   </div>
   <div id="conflict"></div>
   <div id="list"></div>
@@ -154,7 +154,7 @@ kbd{background:#222935;border:1px solid var(--line);border-radius:4px;
 
 <main>
   <div id="bar">
-    <button id="fit">Sığdır</button>
+    <button id="fit">Fit</button>
     <button id="one">1:1</button>
     <button id="zout">−</button>
     <button id="zin">+</button>
@@ -162,8 +162,8 @@ kbd{background:#222935;border:1px solid var(--line);border-radius:4px;
     <span class="sp"></span>
     <span id="readout">—</span>
     <span class="sp"></span>
-    <button id="reshot">Görüntüyü yenile</button>
-    <button id="test">Seçiliye dokun</button>
+    <button id="reshot">Refresh image</button>
+    <button id="test">Touch selected</button>
   </div>
   <div id="view">
     <div id="canvas"><img id="shot" alt=""></div>
@@ -173,8 +173,8 @@ kbd{background:#222935;border:1px solid var(--line);border-radius:4px;
 </main>
 
 <div id="grab"><div class="box">
-  <h2 id="gtitle">Tuşa bas</h2>
-  <p>Klavye tuşuna bas, fare düğmesine tıkla ya da tekerleği çevir.<br>
+  <h2 id="gtitle">Press a key</h2>
+  <p>Press a keyboard key, click a mouse button or turn the wheel.<br>
      <kbd>Esc</kbd> iptal eder.</p>
 </div></div>
 
@@ -182,11 +182,11 @@ kbd{background:#222935;border:1px solid var(--line);border-radius:4px;
 "use strict";
 
 /* ============================================================
-   evdev tuş kodları
-   Profil FİZİKSEL tuş kodu tutuyor (klavye düzeninden bağımsız).
-   Tarayıcının `event.code` değeri de fiziksel — eşleme bu yüzden
-   sabit ve düzenden bağımsız. `event.key` KULLANILAMAZ: Türkçe
-   düzende "i" tuşu farklı bir harf üretir ama aynı fiziksel tuştur.
+   evdev key codes
+   The profile stores the PHYSICAL key code (independent of layout).
+   The browser's `event.code` is physical too — that is why the mapping
+   is stable and layout independent. `event.key` CANNOT be used: on a
+   Turkish layout the "i" key produces a different letter but is the same physical key.
    ============================================================ */
 const EVDEV = {
   Escape:1, Digit1:2, Digit2:3, Digit3:4, Digit4:5, Digit5:6, Digit6:7,
@@ -213,27 +213,27 @@ const EVDEV = {
 };
 const CODE2NAME = {};
 for (const [code, ev] of Object.entries(EVDEV)) if (!(ev in CODE2NAME)) CODE2NAME[ev] = code;
-/* Okunaklı etiketler — kod numarası kullanıcıya bir şey ifade etmiyor. */
+/* Readable labels — a code number means nothing to the user. */
 const PRETTY = {
   1:'Esc', 14:'Backspace', 15:'Tab', 28:'Enter', 29:'Sol Ctrl', 42:'Sol Shift',
-  54:'Sağ Shift', 56:'Sol Alt', 57:'Boşluk', 58:'CapsLock', 97:'Sağ Ctrl',
-  100:'Sağ Alt', 103:'Yukarı', 105:'Sol', 106:'Sağ', 108:'Aşağı',
-  125:'Sol Meta', 126:'Sağ Meta', 41:'Backquote (`)'
+  54:'Right Shift', 56:'Left Alt', 57:'Space', 58:'CapsLock', 97:'Right Ctrl',
+  100:'Right Alt', 103:'Up', 105:'Left', 106:'Right', 108:'Down',
+  125:'Left Meta', 126:'Right Meta', 41:'Backquote (`)'
 };
 function trigLabel(t) {
-  if (t == null) return 'atanmadı';
+  if (t == null) return 'unassigned';
   if (typeof t === 'string') return {
-    MouseLeft:'Fare Sol', MouseRight:'Fare Sağ', MouseMiddle:'Fare Orta',
+    MouseLeft:'Mouse Left', MouseRight:'Mouse Right', MouseMiddle:'Mouse Middle',
     WheelUp:'Tekerlek ↑', WheelDown:'Tekerlek ↓' }[t] || t;
   const c = t.Key;
-  if (!c) return 'atanmadı';
+  if (!c) return 'unassigned';
   if (PRETTY[c]) return PRETTY[c] + '  (' + c + ')';
   const n = CODE2NAME[c] || '?';
   return n.replace(/^Key|^Digit/, '') + '  (' + c + ')';
 }
 const UNSET = () => ({ Key: 0 });
 const isUnset = t => t == null || (typeof t === 'object' && !t.Key);
-/// Rozet için kısa etiket. Başlıkta yer az; "Sol Ctrl (29)" sığmıyor.
+/// Short label for a badge. Space is tight in the header; "Left Ctrl (29)" does not fit.
 function shortLabel(t) {
   if (t == null) return '—';
   if (typeof t === 'string') return {
@@ -248,11 +248,11 @@ function shortLabel(t) {
   const n = CODE2NAME[c] || ('#' + c);
   return n.replace(/^Key|^Digit|^Numpad/, '') || ('#' + c);
 }
-/// Aynı tetikleyiciyi kullanan bağlantılar.
+/// Bindings sharing the same trigger.
 ///
-/// Kayıt anında reddetmek yetmiyor: kullanıcı hangi ikisinin çakıştığını
-/// aramak zorunda kalıyor. Çakışmayı DÜZENLERKEN göstermek, hatayı hiç
-/// oluşturmamayı sağlıyor.
+/// Rejecting at save time is not enough: the user then has to hunt for which
+/// two collide. Showing the collision WHILE EDITING prevents the mistake from
+/// being made at all.
 function conflicts() {
   const seen = {}, dup = {};
   for (const [name, b] of Object.entries(B)) {
@@ -273,17 +273,17 @@ const view = $('#view'), canvas = $('#canvas'), img = $('#shot'),
       ov = $('#ov'), link = $('#link'), loupe = $('#loupe'), lctx = loupe.getContext('2d');
 
 let S = null;               // sunucu durumu
-let B = {};                 // ad -> binding (düzenlenen kopya)
-let sel = null;             // seçili bağlantı adı
-let selPt = null;           // seçili nokta alanı ('at' | 'center' | 'from' ...)
+let B = {};                 // name -> binding (the edited copy)
+let sel = null;             // selected binding name
+let selPt = null;           // selected point field ('at' | 'center' | 'from' ...)
 let scale = 1, tx = 0, ty = 0;
 let dirty = false;
 
-/* --- koordinat dönüşümü ---------------------------------------
-   Tek doğru kaynağı burası. Görüntü KAYNAK piksel boyutunda duruyor
-   ve ölçek yalnızca CSS transform; koordinat her zaman kaynak piksele
-   geri çevriliyor. Böylece hangi yakınlıkta çalışırsan çalış profile
-   yazılan değer aynı kalıyor — sığdırma ölçeği kaymaya yol açmıyor.  */
+/* --- coordinate conversion ------------------------------------
+   The single source of truth. The image sits at SOURCE pixel size and
+   the scale is only a CSS transform; coordinates are always converted
+   back to source pixels. So whatever zoom you work at, the value written
+   to the profile stays the same — the fit scale causes no drift.       */
 const toScreen = (nx, ny) => [nx * S.width * scale + tx, ny * S.height * scale + ty];
 const toNorm = (sx, sy) => [((sx - tx) / scale) / S.width, ((sy - ty) / scale) / S.height];
 const clamp01 = v => Math.min(1, Math.max(0, v));
@@ -294,17 +294,17 @@ function applyView() {
   $('#zlbl').textContent = '%' + Math.round(scale * 100);
   placeMarkers();
 }
-/// Sığdırma henüz GERÇEK bir düzen üstünde yapıldı mı.
+/// Has the fit been done on a REAL layout yet?
 ///
-/// Gerçekte yaşandı: `xdg-open` sayfayı arka plan sekmesinde açtığında
-/// `#view` 0×0 ölçülüyor, `scale` 0 çıkıyor ve editör tamamen boş
-/// kalıyor — üstelik sekmeye geçince kendiliğinden düzelmiyordu.
+/// This actually happened: when `xdg-open` opened the page in a background
+/// tab, `#view` measured 0x0, `scale` came out 0 and the editor was entirely
+/// blank — and it did not fix itself when you switched to the tab.
 let fitted = false;
 function fitView() {
   const r = view.getBoundingClientRect();
-  // Sıfır boyutta ölçmek scale=0 üretir ve her şeyi yok eder.
-  // Ölçüm anlamsızsa DOKUNMA; ResizeObserver gerçek boyut gelince
-  // yeniden çağıracak.
+  // Measuring at zero size produces scale=0 and destroys everything.
+  // If the measurement is meaningless DO NOT TOUCH it; ResizeObserver
+  // will call again when the real size arrives.
   if (r.width < 2 || r.height < 2) return;
   scale = Math.min(r.width / S.width, r.height / S.height);
   tx = (r.width - S.width * scale) / 2;
@@ -319,27 +319,27 @@ function zoomAt(cx, cy, f) {
   applyView();
 }
 
-/* --- bağlantı başına düzenlenebilir noktalar ------------------- */
+/* --- editable points per binding ------------------------------ */
 function pointsOf(b) {
   switch (b.type) {
     case 'tap': case 'toggle': return [['at', '']];
-    case 'aim': return [['origin', 'başlangıç']];
+    case 'aim': return [['origin', 'origin']];
     case 'joystick': return [['center', 'merkez']];
-    case 'swipe': return [['from', 'başlangıç'], ['to', 'bitiş']];
+    case 'swipe': return [['from', 'from'], ['to', 'to']];
     default: return [];
   }
 }
 function triggersOf(b) {
   switch (b.type) {
-    case 'tap': case 'toggle': case 'swipe': return [['trigger', 'tuş']];
-    case 'joystick': return [['up','yukarı'],['down','aşağı'],['left','sol'],['right','sağ']];
-    case 'aim': return [['toggle', 'basılı tut (isteğe bağlı)']];
+    case 'tap': case 'toggle': case 'swipe': return [['trigger', 'key']];
+    case 'joystick': return [['up','up'],['down','down'],['left','left'],['right','right']];
+    case 'aim': return [['toggle', 'hold (optional)']];
     default: return [];
   }
 }
 
 /* ============================================================
-   İşaretçiler
+   Markers
    ============================================================ */
 let marks = [];
 function placeMarkers() {
@@ -352,8 +352,8 @@ function placeMarkers() {
 
   for (const [name, b] of Object.entries(B)) {
     const pts = pointsOf(b);
-    // Kaydırma jestinde yön okunu çiz: iki noktanın ilişkisi gözle
-    // görülmezse yanlış yöne kaydıran bir profil fark edilmiyor.
+    // Draw the direction arrow for a swipe: if the relation between the two
+    // points is not visible, a profile swiping the wrong way goes unnoticed.
     if (b.type === 'swipe' && pts.length === 2) {
       const a = toScreen(b.from.x, b.from.y), c = toScreen(b.to.x, b.to.y);
       const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
@@ -368,9 +368,10 @@ function placeMarkers() {
       const c = toScreen(b.center.x, b.center.y);
       const ring = document.createElement('div');
       ring.className = 'ring';
-      // Yarıçap YATAY eksende normalize; dikeyde en-boy oranıyla
-      // ölçekleniyor (motor da öyle yapıyor). Daire çizmek yanlış
-      // olurdu: ekranda gerçekten daire, normalize uzayda elips.
+      // The radius is normalized on the HORIZONTAL axis; vertically it is
+      // scaled by the aspect ratio (the engine does the same). Drawing a
+      // circle would be wrong: a real circle on screen is an ellipse in
+      // normalized space.
       const d = b.radius * S.width * scale * 2;
       ring.style.width = d + 'px'; ring.style.height = d + 'px';
       ring.style.left = c[0] + 'px'; ring.style.top = c[1] + 'px';
@@ -403,11 +404,11 @@ function placeMarkers() {
   updateReadout();
 }
 
-/* --- sürükleme + büyüteç -------------------------------------
-   Büyüteç şart: sığdırma ölçeğinde bir ekran pikseli 2-3 kaynak
-   pikseline denk geliyor ve düğme kenarını gözle ayırt etmek
-   imkânsızlaşıyor. Büyüteç kaynak görüntüyü 8× çizip artı işareti
-   koyuyor, yani hedefin tam neresine bastığın görünür oluyor.      */
+/* --- dragging + magnifier -------------------------------------
+   The magnifier is mandatory: at fit scale one screen pixel covers 2-3
+   source pixels and telling a button's edge apart by eye becomes
+   impossible. It draws the source image at 8x with a crosshair, so you
+   can see exactly where on the target you are pressing.               */
 function startDrag(e, el, name, field) {
   e.preventDefault(); e.stopPropagation();
   select(name, field);
@@ -417,9 +418,9 @@ function startDrag(e, el, name, field) {
     const [nx, ny] = toNorm(ev.clientX - r.left, ev.clientY - r.top);
     B[name][field] = { x: clamp01(nx), y: clamp01(ny) };
     dirty = true;
-    // Liste BİLEREK yeniden çizilmiyor: her hareket için tüm kenar
-    // çubuğunu kurmak sürüklemeyi takılmalı yapıyor ve takılan bir
-    // sürükleme doğrudan isabetsiz koordinat demek.
+    // The list is DELIBERATELY not redrawn: rebuilding the whole sidebar
+    // for every movement makes dragging stutter, and a stuttering drag
+    // means an inaccurate coordinate.
     placeMarkers();
     showLoupe(ev.clientX - r.left, ev.clientY - r.top);
   };
@@ -427,7 +428,7 @@ function startDrag(e, el, name, field) {
     el.removeEventListener('pointermove', move);
     el.removeEventListener('pointerup', up);
     loupe.style.display = 'none';
-    renderList();   // sayısal kutular ancak şimdi tazelenir
+    renderList();   // the numeric boxes refresh only now
   };
   el.addEventListener('pointermove', move);
   el.addEventListener('pointerup', up);
@@ -451,7 +452,7 @@ function showLoupe(vx, vy) {
   lctx.moveTo(0, loupe.height / 2 + .5); lctx.lineTo(loupe.width, loupe.height / 2 + .5);
   lctx.stroke();
   const r = view.getBoundingClientRect();
-  // Büyüteci imleçten kaçır: üstüne binerse hedefi kapatır.
+  // Keep the magnifier away from the cursor: on top of it, it hides the target.
   const lx = vx + 190 < r.width ? vx + 24 : vx - 204;
   const ly = vy + 100 < r.height ? vy - 90 : r.height - 190;
   loupe.style.left = Math.max(4, lx) + 'px';
@@ -472,7 +473,7 @@ function updateReadout() {
 }
 
 /* ============================================================
-   Kenar çubuğu
+   Sidebar
    ============================================================ */
 function select(name, field) {
   sel = name; selPt = field || (pointsOf(B[name] || {})[0] || [null])[0];
@@ -489,8 +490,8 @@ function pxRow(label, b, field, axis) {
   const inp = document.createElement('input');
   inp.type = 'number'; inp.step = '1'; inp.min = '0'; inp.max = String(size);
   inp.value = px(b[field][axis], size);
-  // Piksel cinsinden giriş: normalize sayı yazmak insan için hatalı,
-  // piksel ise ekran görüntüsünde doğrudan sayılabilir bir birim.
+  // Input in pixels: writing a normalized number is error-prone for humans,
+  // while pixels are a unit you can count directly on the screenshot.
   inp.oninput = () => {
     const v = parseFloat(inp.value);
     if (!isFinite(v)) return;
@@ -546,11 +547,12 @@ function keyRow(label, b, field) {
   row.innerHTML = `<label>${label}</label>`;
   const btn = document.createElement('button');
   const t = b[field];
-  // `toggle` isteğe bağlı: boş olması HATA değil, "nişan sürekli açık"
-  // demek. Uyarı rengi vermek kullanıcıyı olmayan bir eksiği aramaya iter.
+  // `toggle` is optional: leaving it empty is NOT an error, it means "aim is
+  // always on". Colouring it as a warning sends the user hunting for a
+  // problem that does not exist.
   const optional = field === 'toggle';
   btn.className = 'key' + (isUnset(t) && !optional ? ' none' : '');
-  btn.textContent = optional && t == null ? 'yok — sürekli açık' : trigLabel(t);
+  btn.textContent = optional && t == null ? 'none — always on' : trigLabel(t);
   btn.style.flex = '1';
   btn.onclick = e => { e.stopPropagation(); capture(label, t2 => {
     b[field] = t2; dirty = true; renderList(); }); };
@@ -558,7 +560,7 @@ function keyRow(label, b, field) {
   row.appendChild(btn);
   if (field === 'toggle') {
     const clr = document.createElement('button');
-    clr.textContent = '×'; clr.title = 'kaldır (nişan sürekli açık olur)';
+    clr.textContent = '×'; clr.title = 'remove (aim becomes always on)';
     clr.onclick = e => { e.stopPropagation(); b.toggle = null; dirty = true; renderList(); };
     row.appendChild(clr);
   }
@@ -575,7 +577,7 @@ function renderList() {
   const groups = Object.values(DUP);
   if (groups.length) {
     cbar.style.display = 'block';
-    cbar.textContent = '⚠ aynı tuş birden fazla bağlantıda: ' +
+    cbar.textContent = '⚠ the same key in more than one binding: ' +
       groups.map(g => g.join(' = ')).join('  ·  ');
   } else cbar.style.display = 'none';
   for (const name of Object.keys(B).sort()) {
@@ -587,10 +589,10 @@ function renderList() {
     top.className = 'top';
     top.onclick = () => select(name === sel ? null : name);
 
-    // Ad: TIKLA-DÜZENLE. `prompt()` hem çirkin hem bazı tarayıcılarda
-    // engelleniyor; yeniden adlandırma sık yapılan bir iş.
+    // Name: CLICK TO EDIT. `prompt()` is ugly and blocked in some browsers;
+    // renaming is a frequent action.
     const nm = document.createElement('span');
-    nm.className = 'nm'; nm.textContent = name; nm.title = 'adı değiştirmek için tıkla';
+    nm.className = 'nm'; nm.textContent = name; nm.title = 'click to rename';
     nm.onclick = e => {
       e.stopPropagation();
       const inp = document.createElement('input');
@@ -598,9 +600,9 @@ function renderList() {
       const commit = ok => {
         const v = inp.value.trim();
         if (!ok || !v || v === name) return renderList();
-        if (B[v]) { flash(`'${v}' adı zaten var`, true); return renderList(); }
-        // Sıra korunmuyor (BTreeMap zaten ada göre sıralıyor), yalnızca
-        // anahtar değişiyor.
+        if (B[v]) { flash(`the name '${v}' already exists`, true); return renderList(); }
+        // Order is not preserved (BTreeMap already sorts by name); only the
+        // key changes.
         B[v] = B[name]; delete B[name];
         if (sel === name) sel = v;
         dirty = true; renderList(); placeMarkers();
@@ -616,21 +618,21 @@ function renderList() {
     };
     top.appendChild(nm);
 
-    // Tuş rozetleri: kartı açmadan tıklayıp değiştirebilirsin.
+    // Key badges: click to change without opening the card.
     const keys = document.createElement('div');
     keys.className = 'keys';
     for (const [f, lbl] of triggersOf(b)) {
       const t = b[f];
       const optional = f === 'toggle';
-      if (optional && t == null) continue;   // nişanda boş olması normal
+      if (optional && t == null) continue;   // empty is normal for aim
       const kb = document.createElement('span');
       const k = isUnset(t) ? null : JSON.stringify(t);
       kb.className = 'kb' + (isUnset(t) ? ' none' : '')
         + (k && DUP[k] ? ' dup' : '') + (optional ? ' opt' : '');
       kb.textContent = shortLabel(t);
       kb.title = lbl + ': ' + trigLabel(t)
-        + (k && DUP[k] ? '  ⚠ çakışma: ' + DUP[k].join(', ') : '')
-        + '  — değiştirmek için tıkla';
+        + (k && DUP[k] ? '  ⚠ collision: ' + DUP[k].join(', ') : '')
+        + '  — click to change'
       kb.onclick = e => { e.stopPropagation();
         capture(name + ' · ' + lbl, t2 => { b[f] = t2; dirty = true; renderList(); }); };
       keys.appendChild(kb);
@@ -645,7 +647,7 @@ function renderList() {
     x.className = 'xbtn'; x.textContent = '×'; x.title = 'sil';
     x.onclick = e => {
       e.stopPropagation();
-      if (!confirm(`'${name}' bağlantısı silinsin mi?`)) return;
+      if (!confirm(`Delete the binding '${name}'?`)) return;
       delete B[name]; if (sel === name) sel = null;
       dirty = true; renderList(); placeMarkers();
     };
@@ -662,7 +664,7 @@ function renderList() {
       h.className = 'row'; h.style.marginTop = '10px';
       h.innerHTML = `<label style="width:auto;color:var(--fg)">${sub || 'konum'}</label>`;
       const pick = document.createElement('button');
-      pick.textContent = 'seç';
+      pick.textContent = 'pick';
       pick.onclick = e => { e.stopPropagation(); select(name, f); };
       h.appendChild(pick);
       body.appendChild(h);
@@ -671,14 +673,14 @@ function renderList() {
     }
 
     if (b.type === 'joystick') {
-      body.appendChild(numRow('yarıçap', b, 'radius',
+      body.appendChild(numRow('radius', b, 'radius',
         { step: 0.005, min: 0.02, max: 0.5,
           note: Math.round(b.radius * S.width) + ' px' }));
     }
     if (b.type === 'swipe') {
-      body.appendChild(numRow('süre (ms)', b, 'duration_ms', { step: 5, min: 5, max: 2000 }));
+      body.appendChild(numRow('duration (ms)', b, 'duration_ms', { step: 5, min: 5, max: 2000 }));
       const r = document.createElement('div'); r.className = 'row';
-      r.innerHTML = `<label>eğri</label>`;
+      r.innerHTML = `<label>easing</label>`;
       const sl = document.createElement('select');
       for (const v of ['linear', 'ease_out', 'ease_out_strong']) {
         const o = document.createElement('option'); o.value = v; o.textContent = v;
@@ -692,7 +694,7 @@ function renderList() {
       g.innerHTML = `<label>grup</label>`;
       const gi = document.createElement('input');
       gi.type = 'text'; gi.value = b.group || '';
-      gi.placeholder = 'boş = dışlayıcı değil';
+      gi.placeholder = 'empty = not exclusive';
       gi.oninput = () => { b.group = gi.value.trim() || null; dirty = true; };
       gi.onpointerdown = e => e.stopPropagation();
       g.appendChild(gi); body.appendChild(g);
@@ -702,31 +704,31 @@ function renderList() {
       note.className = 'hint';
       const upd = () => {
         const perCount = (b.sensitivity * S.width).toFixed(2);
-        note.textContent = `1 fare sayımı = ${perCount} px` +
-          (b.unbounded ? '  ·  sınırsız: kenarda sıfırlama yok'
-                       : '  ·  SINIRLI: parmak kenarda sıfırlanır');
+        note.textContent = `1 mouse count = ${perCount} px` +
+          (b.unbounded ? '  ·  unbounded: no recentring at the edge'
+                       : '  ·  BOUNDED: the finger resets at the edge');
       };
       body.appendChild(numRow('hassasiyet', b, 'sensitivity',
         { step: 0.0001, min: 0.0001, max: 0.01, on: upd }));
       body.appendChild(note); upd();
-      body.appendChild(boolRow('sınırsız', b, 'unbounded',
-        'ekran dışına çıkabilir'));
+      body.appendChild(boolRow('unbounded', b, 'unbounded',
+        'may travel off-screen'));
       body.appendChild(numRow('emniyet', b, 'safety_span', { step: 1, min: 1, max: 256 }));
       body.appendChild(boolRow('nonlinear', b, 'nonlinear',
-        'kapalı tut — his kayar'));
+        'keep off — it shifts the feel'));
       const det = document.createElement('details');
-      det.innerHTML = '<summary class="hint">sınırlı kip yedeği</summary>';
-      det.appendChild(numRow('kenar payı', b, 'recenter_margin',
+      det.innerHTML = '<summary class="hint">bounded-mode fallback</summary>';
+      det.appendChild(numRow('edge margin', b, 'recenter_margin',
         { step: 0.005, min: 0.01, max: 0.45 }));
-      det.appendChild(numRow('iniş gecikmesi', b, 'reset_delay_ms',
+      det.appendChild(numRow('press delay', b, 'reset_delay_ms',
         { step: 1, min: 0, max: 200 }));
       det.appendChild(boolRow('devir teslim', b, 'handoff'));
-      det.appendChild(numRow('ölü bölge', b, 'deadzone', { step: 0.1, min: 0, max: 5 }));
+      det.appendChild(numRow('deadzone', b, 'deadzone', { step: 0.1, min: 0, max: 5 }));
       body.appendChild(det);
     }
 
-    // Sil ve yeniden adlandır artık BAŞLIKTA: kartın dibinde
-    // olduklarında kullanıcı varlıklarını fark etmiyordu.
+    // Delete and rename now live in the HEADER: at the bottom of the card
+    // users did not notice they existed.
     card.appendChild(body);
     list.appendChild(card);
   }
@@ -735,12 +737,12 @@ function renderList() {
 }
 
 /* ============================================================
-   Tuş yakalama
+   Key capture
    ============================================================ */
 let onCapture = null;
 function capture(label, cb) {
   onCapture = cb;
-  $('#gtitle').textContent = label + ' için gir';
+  $('#gtitle').textContent = 'enter for ' + label;
   $('#grab').style.display = 'flex';
 }
 function endCapture(t) {
@@ -753,9 +755,9 @@ addEventListener('keydown', e => {
     e.preventDefault(); e.stopPropagation();
     if (e.code === 'Escape') return endCapture(null);
     const c = EVDEV[e.code];
-    // Bilinmeyen tuşu SESSİZCE kabul etmek 0 kodu yazar ve profil
-    // "tuşa basıyorum ama olmuyor" hâline gelir. Söyle.
-    if (!c) { $('#gtitle').textContent = 'bu tuş tanınmadı: ' + e.code; return; }
+    // Accepting an unknown key SILENTLY writes code 0 and the profile becomes
+    // "I press the key but nothing happens". Say it.
+    if (!c) { $('#gtitle').textContent = 'key not recognised: ' + e.code; return; }
     return endCapture({ Key: c });
   }
   nudge(e);
@@ -769,10 +771,10 @@ $('#grab').addEventListener('wheel', e => {
   endCapture(e.deltaY < 0 ? 'WheelUp' : 'WheelDown');
 }, { passive: false });
 
-/* --- ok tuşlarıyla ince ayar ---------------------------------
-   Adım TAM 1 kaynak piksel. Yakınlaştırmadan bağımsız olması
-   önemli: sığdırma ölçeğinde fareyle 1 piksel hedeflemek mümkün
-   değil, ok tuşuyla her zaman mümkün.                            */
+/* --- fine tuning with arrow keys ------------------------------
+   The step is EXACTLY 1 source pixel. Being independent of zoom
+   matters: at fit scale you cannot target 1 pixel with the mouse,
+   with an arrow key you always can.                              */
 function nudge(e) {
   if (!sel || !B[sel]) return;
   if (/^(INPUT|SELECT|TEXTAREA)$/.test((e.target || {}).tagName || '')) return;
@@ -796,7 +798,7 @@ function nudge(e) {
 }
 
 /* ============================================================
-   Sahne etkileşimi
+   Stage interaction
    ============================================================ */
 view.addEventListener('wheel', e => {
   e.preventDefault();
@@ -804,9 +806,9 @@ view.addEventListener('wheel', e => {
   zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.15 : 1 / 1.15);
 }, { passive: false });
 
-/// Sürükleme mi tıklama mı: bu eşiğin altında hareket TIKLAMA sayılır.
-/// Ayrım şart — aynı düğme hem kaydırmayı hem yerleştirmeyi yapıyor ve
-/// yanlış ayrım ya kaydırırken noktayı kaçırtır ya da tıklarken kaydırır.
+/// Drag or click: movement below this threshold counts as a CLICK.
+/// The distinction is mandatory — the same button both pans and places, and
+/// getting it wrong either loses the point while panning or pans while clicking.
 const CLICK_SLOP = 4;
 view.addEventListener('pointerdown', e => {
   if (e.target.closest('.mk')) return;
@@ -824,8 +826,8 @@ view.addEventListener('pointerdown', e => {
     view.removeEventListener('pointermove', mv);
     view.removeEventListener('pointerup', up);
     if (moved > CLICK_SLOP) return;
-    // Tıklama: seçili noktayı buraya taşı. Düğmeyi gözle bulup tek
-    // tıkla yerleştirmek en sık yapılan iş.
+    // Click: move the selected point here. Finding the button by eye and
+    // placing it with one click is the most common action.
     const b = sel && B[sel]; if (!b) return;
     const f = selPt && b[selPt] ? selPt : (pointsOf(b)[0] || [null])[0];
     if (!f) return;
@@ -844,7 +846,7 @@ view.addEventListener('pointermove', e => {
   const [nx, ny] = toNorm(e.clientX - r.left, e.clientY - r.top);
   if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
   $('#readout').innerHTML =
-    `imleç &nbsp; <b>${px(nx, S.width)}</b>,<b>${px(ny, S.height)}</b> px` +
+    `cursor &nbsp; <b>${px(nx, S.width)}</b>,<b>${px(ny, S.height)}</b> px` +
     ` &nbsp; <span>(${nx.toFixed(4)}, ${ny.toFixed(4)})</span>`;
 });
 view.addEventListener('pointerleave', updateReadout);
@@ -869,9 +871,9 @@ $('#add').onclick = () => {
   if (!name) return flash('ad gerekli', true);
   if (B[name]) return flash('bu ad zaten var', true);
   const t = $('#newtype').value;
-  // Yeni nokta GÖRÜNEN alanın ortasına konur. Sabit 0.5,0.5 kullanmak
-  // yakınlaştırılmış görünümde işaretçiyi ekran dışında bırakıyor ve
-  // kullanıcı eklediği şeyi bulamıyordu.
+  // A new point goes to the centre of the VISIBLE area. Using a fixed
+  // 0.5,0.5 left the marker off-screen in a zoomed view and the user
+  // could not find what they had added.
   const r = view.getBoundingClientRect();
   const [vx, vy] = toNorm(r.width / 2, r.height / 2);
   const c = { x: clamp01(vx), y: clamp01(vy) };
@@ -883,7 +885,7 @@ $('#add').onclick = () => {
     swipe: () => ({ type: 'swipe', trigger: UNSET(),
       from: { x: 0.5, y: 0.55 }, to: { x: 0.3, y: 0.55 },
       duration_ms: 45, group: null, easing: 'ease_out' }),
-    // Sınırsız nişan varsayılanı: sıfırlama düzeneğinin tamamı kapalı.
+    // Unbounded aim default: the whole recentring mechanism is off.
     aim: () => ({ type: 'aim', toggle: null,
       origin: { x: 0.5004, y: 0.5 }, sensitivity: 0.0006, deadzone: 0.4,
       recenter_margin: 0.03, handoff: false, nonlinear: false,
@@ -892,13 +894,13 @@ $('#add').onclick = () => {
   B[name] = mk();
   $('#newname').value = '';
   dirty = true; select(name);
-  // Tuşu HEMEN sor: atanmamış bağlantı kaydı engelliyor ve kullanıcıyı
-  // sonradan geri dönmeye zorlamak gereksiz bir adım.
+  // Ask for the key IMMEDIATELY: an unassigned binding blocks saving, and
+  // forcing the user to come back later is a needless step.
   const first = triggersOf(B[name]).find(([f]) => f !== 'toggle');
   if (first) {
     capture(name + ' · ' + first[1], t2 => {
       B[name][first[0]] = t2; dirty = true; renderList();
-      flash('eklendi — konumu sürükleyerek ya da görüntüye tıklayarak ayarla');
+      flash('added — set its position by dragging or clicking the image');
     });
   } else flash('eklendi — konumu ayarla');
 };
@@ -906,10 +908,10 @@ $('#add').onclick = () => {
 async function doSave() {
   const missing = Object.entries(B).filter(([, b]) =>
     triggersOf(b).some(([f]) => f !== 'toggle' && isUnset(b[f]))).map(([n]) => n);
-  if (missing.length) { flash('tuş atanmamış: ' + missing.join(', '), true); return false; }
+  if (missing.length) { flash('key unassigned: ' + missing.join(', '), true); return false; }
   const dups = Object.values(conflicts());
   if (dups.length) {
-    flash('aynı tuş birden fazla bağlantıda: ' +
+    flash('the same key in more than one binding: ' +
           dups.map(g => g.join(' = ')).join(', '), true);
     return false;
   }
@@ -923,25 +925,25 @@ async function doSave() {
 
 $('#save').onclick = async () => {
   if (await doSave())
-    flash('kaydedildi — etkili olması için "Kaydet ve uygula" ya da:\n' +
+    flash('saved — to take effect use "Save and apply" or:\n' +
           'liw keymap stop && liw keymap start --grab');
 };
 
-// Kaydet + keymapper'ı yeniden başlat. Düzenle-dene döngüsünde
+// Save + restart the keymapper. In the edit-and-try loop
 // terminale gitmek gerekmesin diye.
 $('#apply').onclick = async () => {
   if (!await doSave()) return;
-  flash('uygulanıyor…');
+  flash('applying…');
   const r = await fetch('/apply', { method: 'POST' });
-  flash(r.ok ? 'kaydedildi ve uygulandı — ' + await r.text()
-             : 'kaydedildi ama uygulanamadı: ' + await r.text(), !r.ok);
+  flash(r.ok ? 'saved and applied — ' + await r.text()
+             : 'saved but could not apply: ' + await r.text(), !r.ok);
 };
 
 $('#test').onclick = async () => {
-  if (!sel || !B[sel]) return flash('önce bir bağlantı seç', true);
+  if (!sel || !B[sel]) return flash('select a binding first', true);
   const b = B[sel];
   const f = selPt && b[selPt] ? selPt : (pointsOf(b)[0] || [null])[0];
-  if (!f) return flash('bu türde dokunulacak nokta yok', true);
+  if (!f) return flash('no touchable point for this type', true);
   const body = { x: b[f].x, y: b[f].y, hold_ms: 250 };
   if (b.type === 'swipe') { body.x = b.from.x; body.y = b.from.y;
                             body.to = [b.to.x, b.to.y]; body.hold_ms = b.duration_ms; }
@@ -951,20 +953,20 @@ $('#test').onclick = async () => {
 };
 
 $('#reshot').onclick = async () => {
-  flash('görüntü alınıyor…');
+  flash('taking a screenshot…');
   const r = await fetch('/reshot', { method: 'POST' });
   if (!r.ok) return flash('HATA: ' + await r.text(), true);
   const j = await r.json();
   S.width = j.width; S.height = j.height; S.shot = j.shot;
   img.src = '/shot.png?v=' + j.shot;
-  img.onload = () => { sizeCanvas(); fitView(); flash('görüntü yenilendi'); };
+  img.onload = () => { sizeCanvas(); fitView(); flash('image refreshed'); };
 };
 
 addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
 
-// `resize` YETMİYOR: sekme arka planda açıldığında pencere boyutu hiç
-// değişmiyor ama `#view` 0'dan gerçek boyuta geçiyor. ResizeObserver
-// tam olarak bu geçişi görüyor.
+// `resize` IS NOT ENOUGH: when the tab opens in the background the window
+// size never changes but `#view` goes from 0 to its real size. ResizeObserver
+// sees exactly that transition.
 new ResizeObserver(() => {
   if (!S) return;
   if (!fitted) fitView(); else placeMarkers();

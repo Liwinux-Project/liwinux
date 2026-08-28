@@ -9,10 +9,9 @@
 # with the next key. It must not be too low either — the game would see too few
 # intermediate steps to recognise the gesture.
 #
-# easing = "ease_out": 75% of the distance is covered in the first half of the duration.
-# The game crosses its swipe threshold sooner, so it reacts sooner.
+# easing = "ease_out_strong": 87.5% of the distance in the first half — the most front-loaded curve.
 # Options: "linear" (default), "ease_out", "ease_out_strong".
-name = "Subway Surfers (WASD, ease_out)"
+name = "Subway Surfers (ease_out_strong)"
 package = "com.kiloo.subwaysurf"
 
 [bindings.left]
@@ -22,7 +21,7 @@ from = { x = 0.50, y = 0.55 }
 to   = { x = 0.22, y = 0.55 }
 duration_ms = 45
 group = "movement"
-easing = "ease_out"
+easing = "ease_out_strong"
 
 [bindings.right]
 type = "swipe"
@@ -31,7 +30,7 @@ from = { x = 0.50, y = 0.55 }
 to   = { x = 0.78, y = 0.55 }
 duration_ms = 45
 group = "movement"
-easing = "ease_out"
+easing = "ease_out_strong"
 
 [bindings.jump]
 type = "swipe"
@@ -40,7 +39,7 @@ from = { x = 0.50, y = 0.62 }
 to   = { x = 0.50, y = 0.32 }
 duration_ms = 45
 group = "movement"
-easing = "ease_out"
+easing = "ease_out_strong"
 
 [bindings.roll]
 type = "swipe"
@@ -49,4 +48,4 @@ from = { x = 0.50, y = 0.38 }
 to   = { x = 0.50, y = 0.68 }
 duration_ms = 45
 group = "movement"
-easing = "ease_out"
+easing = "ease_out_strong"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# liwinux PoC 0 — Waydroid + NVIDIA/Venus GPU doğrulama
-# Kullanım: sudo bash poc0-verify.sh
+# liwinux PoC 0 — Waydroid + NVIDIA/Venus GPU verification
+# Usage: sudo bash poc0-verify.sh
 set -u
 S() { echo; echo "=== $* ==="; }
 
@@ -12,7 +12,7 @@ for i in $(seq 1 24); do
   sleep 5
 done
 
-S "2. SurfaceFlinger GPU rendering (KRİTİK)"
+S "2. SurfaceFlinger GPU rendering (CRITICAL)"
 waydroid --details-to-stdout shell dumpsys SurfaceFlinger 2>/dev/null \
   | grep -iE "GLES|Vulkan|DisplayDevice|renderer" | head -12
 
@@ -23,10 +23,10 @@ for p in ro.hardware.gralloc ro.hardware.egl ro.hardware.vulkan \
   printf "  %-34s = %s\n" "$p" "$v"
 done
 
-S "4. Yüklü grafik sürücüleri (guest)"
+S "4. Installed graphics drivers (guest)"
 waydroid --details-to-stdout shell sh -c 'ls /vendor/lib64/hw/ 2>/dev/null | grep -iE "gralloc|hwcomposer"; ls /vendor/lib64/egl/ 2>/dev/null' 2>/dev/null | tr -d '\r' | head -20
 
-S "5. ARM çevirisi (native bridge) var mı?"
+S "5. Is ARM translation (native bridge) present?"
 for p in ro.dalvik.vm.native.bridge ro.enable.native.bridge.exec; do
   v=$(waydroid --details-to-stdout shell getprop "$p" 2>/dev/null | tr -d '\r' | tail -1)
   printf "  %-34s = %s\n" "$p" "$v"

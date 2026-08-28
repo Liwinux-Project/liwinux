@@ -1,36 +1,36 @@
-//! Kullanıcı yapılandırması.
+//! User configuration.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// Kalibrasyonla belirlenmiş klavye. Otomatik tespit güvenilmez olduğu
-    /// için (çoklu arayüzlü klavyelerde yetenekler ayırt edici değil)
-    /// kullanıcının seçimi kalıcı olarak saklanır.
+    /// The keyboard determined by calibration. Auto-detection is unreliable
+    /// (on multi-interface keyboards the capabilities are not distinctive),
+    /// so the user's choice is stored permanently.
     pub keyboard: Option<PathBuf>,
     pub mouse: Option<PathBuf>,
-    /// Session ayağa kalkınca Waydroid penceresini tam ekran yap.
+    /// Make the Waydroid window fullscreen once the session comes up.
     ///
-    /// Varsayılan açık: dokunuşlar ekran uzayında gittiği için pencere
-    /// çıkışla hizalı olmazsa profil koordinatları kayar. Yine de bir
-    /// tercih meselesi — kullanıcı pencere modunda çalışmak isteyebilir.
+    /// Default on: touches travel in screen space, so if the window is not
+    /// aligned with the output the profile coordinates shift. Still a matter
+    /// of preference — a user may want to work in windowed mode.
     #[serde(default = "default_true")]
     pub fullscreen_on_start: bool,
-    /// liwd açılırken keymapper da başlasın mı.
+    /// Whether the keymapper starts along with liwd.
     ///
-    /// Varsayılan açık: daemon'un var oluş sebeplerinden biri eşleme.
-    /// Kapalıyken her `systemctl --user restart liwd` sonrası keymapper
-    /// SESSİZCE kayboluyordu — kullanıcı "girdileri almıyor" görüyor,
-    /// nedenini hiçbir yerden anlayamıyordu. Gerçekte yaşandı.
+    /// Default on: mapping is one of the daemon's reasons to exist. With it
+    /// off, the keymapper vanished SILENTLY after every
+    /// `systemctl --user restart liwd` — the user saw "it isn't taking input"
+    /// with no way to find out why. This actually happened.
     #[serde(default = "default_true")]
     pub keymapper_on_start: bool,
-    /// Oyun kipini açıp kapatan tuşun evdev kodu.
+    /// evdev code of the key that toggles game mode.
     ///
-    /// Oyun kipi = cihazlar kilitli + eşleme etkin. Kapalıyken fare
-    /// serbesttir ve menülerde doğal çalışır. Profil etkinleşir etkinleşmez
-    /// kilitlemek yanlış: maç başlamadan fare kilitleniyor ve kullanıcı
-    /// menüde sıkışıyor.
+    /// Game mode = devices grabbed + mapping active. With it off the mouse is
+    /// free and behaves naturally in menus. Grabbing as soon as a profile
+    /// activates is wrong: the mouse locks before the match starts and the
+    /// user gets stuck in the menu.
     #[serde(default)]
     pub hotkey_game_mode: Option<u16>,
 }
@@ -83,8 +83,8 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    /// Eksik alan AÇIK varsayılmalı: kapalı varsaymak, eski config'i olan
-    /// kullanıcılarda keymapper'ın sessizce başlamaması demekti.
+    /// A missing field must default to ON: defaulting to off meant the
+    /// keymapper silently not starting for users with an older config.
     #[test]
     fn missing_keymapper_field_defaults_to_true() {
         let c: super::Config = toml::from_str("keyboard = \"/dev/input/event1\"").unwrap();
@@ -101,11 +101,11 @@ mod tests {
 
     #[test]
     fn missing_file_yields_defaults() {
-        let c = Config::load_from(Path::new("/olmayan/yol/config.toml"));
+        let c = Config::load_from(Path::new("/nonexistent/path/config.toml"));
         assert!(c.keyboard.is_none());
     }
 
-    /// Eski yapılandırmada alan yoksa varsayılan AÇIK olmalı, false değil.
+    /// If an older config lacks the field the default must be ON, not false.
     #[test]
     fn missing_fullscreen_field_defaults_to_true() {
         let c: Config = toml::from_str("keyboard = \"/dev/input/event23\"").unwrap();
@@ -127,13 +127,13 @@ mod tests {
         assert_eq!(back.hotkey_game_mode, Some(40));
     }
 
-    /// Bozuk yapılandırma çökmemeli, varsayılana dönmeli.
+    /// A corrupt config must not panic; it must fall back to defaults.
     #[test]
     fn corrupt_file_falls_back_to_defaults() {
         let dir = std::env::temp_dir().join("liw-test-cfg");
         std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("bozuk.toml");
-        std::fs::write(&p, "bu = geçerli toml değil [[[").unwrap();
+        let p = dir.join("corrupt.toml");
+        std::fs::write(&p, "this = is not valid toml [[[").unwrap();
         assert!(Config::load_from(&p).keyboard.is_none());
         let _ = std::fs::remove_file(&p);
     }

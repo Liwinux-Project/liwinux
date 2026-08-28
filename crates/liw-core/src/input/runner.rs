@@ -1,13 +1,13 @@
-//! Keymapper çalışma döngüsü.
+//! Keymapper run loop.
 //!
-//! `liw keymap run` ve `liwd` aynı motoru kullansın diye buraya taşındı.
+//! Moved here so `liw keymap run` and `liwd` share one engine.
 //!
-//! # Bağımsızlık
+//! # Independence
 //!
-//! Runner ön plandaki uygulamayı **kendisi sorgulamaz**; bir kanaldan alır.
-//! Böylece keymapper Waydroid'i, D-Bus'ı veya polkit'i bilmez — yalnızca
-//! "şu an şu paket ön planda" bilgisini tüketir. Ön planı kimin nasıl
-//! bulduğu çağıranın sorunudur.
+//! The runner does **not query the foreground app itself**; it receives it on a
+//! channel. The keymapper therefore knows nothing about Waydroid, D-Bus or
+//! polkit — it only consumes "package X is in the foreground now". How the
+//! caller finds that out is the caller's problem.
 
 use super::backend::TouchBackend;
 use super::capture::{translate, GrabbedDevice};
@@ -20,19 +20,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
-/// evdev tuş kodu: ESC.
+/// evdev key code: ESC.
 const KEY_ESC: u16 = 1;
-/// Kilitliyken çıkış için kaç kez ESC gerekiyor. Oyunda ESC'ye basmakla
-/// kazara çıkmayı önler.
+/// How many ESC presses are needed to escape a grab. Prevents accidental
+/// exits from pressing ESC inside the game.
 const ESC_STREAK: u8 = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunnerError {
-    #[error("cihaz açılamadı: {0}")]
+    #[error("could not open device: {0}")]
     Device(#[from] super::capture::CaptureError),
-    #[error("dokunmatik arka uç kurulamadı: {0}")]
+    #[error("could not set up the touch backend: {0}")]
     Backend(#[from] super::backend::BackendError),
-    #[error("olay akışı koptu: {0}")]
+    #[error("event stream broke: {0}")]
     Stream(#[source] std::io::Error),
 }
 
@@ -40,45 +40,45 @@ pub enum RunnerError {
 pub struct RunnerConfig {
     /// Dinlenecek klavye.
     pub device: PathBuf,
-    /// Dinlenecek fare. Yoksa fare eşlemesi (Aim, fare tuşları) çalışmaz.
+    /// Mouse to listen on. Without it mouse mapping (Aim, buttons) does not work.
     pub mouse: Option<PathBuf>,
-    /// Kilitleme özelliği açık mı.
+    /// Whether grabbing is enabled.
     ///
-    /// Açıkken kilit OTOMATİK alınmaz: kullanıcı `hotkey` ile oyun kipine
-    /// geçer. Profil etkinleşir etkinleşmez kilitlemek menülerde sıkışmaya
-    /// yol açıyordu.
+    /// When on, the grab is NOT taken automatically: the user enters game mode
+    /// with `hotkey`. Grabbing as soon as a profile activates got people stuck
+    /// in menus.
     pub grab: bool,
-    /// Oyun kipini açıp kapatan evdev tuş kodu.
+    /// evdev key code that toggles game mode.
     pub hotkey: Option<u16>,
-    /// Dokunmatik koordinat eşlemesi.
+    /// Touch coordinate mapping.
     pub screen_map: ScreenMap,
     /// Hedef pencerenin piksel boyutu.
     ///
-    /// Joystick dairesinin gerçekten daire olması buna bağlı: normalize
-    /// koordinat eksen başına ölçekli olduğu için 2560x1440'ta aynı
-    /// normalize yarıçap yatayda 1.78 kat uzağa gider.
+    /// Whether the joystick circle is really a circle depends on this: a
+    /// normalized coordinate is scaled per axis, so at 2560x1440 the same
+    /// normalized radius reaches 1.78x further horizontally.
     pub screen_px: (u32, u32),
 }
 
-/// Dışarıdan gözlemlenebilir durum.
+/// Externally observable state.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct RunnerState {
     pub running: bool,
-    /// Ön plandaki paket (profil olsun olmasın).
+    /// Foreground package (with or without a profile).
     pub foreground: Option<String>,
-    /// Etkin profilin adı; profil yoksa `None`.
+    /// Name of the active profile; `None` if there is none.
     pub active_profile: Option<String>,
     pub grabbed: bool,
-    /// Oyun kipi açık mı (kilit + eşleme). Kapalıyken fare serbest.
+    /// Is game mode on (grab + mapping)? With it off the mouse is free.
     pub game_mode: bool,
-    /// Waydroid penceresi host'ta odakta mı. Değilse eşleme durur.
+    /// Is the Waydroid window focused on the host? If not, mapping stops.
     pub host_focused: bool,
-    /// Bizim katmanımızın gecikmesi (mikrosaniye, p50/p99).
+    /// Latency of our own layer (microseconds, p50/p99).
     pub latency_p50_us: u64,
     pub latency_p99_us: u64,
 }
 
-/// Döngüden dışarı bildirilen olaylar (loglama/arayüz için).
+/// Events reported out of the loop (for logging / UI).
 #[derive(Debug, Clone)]
 pub enum RunnerEvent {
     ProfileActivated { package: String, profile: String },
@@ -90,61 +90,61 @@ pub enum RunnerEvent {
     FocusGained,
     FocusLost,
     EscapeRequested,
-    /// Sistem katmanı (asistan, bildirim paneli) oyunun üstüne çıktı.
+    /// A system layer (assistant, notification panel) came over the game.
     ///
-    /// `ProfileCleared`'dan ayrı tutuluyor çünkü nedeni tamamen farklı:
-    /// oyun kapanmadı, üstüne bir şey geldi. Kullanıcı farenin neden
-    /// öldüğünü bilmeli.
+    /// Kept separate from `ProfileCleared` because the cause is entirely
+    /// different: the game did not close, something came over it. The user
+    /// needs to know why the mouse died.
     OverlayPaused { package: String },
 }
 
-/// Oyunun ÜSTÜNE çıkan geçici sistem katmanları.
+/// Transient system layers that come OVER the game.
 ///
-/// Bunlar ön plana geçtiğinde oyun kapanmış olmuyor, sadece üstü
-/// örtülüyor. Profili silmek yerine duraklatıyoruz ki katman kalkınca
-/// anında geri dönsün.
+/// When these move to the foreground the game has not closed, it is merely
+/// covered. We pause rather than clear the profile, so it returns instantly
+/// when the layer goes away.
 ///
-/// Liste dar tutuluyor: izin diyalogları gibi gerçekten kullanıcı
-/// girdisi bekleyen şeyler BURAYA GİRMEMELİ.
+/// The list is kept narrow: things that genuinely wait for user input, such as
+/// permission dialogs, MUST NOT be in it.
 pub fn is_system_overlay(pkg: &str) -> bool {
     matches!(pkg,
-        // Google Asistan / arama — oyun sırasında kendiliğinden açılıyor.
+        // Google Assistant / search — opens by itself during play.
         "com.google.android.googlequicksearchbox"
-        // Bildirim paneli, son kullanılanlar, ses kontrolü.
+        // Notification shade, recents, volume control.
         | "com.android.systemui")
 }
 
-/// Yeni bir dokunuş borusu isteği; yanıt kanalıyla birlikte gelir.
+/// A request for a new touch pipe, carrying its reply channel.
 ///
-/// Runner'ın D-Bus'ı bilmemesi bilinçli: boruyu kim, hangi yetkiyle
-/// açtığı çağıranın sorunu. Runner yalnızca "bana taze bir tanıtıcı ver"
+/// Keeping the Runner ignorant of D-Bus is deliberate: who opens the pipe and
+/// with what authority is the caller's problem. The Runner only says "give me
 /// diyebiliyor.
 pub type PipeRequest =
     tokio::sync::oneshot::Sender<Option<(std::fs::File, (u32, u32))>>;
 
-/// Bir gönderim hatası borunun ÖLDÜĞÜ anlamına mı geliyor.
+/// Does a dispatch error mean the pipe is DEAD?
 ///
-/// Ayrım şart: dolu boru (`WouldBlock`) geçici ve zaten arka uçta
-/// yutuluyor; kopmuş boru kalıcı ve yeniden açmak gerekiyor. İkisini
-/// karıştırmak ya gereksiz yeniden açma ya da sessizce ölü kalma demek.
+/// The distinction is mandatory: a full pipe (`WouldBlock`) is transient and
+/// already swallowed by the backend; a broken pipe is permanent and needs
+/// reopening. Conflating them means either needless reopening or silent death.
 fn pipe_is_dead(e: &super::backend::BackendError) -> bool {
     let s = e.to_string();
     s.contains("Broken pipe") || s.contains("os error 32")
-        || s.contains("hizası bozuldu")
+        || s.contains("alignment broken")
 }
 
 pub struct Runner {
     cfg: RunnerConfig,
     store: Store,
     state: Arc<RwLock<RunnerState>>,
-    /// Waydroid'in dokunuş borusu ve Android ekran boyutu.
+    /// Waydroid's touch pipe and the Android display size.
     ///
     /// Verilirse compositor zinciri (uinput → libinput → KWin → wl_touch)
-    /// tamamen atlanır ve ekran dışı koordinat mümkün olur — sınırsız
-    /// nişanın ön şartı. `RunnerConfig` içinde DEĞİL çünkü `File` klonlanamaz
-    /// ve yapılandırma klonlanabilir olmalı.
+    /// entirely and off-screen coordinates become possible — the prerequisite
+    /// for unbounded aim. NOT inside `RunnerConfig` because `File` is not
+    /// cloneable and the configuration must be.
     touch_pipe: Option<(std::fs::File, (u32, u32))>,
-    /// Boru koptuğunda yenisini istemek için.
+    /// For requesting a new one when the pipe breaks.
     pipe_provider: Option<mpsc::Sender<PipeRequest>>,
 }
 
@@ -158,23 +158,23 @@ impl Runner {
         }
     }
 
-    /// Boru koptuğunda yenisini isteyeceği kanal.
+    /// Channel used to request a new pipe when this one breaks.
     ///
-    /// Gerçekte yaşandı: ekran hotplug'ında hwcomposer FIFO'yu silip
-    /// yeniden yaratıyor (`EventHub: Removing device
-    /// '/dev/input/wl_touch_events'`). Elimizdeki tanıtıcı sahipsiz
-    /// kalıyor ve enjeksiyon SESSİZCE duruyor — kullanıcı bunu "fare
-    /// birden çalışmaz oldu" diye yaşıyor.
+    /// This actually happened: on a display hotplug hwcomposer deletes and
+    /// recreates the FIFO (`EventHub: Removing device
+    /// '/dev/input/wl_touch_events'`). The handle we hold is orphaned and
+    /// injection stops SILENTLY — the user experiences it as "the mouse
+    /// suddenly stopped working".
     pub fn with_pipe_provider(mut self, tx: mpsc::Sender<PipeRequest>) -> Self {
         self.pipe_provider = Some(tx);
         self
     }
 
-    /// Waydroid'in dokunuş borusunu kullan (compositor'ı atla).
+    /// Use Waydroid's touch pipe (bypass the compositor).
     ///
     /// `px` Android ekran boyutudur (`waydroid.display_width`/`height`),
-    /// host penceresininki değil: boru koordinatları doğrudan Android
-    /// ekran uzayındadır, pencere geometrisi hesaba katılmaz.
+    /// not the host window's: pipe coordinates are directly in Android screen
+    /// space and window geometry is not taken into account.
     pub fn with_touch_pipe(mut self, pipe: std::fs::File, px: (u32, u32)) -> Self {
         self.touch_pipe = Some((pipe, px));
         self
@@ -183,17 +183,17 @@ impl Runner {
     pub fn state(&self) -> Arc<RwLock<RunnerState>> { self.state.clone() }
     pub fn store(&self) -> &Store { &self.store }
 
-    /// Döngüyü çalıştırır. `foreground` kanalı kapanınca veya `shutdown`
-    /// tetiklenince temiz çıkar.
+    /// Runs the loop. Exits cleanly when the `foreground` channel closes or
+    /// `shutdown` fires.
     ///
-    /// Çıkışta parmaklar HER ZAMAN kaldırılır ve kilit bırakılır — süreç
-    /// çökse bile çekirdek fd kapanışında kilidi bırakır, ama temiz çıkışta
-    /// beklemeye gerek yok.
-    /// `host_focused`: Waydroid penceresi host'ta odakta mı.
+    /// Fingers are ALWAYS lifted and the grab released on exit — even on a
+    /// crash the kernel releases it on fd close, but on a clean exit
+    /// there is no need to wait.
+    /// `host_focused`: is the Waydroid window focused on the host?
     ///
-    /// Bu kapı ŞART: Android pencerenin küçültüldüğünü bilmez, oyun alt
-    /// tabdayken bile kendini ön planda sanar. Kapı olmadan dokunuşlar
-    /// kullanıcının gerçek masaüstüne düşer.
+    /// This gate is MANDATORY: Android does not know the window was minimised
+    /// and thinks it is foreground even with the game in the background.
+    /// Without the gate, touches land on the user's real desktop.
     pub async fn run(
         &mut self,
         mut foreground: mpsc::Receiver<String>,
@@ -201,31 +201,31 @@ impl Runner {
         mut shutdown: tokio::sync::watch::Receiver<bool>,
         events: Option<mpsc::Sender<RunnerEvent>>,
     ) -> Result<LatencyStats, RunnerError> {
-        // Arka uç seçimi girdi yolunun TAMAMINI belirliyor.
+        // The backend choice determines the ENTIRE input path.
         //
-        // Dokunuş borusu varsa compositor zinciri devre dışı kalır ve
-        // koordinat kırpılmaz; sınırsız nişan ancak o zaman güvenli.
-        // uinput yolunda libinput ekrana sıkıştırdığı için motor sınırlı
-        // kipte kalmalı (`docs/fare-nisan.md`).
+        // With the touch pipe the compositor chain is out of the picture and
+        // coordinates are not clamped; only then is unbounded aim safe. On the
+        // uinput path libinput squeezes to the screen, so the engine must stay
+        // in bounded mode (`docs/mouse-aim.md`).
         let (mut backend, offscreen_ok): (Box<dyn TouchBackend>, bool) =
             match self.touch_pipe.take() {
                 Some((pipe, (w, h))) => {
-                    tracing::info!(genişlik = w, yükseklik = h,
-                        "dokunuş borusu kullanılıyor — compositor atlanıyor");
+                    tracing::info!(width = w, height = h,
+                        "using the touch pipe — bypassing the compositor");
                     (Box::new(WlTouchBackend::from_pipe(pipe, w, h)?), true)
                 }
                 None => {
                     let b = UinputBackend::new(self.cfg.screen_map)?;
-                    // libinput/KWin'in cihazı tanıması birkaç yüz ms sürebilir.
-                    // Boru yolunda tanıtılacak cihaz yok, beklemek gereksiz.
+                    // libinput/KWin may take a few hundred ms to notice the
+                    // device. On the pipe path there is no device to notice.
                     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
                     (Box::new(b), false)
                 }
             };
 
-        // Yanlış cihaz açıldığında GÜRÜLTÜLÜ başarısız ol. Doğrulamamak,
-        // ses jakı cihazından tuş beklemek ve sessizce hiç çalışmamak
-        // demekti — kullanıcı yalnızca "keymapper çalışmıyor" görüyordu.
+        // Fail LOUDLY when the wrong device is opened. Not verifying meant
+        // waiting for keys from an audio-jack device and silently never
+        // working — all the user saw was "the keymapper does not work".
         {
             let probe = evdev::Device::open(&self.cfg.device)
                 .map_err(|e| super::capture::CaptureError::Open {
@@ -235,8 +235,8 @@ impl Runner {
         let dev = GrabbedDevice::open(&self.cfg.device, false)?;
         let mut stream = dev.into_stream()?;
 
-        // Fare AYRI bir cihaz. Klavyeyle aynı akışta gelmez; ikisini de
-        // dinlemek zorundayız yoksa Aim ve fare tuşları hiç tetiklenmez.
+        // The mouse is a SEPARATE device. It does not arrive on the keyboard's
+        // stream; we must listen to both or Aim and mouse buttons never fire.
         let mut mouse_stream = match &self.cfg.mouse {
             Some(p) => match evdev::Device::open(p)
                 .map_err(|e| super::capture::CaptureError::Open {
@@ -246,30 +246,31 @@ impl Runner {
             {
                 Ok(d) => match d.into_stream() {
                     Ok(s) => Some(s),
-                    Err(e) => { tracing::warn!(hata = %e, "fare akışı kurulamadı"); None }
+                    Err(e) => { tracing::warn!(error = %e, "could not set up the mouse stream"); None }
                 },
-                Err(e) => { tracing::warn!(hata = %e, "fare açılamadı"); None }
+                Err(e) => { tracing::warn!(error = %e, "could not open the mouse"); None }
             },
             None => None,
         };
 
         let mut engine: Option<Engine> = None;
         // Etkin profil, motordan AYRI tutulur: odak kaybolunca motoru
-        // söküyoruz ama profili unutmuyoruz ki odak dönünce geri kuralım.
+        // tear the engine down on focus loss but must not forget the profile,
+        // so it can be rebuilt when focus returns.
         let mut profile: Option<super::profile::Profile> = None;
         let mut focused = *host_focused.borrow();
-        // Kısayol tanımlıysa oyun kipi KAPALI başlar; kullanıcı hazır
-        // olduğunda açar. Tanımlı değilse eski davranış: profil varsa açık.
+        // With a hotkey set, game mode starts OFF and the user turns it on when
+        // ready. Without one, the old behaviour: on whenever a profile is active.
         let mut game_mode = self.cfg.hotkey.is_none();
         let mut current: Option<String> = None;
         let mut grabbed = false;
         let mut esc = 0u8;
         let mut lat = LatencyStats::new();
-        // Boru koptu mu. Kopunca yeniden açılana kadar gönderim anlamsız.
+        // Is the pipe broken? While it is, dispatching is pointless.
         let mut pipe_dead = false;
-        // Gönderim sarmalayıcı: hatayı yutmak yerine SINIFLANDIRIR.
-        // Eskiden her çağrı `let _ =` ile atılıyordu; boru koptuğunda
-        // hiçbir yerde iz kalmıyor ve enjeksiyon sessizce ölüyordu.
+        // Dispatch wrapper: CLASSIFIES the error instead of swallowing it.
+        // Every call used to be discarded with `let _ =`; when the pipe broke
+        // nothing was left anywhere and injection died silently.
         macro_rules! emit_touch {
             ($acts:expr) => {{
                 let acts = $acts;
@@ -280,9 +281,9 @@ impl Runner {
                             if pipe_is_dead(&e) {
                                 pipe_dead = true;
                                 tracing::error!(hata = %e,
-                                    "dokunuş borusu koptu — yenisi istenecek");
+                                    "touch pipe broke — a new one will be requested");
                             } else {
-                                tracing::warn!(hata = %e, "dokunuş gönderilemedi");
+                                tracing::warn!(error = %e, "could not dispatch touch");
                             }
                             false
                         }
@@ -292,9 +293,8 @@ impl Runner {
         }
 
         let t0 = std::time::Instant::now();
-        // Kare başına tek dokunuş hareketi göndermek için: gerçek
-        // dokunmatik ekranlar 60-240 Hz raporlar, 1000 Hz fare hızında
-        // değil. 5 ms ~ 200 Hz.
+        // To send one touch move per frame: real touchscreens report at
+        // 60-240 Hz, not at a 1000 Hz mouse rate. 5 ms ~ 200 Hz.
         let mut repair_tick = tokio::time::interval(std::time::Duration::from_secs(2));
         repair_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut ticker = tokio::time::interval(std::time::Duration::from_millis(5));
@@ -310,14 +310,14 @@ impl Runner {
 
         loop {
             tokio::select! {
-                // --- ön plan değişimi ---
+                // --- foreground change ---
                 Some(pkg) = foreground.recv() => {
                     if current.as_deref() == Some(pkg.as_str()) { continue; }
 
-                    // Sistem katmanı: oyun kapanmadı, üstü örtüldü.
-                    // Profili KORU ki katman kalkınca anında dönsün.
-                    // Kilidi bırak ki kullanıcı katmanı fareyle kapatabilsin
-                    // — yoksa fare kilitli kalır ve asistan kapatılamaz.
+                    // System layer: the game did not close, it got covered.
+                    // KEEP the profile so it returns instantly when the layer
+                    // goes away. Release the grab so the user can dismiss the
+                    // layer with the mouse — otherwise it stays locked.
                     if is_system_overlay(&pkg) && profile.is_some() {
                         if let Some(e) = engine.as_mut() {
                             let acts = e.set_enabled(false);
@@ -340,8 +340,8 @@ impl Runner {
                         continue;
                     }
 
-                    // Eski profili kapat ve parmakları bırak: uygulama
-                    // değişirken ekranda asılı parmak kalmamalı.
+                    // Close the old profile and release fingers: no finger may
+                    // be left on screen while the app changes.
                     if let Some(e) = engine.as_mut() {
                         let acts = e.set_enabled(false);
                         let _ = emit_touch!(acts);
@@ -355,7 +355,7 @@ impl Runner {
                                 package: pkg.clone(),
                                 profile: entry.profile.name.clone(),
                             });
-                            // Motor yalnızca host odaktayken kurulur.
+                            // The engine is only built while the host is focused.
                             if focused && game_mode {
                                 engine = Some({
                                     let mut e = Engine::new(entry.profile.clone());
@@ -366,8 +366,8 @@ impl Runner {
                                 if self.cfg.grab && !grabbed
                                     && stream.device_mut().grab().is_ok()
                                 {
-                                    // Fare de kilitlenmeli: yoksa imleç host'ta
-                                    // gezinir ve tıklamalar masaüstüne gider.
+                                    // The mouse must be grabbed too: otherwise the
+                                    // cursor roams the host and clicks hit the desktop.
                                     if let Some(m) = mouse_stream.as_mut() {
                                         let _ = m.device_mut().grab();
                                     }
@@ -400,7 +400,7 @@ impl Runner {
                     s.grabbed = grabbed;
                 }
 
-                // --- host odak değişimi ---
+                // --- host focus change ---
                 _ = host_focused.changed() => {
                     let now_focused = *host_focused.borrow();
                     if now_focused == focused { continue; }
@@ -425,8 +425,8 @@ impl Runner {
                         }
                         emit(RunnerEvent::FocusGained);
                     } else {
-                        // Odak kaybında parmakları BIRAK ve kilidi çöz:
-                        // aksi halde tuşlar kullanıcının masaüstüne dokunuş
+                        // On focus loss RELEASE the fingers and the grab:
+                        // otherwise keys become touches on the user's desktop
                         // enjekte etmeye devam eder.
                         if let Some(e) = engine.as_mut() {
                             let acts = e.set_enabled(false);
@@ -449,15 +449,15 @@ impl Runner {
                     s.grabbed = grabbed;
                 }
 
-                // --- kopmuş boruyu yenile ---
+                // --- renew a broken pipe ---
                 //
-                // Ayrı ve yavaş bir saatte: jest saatine bağlamak,
-                // jest yokken (tam da enjeksiyonun durduğu anda)
-                // hiç çalışmaması demekti.
+                // On a separate, slower clock: tying it to the gesture clock
+                // meant it never ran when there was no gesture — exactly when
+                // injection had stopped.
                 _ = repair_tick.tick(), if pipe_dead => {
                     let Some(tx) = self.pipe_provider.clone() else {
-                        tracing::error!("boru koptu ve yenileyecek kanal yok \
-                                         — keymapper yeniden başlatılmalı");
+                        tracing::error!("the pipe broke and there is no channel to renew it \
+                                         — the keymapper must be restarted");
                         pipe_dead = false;
                         continue;
                     };
@@ -469,22 +469,22 @@ impl Runner {
                                 Ok(b) => {
                                     backend = Box::new(b);
                                     pipe_dead = false;
-                                    // Motorun parmak durumu artık GEÇERSİZ:
-                                    // Android cihazı kaldırdığında bütün
-                                    // dokunuşlarımızı unuttu. Sıfırdan
-                                    // başlamazsak havuz sızar ve nişan ölür.
+                                    // The engine's finger state is now INVALID:
+                                    // when Android removed the device it forgot
+                                    // every touch of ours. Without starting
+                                    // fresh the pool leaks and aim dies.
                                     if let Some(e) = engine.as_mut() {
                                         let _ = e.set_enabled(false);
                                         let _ = e.set_enabled(true);
                                     }
-                                    tracing::info!(genişlik = w, yükseklik = h,
-                                        "dokunuş borusu yenilendi");
+                                    tracing::info!(width = w, height = h,
+                                        "touch pipe renewed");
                                 }
                                 Err(e) => tracing::error!(hata = %e,
-                                    "yeni boru kurulamadı"),
+                                    "could not set up the new pipe"),
                             }
                         }
-                        Ok(None) => tracing::warn!("boru henüz alınamadı, \
+                        Ok(None) => tracing::warn!("pipe not available yet, \
                                                     tekrar denenecek"),
                         Err(_) => {}
                     }
@@ -504,8 +504,8 @@ impl Runner {
                     let ev_time = ev.timestamp();
                     let Some(input) = translate(&ev) else { continue };
 
-                    // Kısayol HER ZAMAN dinlenir — kilitli olsun olmasın.
-                    // Kilitliyken dinlenmezse oyun kipinden çıkılamaz.
+                    // The hotkey is ALWAYS listened for — grabbed or not.
+                    // Not listening while grabbed would trap the user in game mode.
                     if let (Some(hk), InputEvent::Press(TriggerKind::Key(k))) =
                         (self.cfg.hotkey, input)
                     {
@@ -534,8 +534,8 @@ impl Runner {
                                 }
                                 emit(RunnerEvent::GameModeOn);
                             } else {
-                                // Kipten çıkarken parmakları BIRAK: yoksa
-                                // menüye dönüldüğünde ekranda asılı kalır.
+                                // RELEASE fingers when leaving the mode:
+                                // otherwise they hang on screen back in the menu.
                                 if let Some(e) = engine.as_mut() {
                                     let acts = e.set_enabled(false);
                                     let _ = emit_touch!(acts);
@@ -575,7 +575,7 @@ impl Runner {
                     }
 
                     if let Some(e) = engine.as_mut() {
-                        // tick eylemleri ATILMAMALI: önceki jestin UP'ı orada olabilir.
+                        // tick actions MUST NOT be dropped: the previous gesture's UP may be there.
                         let mut acts = e.tick(t0.elapsed().as_millis() as u64);
                         acts.extend(e.handle(input));
                         if !acts.is_empty() && emit_touch!(acts) {
@@ -588,15 +588,15 @@ impl Runner {
                 ev = async {
                     match mouse_stream.as_mut() {
                         Some(m) => m.next_event().await,
-                        // Fare yoksa bu kol asla hazır olmamalı.
+                        // With no mouse this arm must never be ready.
                         None => std::future::pending().await,
                     }
                 } => {
                     let ev = ev.map_err(RunnerError::Stream)?;
                     let ev_time = ev.timestamp();
                     if let (Some(input), Some(e)) = (translate(&ev), engine.as_mut()) {
-                        // Fare hareketi motorda BİRİKİR; uygulama tick'te.
-                        // Tuş olayları (fare düğmeleri) anında işlenir.
+                        // Mouse motion ACCUMULATES in the engine; applied on tick.
+                        // Key events (mouse buttons) are handled immediately.
                         let acts = e.handle(input);
                         if !acts.is_empty() && emit_touch!(acts) {
                             lat.record(ev_time);
@@ -610,11 +610,11 @@ impl Runner {
             }
         }
 
-        // Temiz çıkış.
+        // Clean exit.
         //
-        // Burada `emit_touch!` KULLANILMIYOR: çıkarken borunun ölü olup
-        // olmadığını öğrenmenin bir değeri yok, sınıflandırma yalnızca
-        // "hiç okunmayan atama" uyarısı üretirdi.
+        // `emit_touch!` is NOT used here: on the way out there is no value in
+        // learning whether the pipe is dead, and classifying would only produce
+        // an "assignment never read" warning.
         if let Some(e) = engine.as_mut() {
             let acts = e.set_enabled(false);
             if !acts.is_empty() { let _ = backend.dispatch(&acts); }
@@ -640,24 +640,24 @@ impl Runner {
 mod tests {
     use super::*;
 
-    /// Kopmuş boru ile DOLU boru ayrılmalı.
+    /// A broken pipe and a FULL pipe must be told apart.
     ///
-    /// Dolu boru geçicidir ve arka uçta zaten yutuluyor; onu da "koptu"
-    /// saymak her yük anında gereksiz yere boru yenilettirirdi. Tersi de
-    /// kötü: gerçek kopmayı görmezden gelmek enjeksiyonu sessizce
-    /// öldürüyordu (ekran hotplug'ında ölçüldü).
+    /// A full pipe is transient and already swallowed by the backend; counting
+    /// it as "broken" would force a pointless reopen under every load spike.
+    /// The reverse is worse: ignoring a real break killed injection silently
+    /// (measured on a display hotplug).
     #[test]
     fn only_a_real_break_counts_as_dead() {
         use super::super::backend::BackendError;
         let dead = BackendError::Dispatch(
-            "boruya yazılamadı: Broken pipe (os error 32)".into());
+            "could not write to pipe: Broken pipe (os error 32)".into());
         assert!(pipe_is_dead(&dead));
         let misaligned = BackendError::Dispatch(
-            "kısmi yazma: 12/24 bayt — boru hizası bozuldu".into());
-        assert!(pipe_is_dead(&misaligned), "hizası bozulmuş boru da ölüdür");
-        let busy = BackendError::Dispatch("geçersiz işaretçi kimliği 12".into());
+            "partial write: 12/24 bytes — pipe alignment broken".into());
+        assert!(pipe_is_dead(&misaligned), "a misaligned pipe is dead too");
+        let busy = BackendError::Dispatch("invalid pointer id 12".into());
         assert!(!pipe_is_dead(&busy));
-        // Dolu boru arka uçta Ok(()) dönüyor; buraya hiç gelmiyor.
+        // A full pipe returns Ok(()) in the backend; it never reaches here.
     }
 
     #[test]
@@ -667,34 +667,34 @@ mod tests {
         assert!(s.active_profile.is_none());
         assert!(!s.grabbed);
         assert!(!s.game_mode);
-        // Odak varsayılanı KAPALI: bilinmezken açık saymak masaüstüne
-        // dokunuş enjekte etme riski demek.
+        // Focus defaults to OFF: assuming on while unknown risks injecting
+        // touches into the desktop.
         assert!(!s.host_focused);
     }
 
-    /// Kaçış eşiği 1 olmamalı: oyunda ESC'ye basmak kazara çıkmaya yol açmasın.
+    /// The escape threshold must not be 1: pressing ESC in-game must not exit.
     #[test]
     fn escape_requires_repeated_presses() {
         assert!(ESC_STREAK > 1);
     }
 
-    /// Asistan oyunun üstüne çıkınca profil DÜŞMEMELİ.
+    /// The profile must NOT drop when the assistant comes over the game.
     ///
-    /// Gerçekte yaşandı: asistan kendiliğinden açıldı, ön plan paketi
-    /// değişti, keymapper kapandı ve fare sessizce öldü.
+    /// This actually happened: the assistant opened by itself, the foreground
+    /// package changed, the keymapper shut down and the mouse died silently.
     #[test]
     fn assistant_and_systemui_are_overlays() {
         assert!(is_system_overlay("com.google.android.googlequicksearchbox"));
         assert!(is_system_overlay("com.android.systemui"));
     }
 
-    /// Gerçek uygulamalar katman sayılmamalı — yoksa oyundan çıkınca
-    /// eşleme açık kalır ve tuşlar masaüstüne sızar.
+    /// Real apps must not count as layers — otherwise mapping stays on after
+    /// leaving the game and keys leak to the desktop.
     #[test]
     fn real_apps_are_not_overlays() {
         for p in ["com.ForgeGames.SpecialForcesGroup2", "com.android.settings",
                   "com.android.permissioncontroller", "com.android.vending"] {
-            assert!(!is_system_overlay(p), "{p} katman sayılmamalı");
+            assert!(!is_system_overlay(p), "{p} must not count as a layer");
         }
     }
 

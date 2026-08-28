@@ -9,4 +9,4 @@ install -Dm644 "$R/dist/dbus/id.liwinux.Helper1.conf" /usr/share/dbus-1/system.d
 install -Dm644 "$R/dist/systemd/liwd-helper.service" /etc/systemd/system/liwd-helper.service
 systemctl daemon-reload
 systemctl reload dbus 2>/dev/null || systemctl reload dbus-broker 2>/dev/null || true
-echo "Kuruldu. Başlatmak için:  sudo systemctl enable --now liwd-helper"
+echo "Installed. To start:  sudo systemctl enable --now liwd-helper"

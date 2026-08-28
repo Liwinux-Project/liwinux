@@ -1,13 +1,13 @@
-// Yalnızca resourceClass'a bakılır.
+// Match on resourceClass ONLY.
 //
-// Başlığa (caption) veya resourceName'e bakmak TEHLİKELİ: kullanıcının
-// terminali "waydroid ..." komutunu çalıştırırken başlığında o kelimeyi
-// taşır ve yanlışlıkla eşleşir. Gerçekte yaşandı — teşhis aracı kullanıcının
-// konsol penceresini Waydroid penceresi sandı. Başlıkla eşleştiren bir
-// script o pencereyi tam ekran yapabilirdi.
+// Matching the caption or resourceName is DANGEROUS: the user's terminal
+// carries that word in its title while running a "waydroid ..." command and
+// would match by accident. This actually happened — a diagnostic tool mistook
+// the user's console window for the Waydroid window. A script matching on the
+// caption could have made that window fullscreen.
 //
-// Birden fazla gerçek eşleşme olursa en büyük alanlı seçilir; listedeki
-// sıra KWin'in yığın düzenine bağlı olduğu için belirlenimsizdir.
+// If several genuine matches exist, the largest by area wins; list order
+// depends on KWin's stacking order and is therefore non-deterministic.
 function liwFindWaydroid(wins) {
     var best = null, bestArea = -1;
     for (var i = 0; i < wins.length; i++) {
@@ -22,24 +22,24 @@ function liwFindWaydroid(wins) {
     return best;
 }
 
-// Teşhis: tüm pencereleri listeler, Waydroid'i işaretler.
+// Diagnostic: list every window, flag the Waydroid one.
 var wins = (typeof workspace.windowList === "function")
     ? workspace.windowList()
     : (typeof workspace.stackingOrder !== "undefined" ? workspace.stackingOrder
                                                       : workspace.clientList());
 
-print("LIWINUX: toplam pencere = " + wins.length);
+print("LIWINUX: total windows = " + wins.length);
 for (var i = 0; i < wins.length; i++) {
     var w = wins[i];
-    print("LIWINUX: pencere cls='" + (w.resourceClass || "") +
+    print("LIWINUX: window cls='" + (w.resourceClass || "") +
           "' cap='" + (w.caption || "") + "'");
 }
 
 var t = liwFindWaydroid(wins);
 if (t === null) {
-    print("LIWINUX: Waydroid penceresi BULUNAMADI");
+    print("LIWINUX: Waydroid window NOT FOUND");
 } else {
     var g = t.frameGeometry;
-    print("LIWINUX: BULUNDU geometri=" + g.x + "," + g.y + " " +
-          g.width + "x" + g.height + " tamekran=" + t.fullScreen);
+    print("LIWINUX: FOUND geometry=" + g.x + "," + g.y + " " +
+          g.width + "x" + g.height + " fullscreen=" + t.fullScreen);
 }

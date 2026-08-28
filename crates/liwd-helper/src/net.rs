@@ -1,10 +1,10 @@
-//! Ağ teşhisi — `liw-net-doctor.sh`'ın Rust karşılığı.
+//! Network diagnosis — the Rust equivalent of `liw-net-doctor.sh`.
 //!
-//! Faz 0'da öğrenilen ders: "firewall'unu kontrol et" demek işe yaramaz.
-//! Gerçek arıza ufw kurallarımız DOĞRUYKEN ortaya çıktı; trafiği kaçıran şey
-//! nftables'a kendi tablosunu yazan üçüncü bir araçtı (unwall/zapret, DNS'i
-//! 127.0.0.53'e DNAT'lıyordu). Bu yüzden teşhis, **kuralı isimlendirmek**
-//! zorundadır.
+//! Lesson learned in Phase 0: telling someone to "check your firewall" does
+//! not help. The real failure appeared while our ufw rules were CORRECT; what
+//! hijacked the traffic was a third tool writing its own nftables table
+//! (unwall/zapret, DNAT-ing DNS to 127.0.0.53). Diagnosis must therefore
+//! **name the rule**.
 
 use serde::Serialize;
 use std::process::Stdio;
@@ -19,7 +19,7 @@ pub struct NetDiagnosis {
     pub waydroid_nat: bool,
     pub lease_present: bool,
     pub active_firewall: String,
-    /// waydroid0 trafiğini kaçıran YABANCI kurallar — tablo adıyla birlikte.
+    /// FOREIGN rules hijacking waydroid0 traffic — with their table name.
     pub hijack_rules: Vec<HijackRule>,
     pub problems: Vec<String>,
 }
@@ -53,11 +53,11 @@ async fn active_firewall() -> String {
     "none".to_string()
 }
 
-/// nftables'ta waydroid trafiğini kaçırabilecek yabancı kuralları bulur.
+/// Finds foreign rules in nftables that could hijack Waydroid traffic.
 ///
-/// netfilter'da aynı hook'ta birden çok base chain çalışır ve **biri drop/dnat
-/// derse** diğerlerinin accept'i bunu geçersiz kılamaz. Bu yüzden Waydroid'in
-/// kendi kuralları doğruyken bile trafik ölebilir.
+/// In netfilter several base chains run on the same hook and **if one says
+/// drop/dnat** no accept from the others can override it. That is why traffic
+/// can die even while Waydroid's own rules are correct.
 fn find_hijacks(ruleset: &str) -> Vec<HijackRule> {
     let mut found = Vec::new();
     let mut table = String::new();
@@ -66,14 +66,14 @@ fn find_hijacks(ruleset: &str) -> Vec<HijackRule> {
         if let Some(rest) = t.strip_prefix("table ") {
             table = rest.trim_end_matches(" {").to_string();
         }
-        // Waydroid'in kendi tabloları meşru; onları atla.
+        // Waydroid's own tables are legitimate; skip them.
         if table.ends_with(" lxc") || table.ends_with("liwdiag") { continue; }
         if t.contains("dport 53") && t.contains("dnat to") {
             found.push(HijackRule {
                 table: table.clone(),
                 rule: t.to_string(),
-                why: "DNS sorguları başka bir çözümleyiciye yönlendiriliyor; \
-                      loopback hedefine giden dış paket reddedilir (ECONNREFUSED)".into(),
+                why: "DNS queries are redirected to another resolver; an \
+                      external packet aimed at a loopback address is refused (ECONNREFUSED)".into(),
             });
         }
     }
@@ -98,13 +98,13 @@ pub async fn diagnose() -> NetDiagnosis {
     d.waydroid_nat = ruleset.contains("masquerade");
     d.hijack_rules = find_hijacks(&ruleset);
 
-    if !d.bridge_up { d.problems.push("waydroid0 köprüsü yok".into()); }
-    if !d.dnsmasq_running { d.problems.push("dnsmasq çalışmıyor".into()); }
-    if !d.ip_forward { d.problems.push("ip_forward kapalı".into()); }
-    if !d.waydroid_nat { d.problems.push("NAT/masquerade kuralı yok".into()); }
-    if !d.lease_present { d.problems.push("DHCP lease yok — konteyner IP almamış".into()); }
+    if !d.bridge_up { d.problems.push("no waydroid0 bridge".into()); }
+    if !d.dnsmasq_running { d.problems.push("dnsmasq is not running".into()); }
+    if !d.ip_forward { d.problems.push("ip_forward is off".into()); }
+    if !d.waydroid_nat { d.problems.push("no NAT/masquerade rule".into()); }
+    if !d.lease_present { d.problems.push("no DHCP lease — the container got no IP".into()); }
     for h in &d.hijack_rules {
-        d.problems.push(format!("'{}' tablosundaki kural DNS'i kaçırıyor: {}", h.table, h.rule));
+        d.problems.push(format!("a rule in table '{}' hijacks DNS: {}", h.table, h.rule));
     }
     d
 }
@@ -126,7 +126,7 @@ table inet lxc {
 }
 "#;
 
-    /// Faz 0'daki gerçek arıza: unwall'ın DNAT kuralı bulunmalı.
+    /// The real Phase 0 failure: unwall's DNAT rule must be found.
     #[test]
     fn finds_the_unwall_dns_hijack() {
         let h = find_hijacks(REAL);
@@ -135,7 +135,7 @@ table inet lxc {
         assert!(h[0].rule.contains("dnat to 127.0.0.53"));
     }
 
-    /// Waydroid'in kendi accept kuralları kaçırma sayılmamalı.
+    /// Waydroid's own accept rules must not count as hijacking.
     #[test]
     fn waydroid_own_rules_are_not_hijacks() {
         let only_lxc = "table inet lxc {\n\tiifname \"waydroid0\" udp dport { 53, 67 } accept\n}\n";

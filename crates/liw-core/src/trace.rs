@@ -1,109 +1,109 @@
-//! Takılma teşhisi: kare zamanlaması + Android günlüğü + host kaynakları.
+//! Stutter diagnosis: frame timing + Android log + host resources.
 //!
-//! # Neden ayrı bir modül
+//! # Why a separate module
 //!
-//! `bench` "ne kadar kötü" sorusunu ölçüyor, `perf` "hangi kaldıraçlar
-//! açık" diye bakıyor. İkisi de **neden** sorusuna cevap vermiyor.
-//! Kullanıcının gerçek soruları şunlar: "bu FPS düşüşü fare sisteminden
-//! mi geliyor, oyunun kendisinden mi?" ve "ESC menüsü neden bir dakika
-//! yükleniyor?"
+//! `bench` measures "how bad", `perf` looks at "which levers are on". Neither
+//! answers **why**. The user's real questions are: "is this FPS drop coming
+//! from the mouse system or from the game itself?" and "why does the ESC menu
+//! take a minute to load?"
 //!
-//! Cevap ancak KORELASYONLA verilebilir: takılmanın olduğu anda Android
-//! ne yapıyordu. Bu modül o eşleştirmeyi yapar.
+//!
+//! The answer only comes from CORRELATION: what was Android doing at the moment
+//! of the stutter. This module does that matching.
 //!
 //! # Saf tutuluyor
 //!
-//! Burada I/O yok; ham metin girer, bulgu çıkar. Böylece gerçek bir
-//! takılma beklemeden, kaydedilmiş günlüklerle test edilebiliyor —
-//! aksi halde teşhis mantığını doğrulamanın yolu yok.
+//! No I/O here; raw text goes in, findings come out. That makes it testable
+//! against recorded logs without waiting for a real stutter — otherwise there
+//! is no way to verify the diagnostic logic.
 
 use serde::{Deserialize, Serialize};
 
-/// Bir günlük satırının ne anlattığı.
+/// What a log line tells us.
 ///
-/// Sıralama ÖNEMLİ değil ama ayrım önemli: "GC oldu" ile "ağ zaman
-/// aşımına uğradı" tamamen farklı sorunlar ve farklı çözümleri var.
+/// The ordering is not important but the distinction is: "a GC happened" and "a
+/// network timeout occurred" are entirely different problems with different fixes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Kind {
-    /// Uygulama ana iş parçacığı çok iş yapmış (Choreographer/HWUI).
+    /// The app's main thread did too much work (Choreographer/HWUI).
     MainThread,
-    /// Çöp toplama duraklaması.
+    /// Garbage collection pause.
     Gc,
-    /// Kilit çekişmesi (monitor contention).
+    /// Lock contention (monitor contention).
     Lock,
-    /// Uygulama yanıt vermiyor.
+    /// The app is not responding.
     Anr,
-    /// Binder çağrısı yavaş/başarısız.
+    /// A binder call is slow or failing.
     Binder,
-    /// Ağ: DNS çözülemedi, bağlantı zaman aşımı.
+    /// Network: DNS did not resolve, connection timeout.
     Network,
-    /// ARM köprüsü (libhoudini) veya derleme/doğrulama.
+    /// ARM bridge (libhoudini) or compilation/verification.
     ArmBridge,
-    /// Ekran birleştirici kare kaçırdı.
+    /// The compositor missed a frame.
     Composer,
-    /// Genel "yavaş işlem" uyarısı.
+    /// Generic "slow operation" warning.
     Slow,
-    /// Bir süreç çöktü / yığın dökümü alındı.
+    /// A process crashed / a tombstone was taken.
     Crash,
-    /// Reklam aracılık yığını çalışıyor (IronSource/Unity/Pangle/AdMob).
+    /// The ad mediation stack is running (IronSource/Unity/Pangle/AdMob).
     AdStack,
-    /// Oyun DURAKLATILDI: başka bir etkinlik öne geçti.
+    /// The game was PAUSED: another activity came to the front.
     ///
-    /// Reklam, sistem diyaloğu, izin isteği... Oyun duraklatılınca kare
-    /// üretmeyi bırakır. Araç bunu "donma" sanıyordu ve üstüne "sebep
-    /// konteynerin dışında" diye YANLIŞ hüküm veriyordu.
+    /// An ad, a system dialog, a permission request... A paused app stops
+    /// producing frames. The tool mistook this for a "freeze" and, on top of
+    /// that, gave the WRONG verdict "the cause is outside the container".
     ///
-    /// Gerçekte yaşandı: menüye girince 8 saniyelik "donma" göründü;
-    /// sebebi oyunun kendi reklam etkinliğiydi (`gms.ads.AdActivity`).
-    /// Sistemde hiçbir sorun yoktu.
+    /// This actually happened: entering the menu showed an 8-second "freeze";
+    /// the cause was the game's own ad activity (`gms.ads.AdActivity`).
+    /// Nothing was wrong with the system.
     Paused,
-    /// GİRDİ YOLU: Android girdi cihazını kaybetti/yeniden buldu.
+    /// INPUT PATH: Android lost or re-found our input device.
     ///
-    /// Kullanıcının doğrudan sorduğu şey: "bu takılma fare sisteminden mi
-    /// geliyor?" Bunu ancak girdi katmanının kendi günlüğü söyleyebilir.
+    /// Exactly what the user asks: "is this stutter coming from the mouse
+    /// system?" Only the input layer's own log can answer that.
     Input,
 }
 
 impl Kind {
-    /// Kullanıcıya gösterilecek ad.
+    /// Name shown to the user.
     pub fn label(self) -> &'static str {
         match self {
-            Kind::MainThread => "uygulama ana iş parçacığı",
-            Kind::Gc => "çöp toplama",
-            Kind::Lock => "kilit çekişmesi",
-            Kind::Anr => "ANR (yanıt yok)",
+            Kind::MainThread => "app main thread",
+            Kind::Gc => "garbage collection",
+            Kind::Lock => "lock contention",
+            Kind::Anr => "ANR (not responding)",
             Kind::Binder => "binder",
-            Kind::Network => "ağ",
-            Kind::ArmBridge => "ARM köprüsü / derleme",
-            Kind::Composer => "ekran birleştirici",
-            Kind::Slow => "yavaş işlem",
-            Kind::Crash => "çökme / yığın dökümü",
-            Kind::Paused => "oyun duraklatıldı (başka etkinlik öne geçti)",
-            Kind::AdStack => "reklam aracılık yığını",
-            Kind::Input => "GİRDİ YOLU",
+            Kind::Network => "network",
+            Kind::ArmBridge => "ARM bridge / compilation",
+            Kind::Composer => "compositor",
+            Kind::Slow => "slow operation",
+            Kind::Crash => "crash / tombstone",
+            Kind::Paused => "game paused (another activity came forward)",
+            Kind::AdStack => "ad mediation stack",
+            Kind::Input => "INPUT PATH",
         }
     }
-    /// Bir takılmayı açıklama gücü. Yüksek olan hükümde öne çıkar.
+    /// How strongly this explains a stutter. The highest one leads the verdict.
     ///
-    /// Ağ ve ANR en yüksek: saniyeler süren donmaları TEK BAŞINA
-    /// açıklayabilirler. GC en düşük: sürekli olur ve çoğu zaman zararsız.
+    /// Network and ANR are highest: they can explain multi-second freezes ON
+    /// THEIR OWN. GC is lowest: it happens constantly and is usually harmless.
     pub fn weight(self) -> u32 {
         match self {
             Kind::Anr => 100,
-            // Girdi yolu kopması bizim katmanımız: en yüksek öncelikte
-            // görünmeli, çünkü tek düzeltebileceğimiz şey o.
+            // A broken input path is our own layer: it must appear at the
+            // highest priority, because it is the only thing we can fix.
             Kind::Input => 95,
             Kind::Crash => 92,
             Kind::Network => 90,
-            // Duraklamanın hemen üstünde: duraklamanın NEDENİNİ söyler.
+            // Just above a pause: it says WHY the pause happened.
             Kind::AdStack => 89,
-            // Gerçek arızaların ALTINDA.
+            // BELOW real faults.
             //
-            // Duraklama bir kare boşluğunu AÇIKLAR ama kendisi arıza
-            // değildir; üstelik gerçek bir arızayla BİRLİKTE olabilir.
-            // Ölçüldü: menüde açılan reklam etkinliği hem duraklama hem
-            // ANR üretti. Duraklamayı öne koymak ANR'yi gizlerdi —
-            // kullanıcı "sorun yok" duyup gerçek hatayı kaçırırdı.
+            // A pause EXPLAINS a frame gap but is not itself a fault; and it
+            // can occur TOGETHER with a real one. Measured: the ad activity
+            // opened in the menu produced both a pause and an ANR. Putting the
+            // pause first would have hidden the ANR — the user would hear "no
+            // problem" and miss the real error.
             Kind::Paused => 88,
             Kind::ArmBridge => 70,
             Kind::Lock => 60,
@@ -118,32 +118,32 @@ impl Kind {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LogEvent {
-    /// Monotonik zaman (ms). Kare zaman damgalarıyla aynı eksende.
+    /// Monotonic time (ms). Same axis as the frame timestamps.
     pub t_ms: f64,
     pub pid: u32,
     pub tag: String,
     pub kind: Kind,
-    /// Kısaltılmış mesaj.
+    /// Shortened message.
     pub msg: String,
 }
 
-/// Bir günlük satırını sınıflandırır.
+/// Classifies one log line.
 ///
-/// Desenler gerçek Android çıktısından alındı. Eşleşmeyen satır `None`
-/// döner ve TAMAMEN yok sayılır: teşhis aracının gürültüyü kanıt gibi
-/// göstermesi, hiç kanıt göstermemesinden kötüdür.
+/// The patterns come from real Android output. A non-matching line returns
+/// `None` and is IGNORED ENTIRELY: a diagnostic tool presenting noise as
+/// evidence is worse than showing no evidence at all.
 pub fn classify(tag: &str, msg: &str) -> Option<Kind> {
     let m = msg;
-    // Sıra önemli: bir satır birden çok desene uyabilir, en açıklayıcı
-    // olan kazanmalı.
+    // Order matters: a line can match several patterns and the most
+    // explanatory one must win.
     if tag == "ActivityManager" && m.contains("ANR in") { return Some(Kind::Anr); }
-    // Girdi yolu: dokunuş borumuz kaybolduysa enjeksiyon SESSİZCE ölür.
-    // Ölçülen: ekran hotplug'ında hwcomposer FIFO'yu silip yeniden
-    // yaratıyor ve elimizdeki tanıtıcı sahipsiz kalıyor.
+    // Input path: if our touch pipe disappeared, injection dies SILENTLY.
+    // Measured: on a display hotplug hwcomposer deletes and recreates the FIFO
+    // and the handle we hold is orphaned.
     if tag == "EventHub" && (m.contains("wl_touch_events")
         || m.contains("wl_pointer_events") || m.contains("wayland_touch"))
     { return Some(Kind::Input); }
-    // Oyun duraklatıldı: kare gelmemesi ARIZA DEĞİL.
+    // Game paused: no frames is NOT A FAULT.
     if tag == "InputDispatcher" && m.contains("because it is paused") {
         return Some(Kind::Paused);
     }
@@ -152,12 +152,12 @@ pub fn classify(tag: &str, msg: &str) -> Option<Kind> {
     {
         return Some(Kind::Paused);
     }
-    // Reklam aracılık yığını: menüde takılmanın en sık sebebi.
+    // Ad mediation stack: the most common cause of a stall in the menu.
     //
-    // Ölçüldü: IronSource + UnityAds + Pangle + Google Ads sırayla
-    // deneniyor, video reklam YAZILIMDA çözülüyor (OMX.google.vp9 /
-    // SoftAAC2 — Waydroid'de donanım video çözücü yok) ve oyunun ana iş
-    // parçacığı bloklanıp ANR üretiyor.
+    // Measured: IronSource + UnityAds + Pangle + Google Ads are tried in turn,
+    // the video ad is decoded IN SOFTWARE (OMX.google.vp9 / SoftAAC2 — Waydroid
+    // has no hardware video decoder) and the game's main thread blocks long
+    // enough to produce an ANR.
     if matches!(tag, "UnityAds" | "Ads" | "ironSourceSDK")
         || tag.ends_with("MediationAdapter")
     {
@@ -192,23 +192,23 @@ pub fn classify(tag: &str, msg: &str) -> Option<Kind> {
     if m.contains("Slow operation") || m.contains("Slow Looper")
         || m.contains("Slow dispatch")
     { return Some(Kind::Slow); }
-    // GC en sona: "GC freed" satırları çok sık ve çoğu zararsız.
+    // GC last: "GC freed" lines are very frequent and mostly harmless.
     if tag == "art" && m.contains("GC freed") { return Some(Kind::Gc); }
     None
 }
 
-/// Bir logcat satırını ayrıştırır.
+/// Parses one logcat line.
 ///
-/// İKİ biçim destekleniyor:
+/// TWO formats are supported:
 ///
 /// * `-v monotonic -v threadtime` → `   1234.567  1234  1256 I Tag: msg`
-///   Tercih edilen: doğrudan `CLOCK_MONOTONIC`, kare zaman damgalarıyla
-///   aynı eksen, saat dilimi ve yıl sorunu yok.
-/// * varsayılan `threadtime` → `08-28 00:48:47.391  88  88 I Tag: msg`
-///   Geri düşüş: yalnızca günün saati var, `now_ms` ile hizalanıyor.
+///   Preferred: directly `CLOCK_MONOTONIC`, the same axis as frame timestamps,
+///   with no timezone or year problem.
+/// * default `threadtime` -> `08-28 00:48:47.391  88  88 I Tag: msg`
+///   Fallback: only time of day, aligned using `now_ms`.
 ///
-/// İkisini de desteklemek şart çünkü helper'ın eski sürümü yalnızca
-/// ikincisini veriyor ve teşhis aracının onunla da çalışması gerekiyor.
+/// Both are needed because an older helper only produces the second one and the
+/// diagnostic tool has to work with it too.
 pub fn parse_line(line: &str, now_ms: f64, now_secs_of_day: f64) -> Option<LogEvent> {
     let l = line.trim_start();
     if l.is_empty() || l.starts_with("---") { return None; }
@@ -216,22 +216,22 @@ pub fn parse_line(line: &str, now_ms: f64, now_secs_of_day: f64) -> Option<LogEv
     let first = it.next()?;
 
     let (t_ms, mut it) = if first.contains('-') {
-        // Duvar saati biçimi: tarih, sonra saat.
+        // Wall-clock format: date, then time.
         let clock = it.next()?;
         let sod = secs_of_day(clock)?;
-        // Gün sınırını sar: günlük satırı bizden "sonra" görünüyorsa dün.
+        // Wrap the day boundary: a log line appearing "after" us is yesterday.
         let mut age = now_secs_of_day - sod;
         if age < -1.0 { age += 86400.0; }
         (now_ms - age * 1000.0, it)
     } else {
-        // Monotonik biçim: doğrudan saniye.
+        // Monotonic format: seconds directly.
         (first.parse::<f64>().ok()? * 1000.0, it)
     };
 
     let pid: u32 = it.next()?.parse().ok()?;
     let _tid = it.next()?;
     let _level = it.next()?;
-    // Kalanı "Tag: mesaj".
+    // The rest is "Tag: message".
     let rest = it.collect::<Vec<_>>().join(" ");
     let (tag, msg) = rest.split_once(':')?;
     let (tag, msg) = (tag.trim(), msg.trim());
@@ -247,7 +247,7 @@ fn truncate(s: &str, n: usize) -> String {
     s.chars().take(n).collect::<String>() + "…"
 }
 
-/// `HH:MM:SS.mmm` → gün içi saniye.
+/// `HH:MM:SS.mmm` -> seconds into the day.
 fn secs_of_day(clock: &str) -> Option<f64> {
     let mut p = clock.split(':');
     let h: f64 = p.next()?.parse().ok()?;
@@ -262,15 +262,15 @@ pub fn parse_log(raw: &str, now_ms: f64, now_secs_of_day: f64) -> Vec<LogEvent> 
         .collect()
 }
 
-/// Günlük satırlarını etikete göre sayar (gürültü ölçümü).
+/// Counts log lines per tag (noise measurement).
 ///
-/// Neden gerekli: Waydroid'in hwcomposer'ı kare başına iki satır yazıyor.
-/// 180 Hz'de saniyede ~360 satır eder. Bunun iki sonucu var ve ikisi de
-/// kullanıcıyı ilgilendirir:
+/// Why it is needed: Waydroid's hwcomposer writes two lines per frame. At
+/// 180 Hz that is ~360 lines a second. This has two consequences and both
+/// matter to the user:
 ///
-/// 1. Teşhis penceresi çöker — 400 satırlık kuyruk bir saniyeyi kapsar
-///    ve aradığımız olaylar görülmeden halkadan düşer.
-/// 2. Her satır `logd`'ye kopyalanıyor; bedava değil.
+/// 1. The diagnostic window collapses — a 400-line tail covers one second and
+///    the events we are looking for drop out of the ring unseen.
+/// 2. Every line is copied to `logd`; that is not free.
 pub fn tag_rates(raw: &str, span_s: f64) -> Vec<(String, f64)> {
     let mut n: std::collections::HashMap<String, usize> = Default::default();
     for l in raw.lines() {
@@ -284,7 +284,7 @@ pub fn tag_rates(raw: &str, span_s: f64) -> Vec<(String, f64)> {
     v
 }
 
-/// Satırdan etiketi çıkarır (biçimden bağımsız).
+/// Extracts the tag from a line (format independent).
 fn tag_of(line: &str) -> Option<String> {
     let l = line.trim_start();
     if l.is_empty() || l.starts_with("---") { return None; }
@@ -297,20 +297,20 @@ fn tag_of(line: &str) -> Option<String> {
     Some(tag.trim().to_string())
 }
 
-/// Uzun bir kare aralığı ve onu açıklayan kanıtlar.
+/// A long frame interval and the evidence explaining it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hitch {
-    /// Takılmanın BAŞLADIĞI an (ms, monotonik).
+    /// The moment the stutter STARTED (ms, monotonic).
     pub t_ms: f64,
-    /// Süresi (ms).
+    /// Its duration (ms).
     pub len_ms: f64,
     pub evidence: Vec<LogEvent>,
 }
 
-/// Eşiği aşan kare aralıklarını takılma sayar.
+/// Counts frame intervals above the threshold as stutters.
 ///
-/// Eşik dışarıdan veriliyor çünkü doğru değer yenileme hızına bağlı:
-/// 60 Hz'de 33 ms takılma sayılmaz, 180 Hz'de sayılır.
+/// The threshold comes from outside because the right value depends on the
+/// refresh rate: 33 ms is not jank at 60 Hz, it is at 180 Hz.
 pub fn hitches(intervals: &[(f64, f64)], threshold_ms: f64) -> Vec<Hitch> {
     intervals.iter()
         .filter(|(_, d)| *d >= threshold_ms)
@@ -318,10 +318,10 @@ pub fn hitches(intervals: &[(f64, f64)], threshold_ms: f64) -> Vec<Hitch> {
         .collect()
 }
 
-/// Her takılmaya, zaman penceresine düşen günlük olaylarını iliştirir.
+/// Attaches to each stutter the log events falling in its time window.
 ///
-/// Pencere takılmadan ÖNCE de bakıyor: sebep genelde takılmadan hemen
-/// önce loglanır (GC başlangıcı, ağ isteği), sonuç ise sonra.
+/// The window also looks BEFORE the stutter: the cause is usually logged just
+/// before it (a GC starting, a network request), the effect afterwards.
 pub fn correlate(hs: &mut [Hitch], events: &[LogEvent], before_ms: f64, after_ms: f64) {
     for h in hs.iter_mut() {
         let lo = h.t_ms - before_ms;
@@ -330,13 +330,13 @@ pub fn correlate(hs: &mut [Hitch], events: &[LogEvent], before_ms: f64, after_ms
             .filter(|e| e.t_ms >= lo && e.t_ms <= hi)
             .cloned()
             .collect();
-        // En açıklayıcı kanıt başa.
+        // The most explanatory evidence first.
         h.evidence.sort_by(|a, b| b.kind.weight().cmp(&a.kind.weight()));
         h.evidence.truncate(4);
     }
 }
 
-/// Bir teşhis sonucu.
+/// One diagnostic result.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Verdict {
     pub kind: Option<Kind>,
@@ -344,27 +344,27 @@ pub struct Verdict {
     pub detail: String,
 }
 
-/// Takılmalardan ve olaylardan hüküm çıkarır.
+/// Derives verdicts from stutters and events.
 ///
-/// Kural: KANIT YOKSA SUÇLAMA YOK. "Muhtemelen GPU" demek, ölçmeden
-/// tahmin etmektir ve kullanıcıyı yanlış yere bakmaya iter. Kanıt
-/// bulunmadığında bunu açıkça söylüyoruz.
+/// Rule: NO EVIDENCE, NO ACCUSATION. Saying "probably the GPU" is guessing
+/// without measuring and sends the user to the wrong place. When no evidence is
+/// found we say so plainly.
 pub fn verdicts(hs: &[Hitch], total_frames: usize, jank_pct: f64) -> Vec<Verdict> {
     let mut out = Vec::new();
     if hs.is_empty() {
         out.push(Verdict {
             kind: None,
-            headline: "Takılma yakalanmadı".into(),
-            detail: format!("{total_frames} kare izlendi, eşiği aşan aralık yok. \
-                             Sorun yaşadığın anı yakalamak için o sırada \
-                             çalıştır."),
+            headline: "No stutter captured".into(),
+            detail: format!("{total_frames} frames traced, no interval above the \
+                             threshold. Run it while you are experiencing the \
+                             problem."),
         });
         return out;
     }
 
-    // Kanıt türlerini takılma SAYISINA göre topla (satır sayısına göre
-    // değil): tek bir takılmada 50 GC satırı olması GC'yi baş suçlu
-    // yapmaz, 50 ayrı takılmanın her birinde GC olması yapar.
+    // Group evidence kinds by STUTTER COUNT (not line count): 50 GC lines in a
+    // single stutter does not make GC the prime suspect; GC appearing in 50
+    // separate stutters does.
     let mut tally: std::collections::HashMap<Kind, usize> = Default::default();
     for h in hs {
         let mut seen: std::collections::HashSet<Kind> = Default::default();
@@ -381,7 +381,7 @@ pub fn verdicts(hs: &[Hitch], total_frames: usize, jank_pct: f64) -> Vec<Verdict
         let pct = 100.0 * *n as f64 / hs.len() as f64;
         out.push(Verdict {
             kind: Some(*k),
-            headline: format!("{} — {n}/{} takılmada ({pct:.0}%)",
+            headline: format!("{} — in {n}/{} stutters ({pct:.0}%)",
                               k.label(), hs.len()),
             detail: explain(*k).into(),
         });
@@ -389,42 +389,41 @@ pub fn verdicts(hs: &[Hitch], total_frames: usize, jank_pct: f64) -> Vec<Verdict
     if unexplained > 0 {
         out.push(Verdict {
             kind: None,
-            headline: format!("{unexplained}/{} takılma AÇIKLANAMADI", hs.len()),
-            detail: "Bu takılmaların yanında Android tarafında eşzamanlı bir \
-                     olay bulunamadı. Aşağıdaki host bulgularına bak."
+            headline: format!("{unexplained}/{} stutters UNEXPLAINED", hs.len()),
+            detail: "No concurrent event was found on the Android side next to \
+                     these stutters. Look at the host findings below."
                 .into(),
         });
     }
     if jank_pct > 5.0 {
         out.push(Verdict {
             kind: None,
-            headline: format!("Jank oranı yüksek: %{jank_pct:.1}"),
-            detail: "Tek tük takılma değil, sürekli bir sorun var. \
-                     Önce çözünürlük/yenileme hızını düşürüp tekrar ölç: \
-                     düzeliyorsa GPU sınırındasın.".into(),
+            headline: format!("Jank rate is high: {jank_pct:.1}%"),
+            detail: "This is not the odd stutter but a constant problem. \
+                     First lower the resolution/refresh rate and measure again: \
+                     if it improves you are at the GPU limit.".into(),
         });
     }
     out
 }
 
-/// Açıklanamayan takılmaların host tarafındaki karşılığı.
+/// The host-side counterpart of unexplained stutters.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HostFacts {
-    /// Kaç açıklanamayan takılmada GPU doymuştu.
+    /// In how many unexplained stutters the GPU was saturated.
     pub gpu_saturated: usize,
-    /// Kaç açıklanamayan takılmada VRAM doluya yakındı.
+    /// In how many unexplained stutters VRAM was near full.
     pub vram_saturated: usize,
-    /// Kaç açıklanamayan takılmada bellek baskısı yüksekti.
+    /// In how many unexplained stutters memory pressure was high.
     pub mem_pressed: usize,
     pub unexplained: usize,
 }
 
-/// Android tarafında kanıt yokken host tarafına bakar.
+/// Looks at the host side when there is no evidence on the Android side.
 ///
-/// "Açıklanamadı" demekle yetinmek kullanıcıyı boşlukta bırakıyor;
-/// ölçtüğümüz host verisi çoğu zaman cevabı zaten içeriyor. Yine de
-/// KANIT YOKSA SUÇLAMA YOK kuralı geçerli: hiçbir host göstergesi
-/// doymamışsa `None` döner.
+/// Stopping at "unexplained" leaves the user with nothing; the host data we
+/// already measure often holds the answer. The NO EVIDENCE, NO ACCUSATION rule
+/// still applies: if no host signal was saturated it returns `None`.
 pub fn host_verdict(f: &HostFacts) -> Option<Verdict> {
     if f.unexplained == 0 { return None; }
     let half = f.unexplained.div_ceil(2);
@@ -432,9 +431,9 @@ pub fn host_verdict(f: &HostFacts) -> Option<Verdict> {
         return Some(Verdict {
             kind: None,
             headline: format!(
-                "Açıklanamayan takılmaların {}/{}'inde host GPU doymuştu",
+                "In {}/{} unexplained stutters the host GPU was saturated",
                 f.gpu_saturated, f.unexplained),
-            detail: "Android tarafında olay yok ama host GPU'su o anlarda                      tavandaydı. Çözünürlüğü ya da yenileme hızını düşürüp                      tekrar ölç; takılmalar azalıyorsa GPU sınırındasın."
+            detail: "No event on the Android side, but the host GPU was at the                      ceiling in those moments. Lower the resolution or refresh                      rate and measure again; if stutters drop you are at the GPU limit."
                 .into(),
         });
     }
@@ -442,9 +441,9 @@ pub fn host_verdict(f: &HostFacts) -> Option<Verdict> {
         return Some(Verdict {
             kind: None,
             headline: format!(
-                "Açıklanamayan takılmaların {}/{}'inde VRAM doluya yakındı",
+                "In {}/{} unexplained stutters VRAM was near full",
                 f.vram_saturated, f.unexplained),
-            detail: "VRAM dolduğunda sürücü doku takası yapar ve bu tek tük                      uzun kare üretir. Başka GPU tüketen uygulamaları kapat."
+            detail: "When VRAM fills the driver swaps textures, which produces                      the occasional long frame. Close other GPU-hungry apps."
                 .into(),
         });
     }
@@ -452,9 +451,9 @@ pub fn host_verdict(f: &HostFacts) -> Option<Verdict> {
         return Some(Verdict {
             kind: None,
             headline: format!(
-                "Açıklanamayan takılmaların {}/{}'inde bellek baskısı yüksekti",
+                "In {}/{} unexplained stutters memory pressure was high",
                 f.mem_pressed, f.unexplained),
-            detail: "Host belleği sıkışınca sayfa geri alımı bekleme üretir.                      `/proc/pressure/memory` ölçümü bunu gösteriyor."
+            detail: "When host memory tightens, page reclaim produces waits.                      The `/proc/pressure/memory` measurement shows this."
                 .into(),
         });
     }
@@ -464,63 +463,63 @@ pub fn host_verdict(f: &HostFacts) -> Option<Verdict> {
 fn explain(k: Kind) -> &'static str {
     match k {
         Kind::AdStack =>
-            "Reklam aracılık yığını çalışıyor: SDK sırayla birden çok \
-             reklam ağını deniyor ve video reklamı YAZILIMDA çözüyor — \
-             Waydroid'de donanım video çözücü yok. Bu, oyunun ana iş \
-             parçacığını saniyelerce bloklayıp ANR'ye kadar gidebiliyor. \
-             Uygulamanın kendi davranışı; bizim katmanımızdan bağımsız.",
+            "The ad mediation stack is running: the SDK tries several ad \
+             networks in turn and decodes the video ad IN SOFTWARE — Waydroid \
+             has no hardware video decoder. This can block the game's main \
+             thread for seconds and go as far as an ANR. It is the app's own \
+             behaviour, independent of our layer.",
         Kind::Paused =>
-            "Oyun DURAKLATILDI: başka bir etkinlik öne geçti (reklam, \
-             sistem diyaloğu, izin isteği). Duraklamış uygulama kare \
-             üretmez, yani kare boşluğunun açıklaması budur. \
-             DİKKAT: bu tek başına 'sorun yok' demek değildir — \
-             yukarıda ANR ya da çökme de listelendiyse asıl mesele \
-             odur, duraklama yalnızca onun görünen yüzüdür.",
+            "The game was PAUSED: another activity came to the front (an ad, a \
+             system dialog, a permission request). A paused app produces no \
+             frames, so that is the explanation for the frame gap. \
+             CAREFUL: this alone does not mean 'nothing is wrong' — if an ANR \
+             or a crash is also listed above, that is the real issue and the \
+             pause is only its visible face.",
         Kind::Network =>
-            "Oyun ağ isteği yapıp zaman aşımına uğruyor. Menü açılışında \
-             dakikalarca beklemenin en sık nedeni budur: reklam/analitik \
-             SDK'sı DNS çözemeyince soket zaman aşımını (genelde 30 sn, \
-             iki deneme) bekliyor. `liw net doctor` ile DNS'i doğrula.",
+            "The game makes a network request and times out. This is the most \
+             common reason for waiting minutes on a menu opening: when the \
+             ad/analytics SDK cannot resolve DNS it waits out the socket \
+             timeout (usually 30 s, two attempts). Verify DNS with `liw net doctor`.",
         Kind::Anr =>
-            "Uygulama yanıt vermedi. Günlükteki ANR bloğu hangi iş \
-             parçacığının nerede takıldığını yazar.",
+            "The app did not respond. The ANR block in the log says which \
+             thread was stuck where.",
         Kind::ArmBridge =>
-            "ARM kodu x86'ya çevriliyor ya da sınıflar doğrulanıyor. İlk \
-             açılışta ve yeni bir ekrana ilk girişte olur; aynı ekran \
-             ikinci kez açıldığında sürmüyorsa normaldir.",
+            "ARM code is being translated to x86, or classes are being \
+             verified. Happens on first launch and on first entry to a new \
+             screen; normal if it does not recur the second time.",
         Kind::Lock =>
-            "İki iş parçacığı aynı kilidi bekliyor. Uygulamanın kendi \
-             sorunu; bizim katmanımızdan bağımsız.",
+            "Two threads are waiting on the same lock. The app's own \
+             problem; independent of our layer.",
         Kind::Binder =>
-            "Sistem servisi çağrısı yavaş. Genelde system_server yük \
-             altında demektir.",
+            "A system service call is slow. Usually means system_server is \
+             under load.",
         Kind::MainThread =>
-            "Oyun ana iş parçacığında kare süresini aşan iş yapmış. \
-             Bizim enjeksiyon katmanımız bunu üretmez — dokunuş olayları \
-             ayrı bir yoldan gelir.",
+            "The game did more work on its main thread than the frame budget \
+             allows. Our injection layer does not produce this — touch events \
+             arrive on a separate path.",
         Kind::Slow =>
-            "Sistem kendi işlemini yavaş buldu. Tek başına nedene işaret \
-             etmez, diğer kanıtlarla birlikte okunmalı.",
+            "The system found its own operation slow. On its own it does not \
+             point to a cause; read it together with the other evidence.",
         Kind::Composer =>
-            "Ekran birleştirici kare kaçırdı. Host tarafında GPU veya \
-             compositor sıkışması olabilir.",
+            "The compositor missed a frame. There may be GPU or compositor \
+             congestion on the host side.",
         Kind::Input =>
-            "Android girdi cihazımızı kaybetti ya da yeniden kurdu. \
-             Dokunuş borusu silinip yaratıldığında (ekran hotplug'ı) \
-             elimizdeki tanıtıcı ölür ve enjeksiyon sessizce durur. \
-             Keymapper'ı yeniden başlatmak düzeltir.",
+            "Android lost or re-created our input device. When the touch pipe \
+             is deleted and recreated (a display hotplug) the handle we hold \
+             dies and injection stops silently. Restarting the keymapper \
+             fixes it.",
         Kind::Crash =>
-            "Bir süreç çöktü ya da yığın dökümü alındı. Döküm almak \
-             saniyeler sürebilir ve o sırada sistem geneli takılır.",
+            "A process crashed or a tombstone was taken. Taking a dump can \
+             last seconds and the whole system stutters meanwhile.",
         Kind::Gc =>
-            "Çöp toplama duraklaması. Sürekli olur ve genelde zararsızdır; \
-             yalnızca her takılmada görünüyorsa şüphelen.",
+            "A garbage collection pause. It happens constantly and is usually \
+             harmless; only be suspicious if it appears in every stutter.",
     }
 }
 
 #[cfg(test)]
 mod tests {
-    /// GERÇEK GÜNLÜK: menüdeki takılmanın kaynağı reklam aracılık yığını.
+    /// REAL LOG: the source of the menu stall was the ad mediation stack.
     #[test]
     fn ad_mediation_tags_are_recognised() {
         for (tag, msg) in [
@@ -532,31 +531,31 @@ mod tests {
             ("Ads", "canOpenAppGmsgHandler disabled."),
         ] {
             assert_eq!(super::classify(tag, msg), Some(super::Kind::AdStack),
-                "{tag} tanınmalı");
+                "{tag} must be recognised");
         }
     }
 
-    /// Reklam yığını duraklamayı AÇIKLAR, ama ANR'yi gizlememeli.
+    /// The ad stack EXPLAINS the pause, but must not hide the ANR.
     #[test]
     fn ad_stack_ranks_between_pause_and_real_faults() {
         assert!(super::Kind::AdStack.weight() > super::Kind::Paused.weight());
         assert!(super::Kind::Anr.weight() > super::Kind::AdStack.weight());
     }
 
-    /// Duraklama gerçek arızaları GİZLEMEMELİ.
+    /// A pause must NOT HIDE real faults.
     ///
-    /// Ölçüldü: menüdeki reklam etkinliği hem duraklama hem ANR üretti.
-    /// Duraklamayı öne koymak kullanıcıya "sorun yok" dedirtirdi.
+    /// Measured: the ad activity in the menu produced both a pause and an ANR.
+    /// Putting the pause first would have told the user "nothing is wrong".
     #[test]
     fn real_faults_outrank_a_pause() {
         for worse in [super::Kind::Anr, super::Kind::Crash,
                       super::Kind::Input, super::Kind::Network] {
             assert!(worse.weight() > super::Kind::Paused.weight(),
-                "{worse:?} duraklamadan önce gelmeli");
+                "{worse:?} must come before a pause");
         }
     }
 
-    /// Ama duraklama gürültünün üstünde kalmalı: tek kanıt oysa söylensin.
+    /// But a pause must stay above the noise: if it is the only evidence, say it.
     #[test]
     fn pause_still_outranks_noise() {
         for lesser in [super::Kind::Composer, super::Kind::Gc,
@@ -565,8 +564,8 @@ mod tests {
         }
     }
 
-    /// GERÇEK GÜNLÜK: menüye girince 8 saniyelik "donma" görünüyordu.
-    /// Sebep oyunun kendi reklamıydı; sistemde hiçbir sorun yoktu.
+    /// REAL LOG: entering the menu showed an 8-second "freeze".
+    /// The cause was the game's own ad; nothing was wrong with the system.
     #[test]
     fn ad_activity_is_recognised_as_pause_not_fault() {
         assert_eq!(super::classify("ActivityTaskManager",
@@ -579,7 +578,7 @@ mod tests {
             Some(super::Kind::Paused));
     }
 
-    /// Sıradan etkinlik başlatma duraklama SAYILMAMALI.
+    /// An ordinary activity start must NOT count as a pause.
     #[test]
     fn ordinary_activity_start_is_not_a_pause() {
         assert_ne!(super::classify("ActivityTaskManager",
@@ -600,12 +599,12 @@ mod tests {
         assert_eq!(e.kind, Kind::MainThread);
     }
 
-    /// Duvar saati biçimi de anlaşılmalı: helper'ın eski sürümü yalnızca
-    /// onu veriyor ve araç onunla da çalışmalı.
+    /// The wall-clock format must be understood too: an older helper produces
+    /// only that and the tool has to work with it.
     #[test]
     fn wallclock_line_is_aligned_to_now() {
-        // Şu an gün içi 100.0 sn, monotonik 500_000 ms.
-        // Satır 00:01:30 = 90 sn, yani 10 sn önce.
+        // Now is 100.0 s into the day, monotonic 500_000 ms.
+        // The line reads 00:01:30 = 90 s, i.e. 10 s ago.
         let e = parse_line(
             "08-28 00:01:30.000    88    88 W art: Long monitor contention with owner x",
             500_000.0, 100.0).unwrap();
@@ -613,18 +612,18 @@ mod tests {
         assert_eq!(e.kind, Kind::Lock);
     }
 
-    /// Gece yarısını geçen günlük satırı GELECEKTEN gelmiş sayılmamalı.
+    /// A log line crossing midnight must not be taken as coming from the future.
     #[test]
     fn wallclock_wraps_over_midnight() {
-        // Şu an 00:00:05 (5 sn), satır 23:59:55 (86395 sn) = 10 sn önce.
+        // Now 00:00:05 (5 s), the line 23:59:55 (86395 s) = 10 s ago.
         let e = parse_line(
             "08-28 23:59:55.000    88    88 W art: Long monitor contention with owner x",
             500_000.0, 5.0).unwrap();
         assert!((e.t_ms - 490_000.0).abs() < 1.0, "{}", e.t_ms);
     }
 
-    /// İlgisiz satırlar TAMAMEN elenmeli. Gürültüyü kanıt diye göstermek
-    /// hiç kanıt göstermemekten kötü.
+    /// Unrelated lines must be filtered out ENTIRELY. Presenting noise as
+    /// evidence is worse than presenting none.
     #[test]
     fn noise_is_dropped() {
         for l in [
@@ -647,8 +646,8 @@ mod tests {
         }
     }
 
-    /// Girdi yolu olayları TANINMALI: kullanıcının "fare sisteminden mi"
-    /// sorusunun tek doğrudan kanıtı bu.
+    /// Input-path events must be RECOGNISED: they are the only direct evidence
+    /// for the user's question "is it the mouse system?".
     #[test]
     fn input_path_loss_is_recognised() {
         assert_eq!(classify("EventHub",
@@ -657,7 +656,7 @@ mod tests {
         assert_eq!(classify("EventHub",
             "Removed device: path=/dev/input/wl_touch_events name=wayland_touch"),
             Some(Kind::Input));
-        // Alakasız EventHub gürültüsü sayılmamalı.
+        // Unrelated EventHub noise must not count.
         assert_eq!(classify("EventHub", "usingClockIoctl=false"), None);
     }
 
@@ -683,8 +682,8 @@ mod tests {
         assert_eq!(h[1].t_ms, 300.0);
     }
 
-    /// Kanıt penceresi takılmadan ÖNCESİNİ de kapsamalı: sebep genelde
-    /// takılmadan hemen önce loglanır.
+    /// The evidence window must also cover BEFORE the stutter: the cause is
+    /// usually logged just before it.
     #[test]
     fn correlation_looks_before_and_after() {
         let mut h = vec![Hitch { t_ms: 1000.0, len_ms: 100.0, evidence: vec![] }];
@@ -697,12 +696,12 @@ mod tests {
                        msg: "uzak".into() },
         ];
         correlate(&mut h, &ev, 100.0, 100.0);
-        assert_eq!(h[0].evidence.len(), 2, "pencere dışı olay girmemeli");
-        // Ağırlığı yüksek olan başta.
+        assert_eq!(h[0].evidence.len(), 2, "events outside the window must not enter");
+        // The highest-weight one first.
         assert_eq!(h[0].evidence[0].kind, Kind::Network);
     }
 
-    /// Tek takılmadaki 50 GC satırı GC'yi baş suçlu yapmamalı.
+    /// 50 GC lines in one stutter must not make GC the prime suspect.
     #[test]
     fn tally_counts_hitches_not_lines() {
         let gc = |t: f64| LogEvent { t_ms: t, pid: 1, tag: "art".into(),
@@ -717,20 +716,20 @@ mod tests {
         ];
         let v = verdicts(&hs, 1000, 1.0);
         assert_eq!(v[0].kind, Some(Kind::Network),
-                   "ağ 2 takılmada, GC 1 takılmada — ağ önde olmalı: {v:?}");
+                   "network in 2 stutters, GC in 1 — network must lead: {v:?}");
     }
 
-    /// Kanıt yoksa bunu SÖYLEMELİ; uydurma suçlama yapmamalı.
+    /// With no evidence it must SAY so; it must not invent an accusation.
     #[test]
     fn unexplained_hitches_are_reported_as_such() {
         let hs = vec![Hitch { t_ms: 0.0, len_ms: 300.0, evidence: vec![] }];
         let v = verdicts(&hs, 100, 1.0);
-        assert!(v.iter().any(|x| x.headline.contains("AÇIKLANAMADI")), "{v:?}");
-        assert!(v.iter().all(|x| !x.headline.contains("çöp toplama")));
+        assert!(v.iter().any(|x| x.headline.contains("UNEXPLAINED")), "{v:?}");
+        assert!(v.iter().all(|x| !x.headline.contains("garbage collection")));
     }
 
-    /// Etiket hızları ölçülmeli: teşhis penceresini boğan gürültüyü
-    /// bulmanın tek yolu bu.
+    /// Tag rates must be measured: it is the only way to find the noise
+    /// drowning the diagnostic window.
     #[test]
     fn tag_rates_find_the_flooder() {
         let mut raw = String::new();
@@ -754,7 +753,7 @@ mod tests {
         assert_eq!(tag_of("--------- beginning of main"), None);
     }
 
-    /// Host doymamışsa SUÇLAMA YAPMAMALI.
+    /// If the host is not saturated it must NOT ACCUSE.
     #[test]
     fn host_verdict_stays_silent_without_evidence() {
         assert!(host_verdict(&HostFacts { unexplained: 4, ..Default::default() })
@@ -762,8 +761,8 @@ mod tests {
         assert!(host_verdict(&HostFacts::default()).is_none());
     }
 
-    /// Çoğunlukta doyma varsa söylemeli — "açıklanamadı" deyip bırakmak
-    /// kullanıcıyı boşlukta bırakıyor.
+    /// If most are saturated it must say so — stopping at "unexplained" leaves
+    /// the user with nothing.
     #[test]
     fn host_verdict_names_the_saturated_resource() {
         let v = host_verdict(&HostFacts {
@@ -778,6 +777,6 @@ mod tests {
     fn no_hitches_says_so_plainly() {
         let v = verdicts(&[], 5000, 0.1);
         assert_eq!(v.len(), 1);
-        assert!(v[0].headline.contains("yakalanmadı"));
+        assert!(v[0].headline.contains("No stutter"));
     }
 }

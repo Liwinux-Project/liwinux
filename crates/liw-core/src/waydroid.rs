@@ -1,4 +1,4 @@
-//! Waydroid CLI sarmalayıcısı.
+//! Waydroid CLI wrapper.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -6,15 +6,15 @@ use tokio::process::Command;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WaydroidError {
-    #[error("waydroid çalıştırılamadı: {0}")]
+    #[error("could not run waydroid: {0}")]
     Spawn(#[from] std::io::Error),
-    #[error("waydroid '{cmd}' başarısız (kod {code:?}): {stderr}")]
+    #[error("waydroid '{cmd}' failed (code {code:?}): {stderr}")]
     Failed { cmd: String, code: Option<i32>, stderr: String },
-    #[error("waydroid kurulu değil (PATH'te bulunamadı)")]
+    #[error("waydroid is not installed (not found on PATH)")]
     NotInstalled,
 }
 
-/// `waydroid status` çıktısının ayrıştırılmış hali.
+/// Parsed form of `waydroid status` output.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Status {
     pub session: String,
@@ -31,8 +31,8 @@ impl Status {
     pub fn container_running(&self) -> bool {
         self.container.eq_ignore_ascii_case("RUNNING")
     }
-    /// IP atanmış mı? "UNKNOWN" IP yokluğu demektir — Waydroid boş string yerine
-    /// bu dizgeyi basar, bu yüzden ayrıca elenmesi gerekir.
+    /// Has an IP been assigned? "UNKNOWN" means no IP — Waydroid prints that
+    /// string rather than an empty one, so it must be filtered out separately.
     pub fn has_ip(&self) -> bool {
         matches!(self.ip.as_deref(), Some(s) if !s.is_empty() && s != "UNKNOWN")
     }
@@ -50,11 +50,11 @@ impl Waydroid {
             .status().await.map(|s| s.success()).unwrap_or(false)
     }
 
-    /// Ham `waydroid <args>` çağrısı.
+    /// Raw `waydroid <args>` invocation.
     ///
-    /// DİKKAT: `waydroid shell` argparse kullanır ve `COMMAND` `nargs='*'`
-    /// olduğu için tireli argümanlar (`ls -la`, `sh -c`, `logcat -d`) yutulur.
-    /// Bu yüzden [`Waydroid::shell`] her zaman `--` ayracı ekler.
+    /// CAREFUL: `waydroid shell` uses argparse and `COMMAND` is `nargs='*'`,
+    /// so dashed arguments (`ls -la`, `sh -c`, `logcat -d`) get swallowed.
+    /// That is why [`Waydroid::shell`] always inserts the `--` separator.
     async fn run(&self, args: &[&str]) -> Result<String, WaydroidError> {
         let out = Command::new("waydroid")
             .args(args)
@@ -81,13 +81,14 @@ impl Waydroid {
         Ok(parse_status(&raw))
     }
 
-    /// Konteyner içinde komut çalıştırır. `--` ayracı zorunludur (bkz. [`Waydroid::run`]).
-    /// Root gerektirir; ayrıcalıksız çağrıda `Failed` döner.
+    /// Runs a command inside the container. The `--` separator is mandatory
+    /// (see [`Waydroid::run`]). Requires root; an unprivileged call returns
+    /// `Failed`.
     pub async fn shell(&self, argv: &[&str]) -> Result<String, WaydroidError> {
         let mut args = vec!["--details-to-stdout", "shell", "--"];
         args.extend_from_slice(argv);
         let raw = self.run(&args).await?;
-        // `--details-to-stdout` lxc-info gürültüsünü de karıştırır; temizle.
+        // `--details-to-stdout` also mixes in lxc-info noise; strip it.
         Ok(raw.lines()
             .filter(|l| !l.contains("% lxc-info") && !l.trim_end().ends_with("] RUNNING"))
             .collect::<Vec<_>>()
@@ -141,7 +142,7 @@ mod tests {
         assert!(!s.has_ip());
     }
 
-    /// Waydroid IP yokluğunu boş string yerine "UNKNOWN" ile bildirir.
+    /// Waydroid reports a missing IP as "UNKNOWN" rather than an empty string.
     #[test]
     fn unknown_ip_is_not_an_ip() {
         let s = parse_status("Session:\tRUNNING\nIP address:\tUNKNOWN\n");

@@ -1,4 +1,4 @@
-//! liw — liwinux komut satırı istemcisi.
+//! liw — the liwinux command line client.
 
 mod bench;
 mod perf;
@@ -24,41 +24,41 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Session yönetimi
+    /// Session management
     Session {
         #[command(subcommand)]
         action: SessionAction,
     },
-    /// Performans ölçümü: kare zamanlaması ve kaynak kullanımı
+    /// Performance measurement: frame timing and resource use
     Bench {
-        /// Android paket adı
+        /// Android package name
         package: String,
-        /// Ölçüm süresi (saniye)
+        /// Measurement length (seconds)
         #[arg(short, long, default_value_t = 60)]
         duration: u64,
     },
-    /// Takılmanın NEDENİNİ bul: kare + Android günlüğü + host, aynı saatte
+    /// Find WHY it stutters: frames + Android log + host, on one clock
     Trace {
-        /// Android paket adı
+        /// Android package name
         package: String,
-        /// İzleme süresi (saniye)
+        /// Trace length (seconds)
         #[arg(short, long, default_value_t = 90)]
         duration: u64,
-        /// Takılma eşiği (ms). Verilmezse yenileme hızından türetilir.
+        /// Jank threshold (ms). Derived from the measured cadence if omitted.
         #[arg(long)]
         jank_ms: Option<f64>,
     },
-    /// Performans kaldıraçlarının teşhisi (hiçbir şey değiştirmez)
+    /// Diagnose performance levers (changes nothing)
     Perf {
         #[command(subcommand)]
         action: PerfAction,
     },
-    /// Profil yönetimi
+    /// Profile management
     Profile {
         #[command(subcommand)]
         action: ProfileAction,
     },
-    /// Tuş eşleme
+    /// Key mapping
     Keymap {
         #[command(subcommand)]
         action: KeymapAction,
@@ -67,51 +67,51 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum ProfileAction {
-    /// Bulunan tüm profilleri listele
+    /// List every profile found
     List,
-    /// Bir profilin ayrıntısını göster
+    /// Show the details of a profile
     Show {
-        /// Android paket adı
+        /// Android package name
         package: String,
     },
-    /// Ön plandaki uygulama için hangi profil geçerli
+    /// Which profile applies to the foreground app
     Which,
-    /// GÖRSEL düzenleyiciyi aç (ekran görüntüsü üstünde sürükle-bırak)
+    /// Open the VISUAL editor (drag and drop over a screenshot)
     Edit {
-        /// Android paket adı
+        /// Android package name
         package: String,
         /// Sunucu portu (0 = rastgele)
         #[arg(long, default_value_t = 8731)]
         port: u16,
     },
-    /// Bir bağlantının koordinatını değiştir
+    /// Change a binding's coordinate
     Set {
-        /// Android paket adı
+        /// Android package name
         package: String,
-        /// Bağlantı adı (liw profile show ile bak)
+        /// Binding name (see liw profile show)
         binding: String,
         /// X (0..1)
         x: f64,
         /// Y (0..1)
         y: f64,
-        /// Değiştirilecek alan: at | center | origin | from | to
+        /// Field to change: at | center | origin | from | to
         #[arg(long, default_value = "at")]
         field: String,
     },
-    /// Bir bağlantının koordinatına dokun — yerleşimi görsel doğrula
+    /// Poke a binding's coordinate — verify placement visually
     Poke {
         package: String,
         binding: String,
-        /// Dokunmadan önce bekle (hedef pencereyi öne getirmek için)
+        /// Wait before touching (to bring the target window forward)
         #[arg(long, default_value_t = 5)]
         delay: u64,
     },
-    /// Depoyla gelen profilleri kullanıcı dizinine kopyala
+    /// Copy the profiles shipped with the repository into the user directory
     Install {
-        /// Var olanların üzerine yaz
+        /// Overwrite existing ones
         #[arg(short, long)]
         force: bool,
-        /// Kaynak profil dizini (kurulu binary'de gerekli)
+        /// Source profile directory (required for an installed binary)
         #[arg(long)]
         from: Option<std::path::PathBuf>,
     },
@@ -119,64 +119,64 @@ enum ProfileAction {
 
 #[derive(Subcommand)]
 enum KeymapAction {
-    /// Kullanılabilir girdi cihazlarını listele
+    /// List the usable input devices
     Devices,
-    /// Keymapper'ı liwd içinde başlat (terminal kapansa da sürer)
+    /// Start the keymapper inside liwd (survives closing the terminal)
     Start {
-        /// Profil etkinken cihazı kilitle
+        /// Grab the device while a profile is active
         #[arg(short, long)]
         grab: bool,
     },
-    /// liwd içindeki keymapper'ı durdur
+    /// Stop the keymapper inside liwd
     Stop,
-    /// liwd içindeki keymapper'ın durumu
+    /// State of the keymapper inside liwd
     Status,
-    /// Keymapper'ı ÖN PLANDA çalıştır (hata ayıklama; Ctrl+C ile biter)
+    /// Run the keymapper IN THE FOREGROUND (debugging; ends with Ctrl+C)
     Run {
-        /// Profil etkinken cihazı kilitle (tuşlar masaüstüne gitmez)
+        /// Grab the device while a profile is active (keys do not reach the desktop)
         #[arg(short, long)]
         grab: bool,
-        /// Ön plan yoklama aralığı (ms)
+        /// Foreground polling interval (ms)
         #[arg(long, default_value_t = 1000)]
         poll: u64,
     },
-    /// Android dokunuş göstergesini aç/kapat (kalibrasyon görsel yardımı)
+    /// Toggle the Android touch indicator (a visual aid for calibration)
     Overlay {
         /// kapat
         #[arg(long)]
         off: bool,
     },
-    /// Koordinat taraması: hangi noktaların pencereye ulaştığını ölç
+    /// Coordinate sweep: measure which points reach the window
     Sweep {
         /// Eksen: x veya y
         #[arg(default_value = "x")]
         axis: char,
-        /// Nokta sayısı
+        /// Number of points
         #[arg(long, default_value_t = 11)]
         count: u32,
-        /// Noktalar arası bekleme (ms)
+        /// Delay between points (ms)
         #[arg(long, default_value_t = 900)]
         gap: u64,
     },
-    /// Klavyeyi kalibrasyonla belirle: bir tuşa bas
+    /// Identify the keyboard by calibration: press a key
     Detect {
-        /// Bulunan cihazı yapılandırmaya kaydet
+        /// Save the detected device to the configuration
         #[arg(short, long)]
         save: bool,
-        /// Klavye yerine FAREYİ kalibre et (hareket ettirerek)
+        /// Calibrate the MOUSE instead of the keyboard (by moving it)
         #[arg(short, long)]
         mouse: bool,
-        /// Oyun kipi KISAYOL tuşunu belirle
+        /// Identify the game-mode HOTKEY
         #[arg(long)]
         hotkey: bool,
     },
-    /// Hangi cihazın hangi tuş kodunu ürettiğini izle (teşhis)
+    /// Watch which device produces which key code (diagnostics)
     Watch {
-        /// Tek bir cihazı izle (varsayılan: tüm klavyeler)
+        /// Watch a single device (default: every keyboard)
         #[arg(short, long)]
         device: Option<std::path::PathBuf>,
     },
-    /// Tek dokunuş/sürükleme gönder — eşlemeden bağımsız enjeksiyon testi
+    /// Send one touch/drag — injection test independent of the mapping
     Poke {
         /// X (0..1)
         #[arg(default_value_t = 0.5)]
@@ -184,13 +184,13 @@ enum KeymapAction {
         /// Y (0..1)
         #[arg(default_value_t = 0.5)]
         y: f32,
-        /// Basılı tutma / sürükleme süresi (ms)
+        /// Hold / drag duration (ms)
         #[arg(long, default_value_t = 120)]
         hold: u64,
-        /// Sürükleme hedefi: --to X,Y
+        /// Drag target: --to X,Y
         #[arg(long)]
         to: Option<String>,
-        /// Dokunmatik uzayda hedef bölge: ORIGIN_X,ORIGIN_Y,SCALE_X,SCALE_Y
+        /// Target region in touch space: ORIGIN_X,ORIGIN_Y,SCALE_X,SCALE_Y
         #[arg(long)]
         region: Option<String>,
         /// X eksenini aynala
@@ -199,30 +199,30 @@ enum KeymapAction {
         /// Y eksenini aynala
         #[arg(long)]
         invert_y: bool,
-        /// Dokunmadan önce bekle (saniye) — hedef pencereyi öne getirmek için
+        /// Wait before touching (seconds) — to bring the target window forward
         #[arg(long, default_value_t = 0)]
         delay: u64,
-        /// Eski uinput yolunu zorla (varsayılan: Waydroid dokunuş borusu)
+        /// Force the old uinput path (default: the Waydroid touch pipe)
         #[arg(long)]
         uinput: bool,
     },
-    /// Profili gerçek klavyeyle dene (Android'e enjeksiyon YOK)
+    /// Try a profile with a real keyboard (NO injection into Android)
     Test {
-        /// Profil dosyası (.toml)
+        /// Profile file (.toml)
         profile: std::path::PathBuf,
-        /// Belirli bir cihaz kullan (varsayılan: ilk klavye)
+        /// Use a specific device (default: the first keyboard)
         #[arg(short, long)]
         device: Option<std::path::PathBuf>,
-        /// Cihazı kilitle — tuşlar masaüstüne gitmez
+        /// Grab the device — keys do not reach the desktop
         #[arg(short, long)]
         grab: bool,
-        /// Ekran genişliği (piksel dönüşümü için)
+        /// Screen width (for pixel conversion)
         #[arg(long, default_value_t = 1920)]
         width: u32,
-        /// Ekran yüksekliği
+        /// Screen height
         #[arg(long, default_value_t = 1080)]
         height: u32,
-        /// Dokunuşları GERÇEKTEN enjekte et (sanal dokunmatik ekran)
+        /// ACTUALLY inject the touches (virtual touchscreen)
         #[arg(short, long)]
         inject: bool,
     },
@@ -230,30 +230,30 @@ enum KeymapAction {
 
 #[derive(Subcommand)]
 enum PerfAction {
-    /// Kaldıraçların şu anki halini oku ve raporla
+    /// Read and report the current state of the levers
     Status,
 }
 
 #[derive(Subcommand)]
 enum SessionAction {
-    /// Session'ı başlat (terminalden bağımsız)
+    /// Start the session (detached from the terminal)
     Start,
-    /// Session'ı durdur
+    /// Stop the session
     Stop,
-    /// Session'ı yeniden başlat
+    /// Restart the session
     Restart,
-    /// Durum özeti
+    /// Status summary
     Status,
-    /// Ayrıntılı sağlık kontrolü — hangi göstergenin düştüğünü söyler
+    /// Detailed health check — reports which signal is down
     Health,
     /// Waydroid penceresini tam ekran yap
     Fullscreen,
 }
 
-/// Daemon varsa ona konuş; yoksa doğrudan Waydroid'e düş.
+/// Talk to the daemon if present; otherwise fall back to Waydroid directly.
 ///
-/// Doğrudan mod bilinçli bir taviz: daemon kurulu olmayan bir sistemde de
-/// `liw` kullanışlı olmalı. Ancak bu modda otomatik kurtarma YOKTUR.
+/// Direct mode is a deliberate trade-off: `liw` should be useful on a system
+/// without the daemon installed. But there is NO automatic recovery in it.
 async fn manager() -> Option<zbus::Proxy<'static>> {
     let conn = Connection::session().await.ok()?;
     let p = zbus::Proxy::new(&conn, BUS_NAME, OBJ_PATH, BUS_NAME).await.ok()?;
@@ -300,7 +300,7 @@ async fn main() -> Result<()> {
                     let drag = match to {
                         Some(s) => {
                             let (a, b) = s.split_once(',')
-                                .context("--to biçimi: X,Y  (örn: 0.2,0.5)")?;
+                                .context("--to format: X,Y  (e.g. 0.2,0.5)")?;
                             Some((a.trim().parse()?, b.trim().parse()?))
                         }
                         None => None,
@@ -310,8 +310,8 @@ async fn main() -> Result<()> {
                         let v: Vec<f32> = r.split(',')
                             .map(|p| p.trim().parse::<f32>())
                             .collect::<Result<_, _>>()
-                            .context("--region biçimi: OX,OY,SX,SY")?;
-                        anyhow::ensure!(v.len() == 4, "--region dört sayı ister: OX,OY,SX,SY");
+                            .context("--region format: OX,OY,SX,SY")?;
+                        anyhow::ensure!(v.len() == 4, "--region needs four numbers: OX,OY,SX,SY");
                         map.origin_x = v[0]; map.origin_y = v[1];
                         map.scale_x = v[2];  map.scale_y = v[3];
                     }
@@ -327,34 +327,34 @@ async fn main() -> Result<()> {
     };
     let proxy = manager().await;
     if proxy.is_none() {
-        eprintln!("uyarı: liwd çalışmıyor — doğrudan kipte, otomatik kurtarma yok");
+        eprintln!("warning: liwd is not running — direct mode, no automatic recovery");
     }
     let sup = Supervisor::new(SupervisorConfig::default()).with_helper().await;
 
     match action {
         SessionAction::Start => {
             match &proxy {
-                Some(p) => p.call::<_, _, ()>("Start", &()).await.context("Start çağrısı")?,
-                None => sup.start_detached().await.context("session başlatma")?,
+                Some(p) => p.call::<_, _, ()>("Start", &()).await.context("Start call")?,
+                None => sup.start_detached().await.context("starting the session")?,
             }
-            println!("session başlatıldı");
+            println!("session started");
         }
         SessionAction::Stop => {
             match &proxy {
-                Some(p) => p.call::<_, _, ()>("Stop", &()).await.context("Stop çağrısı")?,
+                Some(p) => p.call::<_, _, ()>("Stop", &()).await.context("Stop call")?,
                 None => sup.stop().await.context("session durdurma")?,
             }
             println!("session durduruldu");
         }
         SessionAction::Restart => {
             match &proxy {
-                Some(p) => p.call::<_, _, ()>("Restart", &()).await.context("Restart çağrısı")?,
-                None => sup.recover().await.context("yeniden başlatma")?,
+                Some(p) => p.call::<_, _, ()>("Restart", &()).await.context("Restart call")?,
+                None => sup.recover().await.context("restarting")?,
             }
-            println!("session yeniden başlatıldı");
+            println!("session restarted");
         }
         SessionAction::Status => {
-            let s = sup.status().await.context("durum okunamadı")?;
+            let s = sup.status().await.context("could not read status")?;
             println!("Session   : {}", s.session);
             println!("Container : {}", s.container);
             println!("IP        : {}", s.ip.as_deref().unwrap_or("-"));
@@ -363,54 +363,54 @@ async fn main() -> Result<()> {
                     println!("liwd      : {st}");
                 }
             } else {
-                println!("liwd      : çalışmıyor");
+                println!("liwd      : not running");
             }
         }
         SessionAction::Fullscreen => {
             let p = proxy.as_ref()
-                .context("liwd çalışmıyor — systemctl --user status liwd")?;
-            let ok: bool = p.call("Fullscreen", &()).await.context("Fullscreen çağrısı")?;
+                .context("liwd is not running — systemctl --user status liwd")?;
+            let ok: bool = p.call("Fullscreen", &()).await.context("Fullscreen call")?;
             let json: String = p.call("WindowGeometry", &()).await.unwrap_or_default();
             if ok {
-                println!("pencere tam ekran");
+                println!("window is fullscreen");
             } else {
-                println!("tam ekran yapılamadı");
+                println!("could not make it fullscreen");
             }
             if !json.is_empty() { println!("geometri: {json}"); }
         }
         SessionAction::Health => {
             let h: Health = match &proxy {
                 Some(p) => {
-                    let json: String = p.call("Health", &()).await.context("Health çağrısı")?;
-                    serde_json::from_str(&json).context("sağlık verisi çözümlenemedi")?
+                    let json: String = p.call("Health", &()).await.context("Health call")?;
+                    serde_json::from_str(&json).context("could not parse health data")?
                 }
                 None => sup.health().await,
             };
             let mark = |b: bool| if b { "OK  " } else { "HATA" };
-            println!("  {} session çalışıyor", mark(h.session_running));
-            println!("  {} konteyner çalışıyor", mark(h.container_running));
-            println!("  {} composer HAL canlı", mark(h.composer_alive));
-            println!("  {} composer bağlantısı taze", mark(!h.composer_stale));
-            println!("  {} Android boot tamamlandı", mark(h.boot_completed));
-            println!("  {} IP atanmış", mark(h.has_ip));
+            println!("  {} session running", mark(h.session_running));
+            println!("  {} container running", mark(h.container_running));
+            println!("  {} composer HAL alive", mark(h.composer_alive));
+            println!("  {} composer connection fresh", mark(!h.composer_stale));
+            println!("  {} Android boot completed", mark(h.boot_completed));
+            println!("  {} IP assigned", mark(h.has_ip));
             println!();
             if h.is_healthy() {
-                println!("session sağlıklı");
+                println!("session healthy");
             } else {
                 println!("SORUNLAR:");
                 for f in h.failures() { println!("  - {f}"); }
                 if h.composer_stale {
                     println!();
-                    println!("composer session'dan sonra yeniden başlamış. Süreçler ayakta");
-                    println!("görünür ama binder bağlantısı bayattır: pencere açılmaz,");
-                    println!("'waydroid app launch' 'Sending reply failed' döner.");
-                    println!("Kurtarmak için: liw session restart");
+                    println!("composer restarted after the session. The processes look");
+                    println!("alive but the binder connection is stale: no window appears");
+                    println!("and 'waydroid app launch' returns 'Sending reply failed'.");
+                    println!("To recover: liw session restart");
                 }
                 if !h.composer_alive {
                     println!();
-                    println!("composer ölümü çökme zincirinin köküdür:");
-                    println!("  composer -> SurfaceFlinger SIGABRT -> system_server -> tüm uygulamalar");
-                    println!("Kurtarmak için: liw session restart");
+                    println!("composer death is the root of the crash chain:");
+                    println!("  composer -> SurfaceFlinger SIGABRT -> system_server -> every app");
+                    println!("To recover: liw session restart");
                 }
                 std::process::exit(1);
             }

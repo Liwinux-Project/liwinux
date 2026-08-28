@@ -6,12 +6,13 @@
   <vendor>liwinux</vendor>
   <vendor_url>https://github.com/wintone01/liwinux</vendor_url>
 
-  <!-- Salt okunur. Aktif oturumdaki kullanıcıya izin verilir; sistemi
-       değiştirmez ve parola sormak teşhisi gereksiz yere zorlaştırır. -->
+  <!-- Read-only. Allowed for the user in the active session; it changes
+       nothing and asking for a password would make diagnosis needlessly
+       harder. -->
   <action id="id.liwinux.helper.read-property">
-    <description>Android sistem özelliğini oku</description>
+    <description>Read an Android system property</description>
     <description xml:lang="tr">Android sistem özelliğini oku</description>
-    <message>liwinux'un Android konteynerinin durumunu okuması gerekiyor</message>
+    <message>liwinux needs to read the state of the Android container</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -20,8 +21,8 @@
   </action>
 
   <action id="id.liwinux.helper.net-diagnose">
-    <description>Ağ yapılandırmasını incele</description>
-    <message>liwinux'un ağ teşhisi yapması gerekiyor</message>
+    <description>Inspect the network configuration</description>
+    <message>liwinux needs to run network diagnostics</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -30,8 +31,8 @@
   </action>
 
   <action id="id.liwinux.helper.foreground-app">
-    <description>Ön plandaki Android uygulamasını sorgula</description>
-    <message>liwinux'un doğru profili seçmek için ön plandaki uygulamayı bilmesi gerekiyor</message>
+    <description>Query the foreground Android app</description>
+    <message>liwinux needs the foreground app in order to pick the right profile</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -40,8 +41,8 @@
   </action>
 
   <action id="id.liwinux.helper.performance">
-    <description>Kare zamanlama verisini oku</description>
-    <message>liwinux'un performans ölçümü yapması gerekiyor</message>
+    <description>Read frame timing data</description>
+    <message>liwinux needs to measure performance</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -49,10 +50,10 @@
     </defaults>
   </action>
 
-  <!-- Geliştirici görsel yardımı; sistem güvenliğini etkilemez. -->
+  <!-- A developer visual aid; it does not affect system security. -->
   <action id="id.liwinux.helper.debug-overlay">
-    <description>Android dokunuş göstergesini aç/kapat</description>
-    <message>liwinux'un kalibrasyon için dokunuş göstergesini açması gerekiyor</message>
+    <description>Toggle the Android touch indicator</description>
+    <message>liwinux needs the touch indicator for calibration</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -60,12 +61,12 @@
     </defaults>
   </action>
 
-  <!-- Güvenlik duvarını DEĞİŞTİRİR: yönetici kimlik doğrulaması şart.
-       auth_admin_keep, arka arkaya onarım adımlarında tekrar tekrar
-       parola sormayı önler ama yetkiyi kalıcı kılmaz. -->
+  <!-- It CHANGES the firewall: administrator authentication is mandatory.
+       auth_admin_keep avoids asking for the password again on consecutive
+       repair steps without making the authorization permanent. -->
   <action id="id.liwinux.helper.net-repair">
-    <description>Waydroid için güvenlik duvarı kurallarını onar</description>
-    <message>liwinux'un güvenlik duvarı kurallarını değiştirmesi için yetki gerekiyor</message>
+    <description>Repair firewall rules for Waydroid</description>
+    <message>liwinux needs authorization to change firewall rules</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -74,9 +75,9 @@
   </action>
 
   <action id="id.liwinux.helper.read-log">
-    <description>Android günlüğünü oku</description>
+    <description>Read the Android log</description>
     <description xml:lang="en">Read Android log</description>
-    <message>Uygulama donmalarını teşhis etmek için Android günlüğü okunacak</message>
+    <message>The Android log will be read to diagnose application hangs</message>
     <message xml:lang="en">Reading the Android log to diagnose application hangs</message>
     <defaults>
       <allow_any>no</allow_any>
@@ -86,9 +87,9 @@
   </action>
 
   <action id="id.liwinux.helper.restart-audio">
-    <description>Kilitlenmiş ses HAL'ini yeniden başlat</description>
+    <description>Restart a wedged audio HAL</description>
     <description xml:lang="en">Restart wedged audio HAL</description>
-    <message>Kilitlenen ses altyapısı yeniden başlatılacak</message>
+    <message>The wedged audio subsystem will be restarted</message>
     <message xml:lang="en">Restarting the wedged audio subsystem</message>
     <defaults>
       <allow_any>no</allow_any>
@@ -96,19 +97,19 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
-  <!-- Dokunuş borusuna YAZMA tanıtıcısı verir.
+  <!-- Hands over a WRITE handle to the touch pipe.
 
-       auth_admin DEĞİL, bilerek: bu yetki kullanıcının kendi Waydroid
-       oturumuna dokunuş göndermeyi sağlar ve aktif oturumdaki kullanıcı
-       bunu zaten faresiyle yapabiliyor. Parola sormak, keymapper'ı her
-       başlatışta engel çıkarır ve karşılığında yeni bir şey korumaz.
+       Deliberately NOT auth_admin: this permission lets the user send
+       touches to their own Waydroid session, which the user in the active
+       session can already do with their mouse. Asking for a password would
+       obstruct every keymapper start and protect nothing new in return.
 
-       Kapsam yine de dar: yalnızca AKTİF yerel oturum, yalnızca dokunuş
-       borusu; helper genel bir yazma arayüzü sunmuyor. -->
+       The scope stays narrow regardless: only the ACTIVE local session,
+       only the touch pipe; the helper exposes no general write interface. -->
   <action id="id.liwinux.helper.touch-pipe">
-    <description>Android dokunuş borusuna eriş</description>
+    <description>Access the Android touch pipe</description>
     <description xml:lang="en">Access the Android touch pipe</description>
-    <message>liwinux'un tuş eşlemesi için Android'e dokunuş göndermesi gerekiyor</message>
+    <message>liwinux needs to send touches to Android for key mapping</message>
     <message xml:lang="en">liwinux needs to send touch input to Android for key mapping</message>
     <defaults>
       <allow_any>no</allow_any>

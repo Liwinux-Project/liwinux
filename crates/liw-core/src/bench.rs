@@ -1,41 +1,41 @@
-//! Kare zamanlaması ölçümü ve analizi.
+//! Frame timing measurement and analysis.
 //!
-//! # Yöntem notu
+//! # Methodology note
 //!
-//! SurfaceFlinger 128 karelik YUVARLANAN bir tampon tutar. Bu iki tuzak doğurur
-//! ve ikisine de bash prototipinde düştük:
+//! SurfaceFlinger keeps a ROLLING buffer of 128 frames. That creates two traps
+//! and the bash prototype fell into both:
 //!
-//! 1. **Örnekleme aralığı** tamponun dolma süresinden uzunsa kare kaybedilir.
-//!    180 Hz'de 128 kare 0.71 sn'de dolar; 1 sn'lik sabit aralık kare kaçırır.
-//!    Aralık refresh'ten TÜRETİLMELİ.
-//! 2. **Pencere sınırı artefaktı**: iki anlık görüntü arasındaki boşluk gerçek
-//!    bir kare aralığı DEĞİLDİR. Aralıklar yalnızca AYNI anlık görüntü
-//!    içindeki ardışık karelerden hesaplanmalı; aksi halde "en kötü 500 ms"
-//!    gibi uydurma değerler çıkar.
+//! 1. **Sampling interval.** Longer than the buffer's fill time and frames are
+//!    lost. At 180 Hz, 128 frames fill in 0.71 s; a fixed 1 s interval misses
+//!    frames. The interval must be DERIVED from the refresh rate.
+//! 2. **Window boundary artefact.** The gap between two snapshots is NOT a real
+//!    frame interval. Intervals must be computed only from consecutive frames
+//!    within the SAME snapshot; otherwise you get invented values like "worst
+//!    500 ms".
 
 use std::collections::BTreeSet;
 
-/// Geçersiz zaman damgası sınırı. SurfaceFlinger bilinmeyen kareler için
+/// Invalid timestamp bound. SurfaceFlinger writes a huge sentinel for frames
 /// 0 veya INT64_MAX yazar.
 const INVALID_MAX: i64 = i64::MAX / 2;
 
-/// Tek bir `--latency` anlık görüntüsü.
+/// A single `--latency` snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
-    /// Ekran yenileme periyodu (ns). Çıktının ilk satırı.
+    /// Display refresh period (ns). The first line of the output.
     pub refresh_ns: u64,
-    /// Geçerli sunum zaman damgaları (ns), artan sırada, tekilleştirilmiş.
+    /// Valid present timestamps (ns), ascending, deduplicated.
     pub presents: Vec<i64>,
 }
 
-/// `dumpsys SurfaceFlinger --latency <layer>` çıktısını ayrıştırır.
+/// Parses `dumpsys SurfaceFlinger --latency <layer>` output.
 ///
-/// Biçim: ilk satır refresh periyodu, sonra üç sütunlu satırlar
+/// Format: first line the refresh period, then three-column rows
 /// (desiredPresentTime, actualPresentTime, frameReadyTime).
 pub fn parse_latency(raw: &str) -> Option<Snapshot> {
     let mut lines = raw.lines().map(str::trim).filter(|l| !l.is_empty());
     let refresh_ns: u64 = lines.next()?.parse().ok()?;
-    // Saçma refresh değerleri ayrıştırma hatasıdır; kabul etme.
+    // Absurd refresh values are a parse error; do not accept them.
     if !(1_000_000..=100_000_000).contains(&refresh_ns) { return None; }
 
     let mut presents = BTreeSet::new();
@@ -49,27 +49,27 @@ pub fn parse_latency(raw: &str) -> Option<Snapshot> {
     Some(Snapshot { refresh_ns, presents: presents.into_iter().collect() })
 }
 
-/// Toplanmış anlık görüntülerden kare aralıkları çıkarır.
+/// Extracts frame intervals from the collected snapshots.
 #[derive(Debug, Default)]
 pub struct FrameData {
-    /// Aralıklar (ms), BAŞLANGIÇ KARESİNE göre tekilleştirilmiş.
+    /// Intervals (ms), deduplicated BY START FRAME.
     ///
-    /// Anlık görüntüler üst üste biniyor: dumpsys 128 karelik tampon
-    /// döndürüyor ama her örnekte yalnızca ~57 yeni kare oluyor, yani aynı
-    /// aralık 2-3 örnekte birden görünüyor. Vec kullanmak onu 2-3 kez
-    /// sayıyordu; ölçülen 7997 tekil kareden 23560 "aralık" çıkmıştı.
+    /// Snapshots overlap: dumpsys returns a 128-frame buffer but only ~57 new
+    /// frames appear per sample, so the same interval shows up in 2-3 samples.
+    /// Using a Vec counted it 2-3 times; a real measurement of 7997 unique
+    /// frames produced 23560 "intervals".
     ///
-    /// Yüzdelikler bundan az etkilenir (pay ve payda birlikte şişer) ama
-    /// örneklem sayısı olduğundan büyük görünür ve jank SAYILARI yanlış
-    /// olur. Faz 4'te öncesi/sonrası karşılaştıracağımız için önemli.
+    /// Percentiles are barely affected (numerator and denominator inflate
+    /// together) but jank COUNTS become wrong and the sample size looks more
+    /// trustworthy than it is. That matters for before/after comparisons.
     intervals: std::collections::BTreeMap<i64, f64>,
-    /// Görülen tekil kareler; kapsam hesabı için.
+    /// Unique frames seen; used for the coverage calculation.
     frames: BTreeSet<i64>,
-    /// 1 sn'yi aşan boşluklar: DONMA (menü yükleniyor, ANR, ağ zaman aşımı).
+    /// Gaps beyond 1 s: FREEZES (menu loading, ANR, network timeout).
     ///
-    /// Yüzdeliklerin dışında tutuluyorlar — tek bir 60 saniyelik donma
-    /// p99'u anlamsız kılardı. Ama atılmamaları da şart: kullanıcının
-    /// "ESC menüsünde bir dakika bekliyorum" dediği şey tam olarak bu.
+    /// Kept out of the percentiles — a single 60-second freeze would make p99
+    /// meaningless. But they must not be discarded either: "I wait a minute in
+    /// the ESC menu" is exactly this.
     stalls: std::collections::BTreeMap<i64, f64>,
     refresh_ns: u64,
 }
@@ -80,14 +80,14 @@ impl FrameData {
     pub fn add(&mut self, snap: &Snapshot) {
         if snap.refresh_ns > 0 { self.refresh_ns = snap.refresh_ns; }
         self.frames.extend(snap.presents.iter().copied());
-        // Aralıklar pencere İÇİNDEN; sınır boşluğu asla kullanılmaz.
+        // Intervals come from WITHIN a window; boundary gaps are never used.
         for w in snap.presents.windows(2) {
             let d = (w[1] - w[0]) as f64 / 1e6;
-            // Absürt değerleri ele: 0.05 ms altı ölçüm gürültüsü,
-            // 1000 ms üstü duraklama (uygulama arka plana gitmiş olabilir).
+            // Reject absurd values: below 0.05 ms is measurement noise, above
+            // 1000 ms is a pause (the app may have gone to the background).
             if (0.05..1000.0).contains(&d) {
-                // Başlangıç karesi anahtarı: aynı aralık kaç örnekte
-                // görünürse görünsün bir kez sayılır.
+                // Keyed by the start frame: the same interval is counted once
+                // no matter how many samples it appears in.
                 self.intervals.insert(w[0], d);
             } else if d >= 1000.0 && d < 600_000.0 {
                 self.stalls.insert(w[0], d);
@@ -97,39 +97,39 @@ impl FrameData {
 
     pub fn interval_count(&self) -> usize { self.intervals.len() }
 
-    /// Zaman damgalı aralıklar: (monotonik ms, süre ms).
+    /// Timestamped intervals: (monotonic ms, duration ms).
     ///
-    /// Teşhis için şart: "p99 12 ms" bir takılmanın NE ZAMAN olduğunu
-    /// söylemez, dolayısıyla o anda ne olduğuyla eşleştirilemez.
+    /// Mandatory for diagnosis: "p99 12 ms" does not say WHEN a stutter
+    /// happened, so it cannot be correlated with what was going on.
     pub fn intervals_ms(&self) -> Vec<(f64, f64)> {
         self.intervals.iter().map(|(t, d)| (*t as f64 / 1e6, *d)).collect()
     }
 
-    /// 1 sn'yi aşan donmalar: (monotonik ms, süre ms).
+    /// Freezes beyond 1 s: (monotonic ms, duration ms).
     pub fn stalls_ms(&self) -> Vec<(f64, f64)> {
         self.stalls.iter().map(|(t, d)| (*t as f64 / 1e6, *d)).collect()
     }
 
-    /// En son görülen karenin zamanı (monotonik ms). Yeni kare gelip
-    /// gelmediğini anlamak için.
+    /// Time of the last frame seen (monotonic ms). Used to tell whether new
+    /// frames are still arriving.
     pub fn last_frame_ms(&self) -> Option<f64> {
         self.frames.iter().next_back().map(|t| *t as f64 / 1e6)
     }
     pub fn frame_count(&self) -> usize { self.frames.len() }
     pub fn refresh_ms(&self) -> f64 { self.refresh_ns as f64 / 1e6 }
 
-    /// Yakalama kapsamı: görülen kare / beklenen kare.
+    /// Capture coverage: frames seen / frames expected.
     ///
-    /// Düşük kapsam sayıların temsili olmadığını gösterir — bunu raporlamak
-    /// şart, yoksa eksik veriden çıkarılan sonuca güvenilir sanılır.
+    /// Low coverage means the numbers are not representative — reporting it is
+    /// mandatory, otherwise a conclusion drawn from partial data looks solid.
     pub fn coverage_pct(&self) -> f64 {
         if self.frames.len() < 2 || self.refresh_ns == 0 { return 0.0; }
         let first = *self.frames.iter().next().unwrap();
         let last = *self.frames.iter().next_back().unwrap();
         let span_ns = (last - first) as f64;
-        // Beklenen kare sayısı OYUNUN kadansına göre. Tazelemeye göre
-        // hesaplamak, 180 Hz ekranda 60 FPS çizen bir oyunda kapsamı
-        // tavanda %33'e sıkıştırıyordu — hiçbir kare kaçırılmasa bile.
+        // Expected frame count follows the GAME's cadence. Computing it from
+        // the refresh rate capped coverage at 33% for a game drawing 60 FPS on
+        // a 180 Hz display — even with no frame missed at all.
         let period_ns = self.target_period_ms() * 1e6;
         if period_ns <= 0.0 { return 0.0; }
         let expected = span_ns / period_ns;
@@ -137,38 +137,38 @@ impl FrameData {
         (100.0 * self.frames.len() as f64 / expected).min(100.0)
     }
 
-    /// Sıralı aralıklar (yüzdelik hesabı için).
+    /// Sorted intervals (for percentile computation).
     fn sorted(&self) -> Vec<f64> {
         let mut v: Vec<f64> = self.intervals.values().copied().collect();
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
         v
     }
 
-    /// Oyunun GERÇEK kare periyodu (ms) — ekranın tazeleme periyodu DEĞİL.
+    /// The game's REAL frame period (ms) — NOT the display refresh period.
     ///
-    /// Oyunlar ekranın tazeleme hızında çizmek zorunda değil. SFG2 180 Hz
-    /// ekranda 60 FPS'e kilitli: her kare tam 3 vsync sürüyor. Jank'i
-    /// tazeleme periyoduna göre ölçmek bu oyunun HER karesini "takılma"
-    /// saydı — %99.8 jank raporlandı, oysa oyun kusursuz düzenli çiziyordu.
+    /// Games are not required to draw at the display refresh rate. SFG2 locks to
+    /// 60 FPS on a 180 Hz display: every frame lasts exactly 3 vsyncs. Measuring
+    /// jank against the refresh period counted EVERY frame of that game as a
+    /// stutter — 99.8% jank was reported while the game was perfectly regular.
     ///
-    /// Medyan kullanılıyor: oyunun kendi hedefine göre ölçmek, "bu kare
-    /// tipik kareden ne kadar uzun sürdü" sorusunu sorar ki jank'in
-    /// anlamı zaten budur.
+    /// The median is used: measuring against the game's own target asks "how
+    /// much longer did this frame take than a typical one", which is what jank
+    /// means in the first place.
     pub fn target_period_ms(&self) -> f64 {
         let p50 = self.percentile(50.0);
         if p50 > 0.0 { p50 } else { self.refresh_ms() }
     }
 
-    /// Oyunun kilitli göründüğü FPS.
+    /// The FPS the game appears to be locked to.
     pub fn target_fps(&self) -> f64 {
         let t = self.target_period_ms();
         if t > 0.0 { 1000.0 / t } else { 0.0 }
     }
 
-    /// Oyun ekranın tazeleme hızının altında mı çiziyor.
+    /// Is the game drawing below the display refresh rate?
     ///
-    /// Öyleyse tazeleme tabanlı kapsam ve jank ölçümleri yanıltıcı olur;
-    /// bunu rapor etmek şart.
+    /// If so, refresh-based coverage and jank figures are misleading; reporting
+    /// this is mandatory.
     pub fn is_below_refresh(&self) -> bool {
         let r = self.refresh_ms();
         r > 0.0 && self.target_period_ms() > r * 1.5
@@ -186,8 +186,8 @@ impl FrameData {
         self.intervals.values().sum::<f64>() / self.intervals.len() as f64
     }
 
-    /// Refresh'in `mult` katından uzun aralıklar (jank).
-    /// Takılma sayısı: OYUNUN kendi kare periyoduna göre.
+    /// Intervals longer than `mult` times the period (jank).
+    /// Jank count, measured against the GAME's own frame period.
     pub fn jank_count(&self, mult: f64) -> usize {
         let t = self.target_period_ms() * mult;
         if t <= 0.0 { return 0; }
@@ -200,10 +200,10 @@ impl FrameData {
     }
 }
 
-/// Örnekleme aralığını refresh'ten türetir.
+/// Derives the sampling interval from the refresh rate.
 ///
-/// Tampon 128 kare; güvenlik payıyla dolmadan örnekliyoruz. Sabit bir değer
-/// kullanmak yüksek yenileme hızlarında kare kaybettirir.
+/// The buffer holds 128 frames; we sample before it fills, with a safety
+/// margin. A fixed value loses frames at high refresh rates.
 pub fn sample_interval_ms(refresh_ns: u64) -> u64 {
     const BUFFER_FRAMES: f64 = 128.0;
     const SAFETY: f64 = 0.45;
@@ -220,24 +220,24 @@ mod stall_tests {
         Snapshot { refresh_ns, presents: presents.to_vec() }
     }
 
-    /// Donma yüzdeliklere KARIŞMAMALI ama KAYBOLMAMALI da.
+    /// A freeze must NOT pollute the percentiles, but must NOT be lost either.
     ///
-    /// Tek bir 60 saniyelik menü donması p99'u anlamsız kılar; atmak ise
-    /// kullanıcının asıl şikâyetini görünmez yapar.
+    /// A single 60-second menu freeze makes p99 meaningless; discarding it makes
+    /// the user's actual complaint invisible.
     #[test]
     fn stalls_are_kept_apart_from_intervals() {
         let mut f = FrameData::new();
-        // 3 normal kare (16 ms), sonra 5 sn boşluk, sonra 1 kare daha.
+        // 3 normal frames (16 ms), then a 5 s gap, then one more frame.
         f.add(&snap(16_666_666, &[0, 16_000_000, 32_000_000,
                                   5_032_000_000, 5_048_000_000]));
-        assert_eq!(f.interval_count(), 3, "donma aralıklara girmemeli");
+        assert_eq!(f.interval_count(), 3, "the freeze must not enter the intervals");
         let st = f.stalls_ms();
         assert_eq!(st.len(), 1);
         assert!((st[0].1 - 5000.0).abs() < 1.0, "{st:?}");
-        assert!((st[0].0 - 32.0).abs() < 0.1, "donmanın başlangıcı: {st:?}");
+        assert!((st[0].0 - 32.0).abs() < 0.1, "start of the freeze: {st:?}");
     }
 
-    /// Aralıklar zaman damgasıyla çıkmalı; yoksa korelasyon imkânsız.
+    /// Intervals must carry timestamps; without them correlation is impossible.
     #[test]
     fn intervals_carry_their_timestamp() {
         let mut f = FrameData::new();
@@ -250,8 +250,8 @@ mod stall_tests {
         assert!((f.last_frame_ms().unwrap() - 50.0).abs() < 1e-6);
     }
 
-    /// Absürt uzun boşluk (10 dk) donma bile sayılmamalı: uygulama arka
-    /// plana gitmiş demektir, ölçüm değil.
+    /// An absurdly long gap (10 min) must not even count as a freeze: the app
+    /// went to the background, that is not a measurement.
     #[test]
     fn absurd_gaps_are_not_stalls() {
         let mut f = FrameData::new();
@@ -262,10 +262,10 @@ mod stall_tests {
 
 #[cfg(test)]
 mod tests {
-    /// GERÇEK ÖLÇÜM: SFG2 180 Hz ekranda 60 FPS'e kilitli çiziyor.
+    /// REAL MEASUREMENT: SFG2 locks to 60 FPS on a 180 Hz display.
     ///
-    /// Jank'i tazeleme periyoduna göre ölçmek her kareyi takılma saydı ve
-    /// %99.8 raporladı. Oyun kusursuz düzenliyken.
+    /// Measuring jank against the refresh period counted every frame as a
+    /// stutter and reported 99.8%, while the game was perfectly regular.
     #[test]
     fn game_locked_below_refresh_is_not_all_jank() {
         let refresh = 5_555_555u64;          // 180 Hz
@@ -278,27 +278,27 @@ mod tests {
         assert!((fd.target_period_ms() - 16.667).abs() < 0.01,
             "hedef periyot: {}", fd.target_period_ms());
         assert!((fd.target_fps() - 60.0).abs() < 0.1);
-        assert!(fd.is_below_refresh(), "oyun tazelemenin altında çiziyor");
+        assert!(fd.is_below_refresh(), "the game draws below the refresh rate");
         assert_eq!(fd.jank_pct(1.5), 0.0,
-            "düzenli 60 FPS takılma DEĞİLDİR");
+            "steady 60 FPS is NOT jank");
         assert!(fd.coverage_pct() > 99.0,
-            "hiçbir kare kaçmadı, kapsam tam olmalı: {}", fd.coverage_pct());
+            "no frame was missed, coverage must be full: {}", fd.coverage_pct());
     }
 
-    /// Gerçek takılma yine yakalanmalı: 60 FPS akışında atlanan kare.
+    /// A real stutter must still be caught: a dropped frame in a 60 FPS stream.
     #[test]
     fn dropped_frame_at_60fps_is_still_jank() {
         let refresh = 5_555_555u64;
         let period = refresh as i64 * 3;
         let mut presents: Vec<i64> = (0..100).map(|i| i * period).collect();
-        // 50. karede bir kare atla -> iki kat uzun aralık.
+        // Drop frame 50 -> an interval twice as long.
         presents.remove(50);
         let mut fd = FrameData::new();
         fd.add(&Snapshot { refresh_ns: refresh, presents });
-        assert_eq!(fd.jank_count(1.5), 1, "atlanan kare takılma sayılmalı");
+        assert_eq!(fd.jank_count(1.5), 1, "a dropped frame must count as jank");
     }
 
-    /// Tazeleme hızında çizen oyun da doğru ölçülmeli (gerileme koruması).
+    /// A game drawing at the refresh rate must still measure correctly
     #[test]
     fn game_at_full_refresh_still_measured_correctly() {
         let refresh = 5_555_555u64;
@@ -312,11 +312,11 @@ mod tests {
         assert_eq!(fd.jank_pct(1.5), 0.0);
     }
 
-    /// Üst üste binen anlık görüntüler aynı aralığı ÇOK KEZ saymamalı.
+    /// Overlapping snapshots must not count the same interval MANY TIMES.
     ///
-    /// dumpsys 128 karelik tampon döndürüyor ama her örnekte ~57 yeni kare
-    /// var; aynı aralık 2-3 örnekte birden görünüyor. Gerçek ölçümde 7997
-    /// tekil kareden 23560 "aralık" çıkmıştı.
+    /// dumpsys returns a 128-frame buffer but only ~57 new frames appear per
+    /// sample; the same interval shows up in 2-3 of them. A real measurement of
+    /// 7997 unique frames produced 23560 "intervals".
     #[test]
     fn overlapping_snapshots_do_not_inflate_sample_count() {
         let mut fd = super::FrameData::new();
@@ -325,17 +325,17 @@ mod tests {
             refresh_ns: r,
             presents: (0..n).map(|i| base + i * r as i64).collect(),
         };
-        // Üç örnek, her biri bir öncekiyle büyük ölçüde örtüşüyor.
+        // Three samples, each overlapping the previous one heavily.
         fd.add(&mk(0, 10));
         fd.add(&mk(5 * r as i64, 10));
         fd.add(&mk(10 * r as i64, 10));
-        // Kareler 0..20 -> 19 tekil aralık. Şişmiş sayım 27 verirdi.
+        // Frames 0..20 -> 19 unique intervals. Inflated counting gave 27.
         assert_eq!(fd.frame_count(), 20);
         assert_eq!(fd.interval_count(), 19,
-            "örtüşen örnekler aralığı tekrar saymamalı");
+            "overlapping samples must not recount an interval");
     }
 
-    /// Tekilleştirme yüzdelikleri bozmamalı: hepsi aynı aralıksa p50 odur.
+    /// Deduplication must not distort percentiles: all-equal intervals -> that p50.
     #[test]
     fn dedupe_preserves_percentiles() {
         let mut fd = super::FrameData::new();
@@ -383,19 +383,19 @@ mod tests {
         assert_eq!(parse_latency(raw).unwrap().presents, vec![1_000_000, 2_000_000]);
     }
 
-    /// Pencere sınırı artefaktı: iki anlık görüntü arasındaki boşluk
-    /// aralık sayılmamalı. Bash prototipinde "en kötü 500 ms" bu yüzden çıkmıştı.
+    /// Window boundary artefact: the gap between two snapshots must not count
+    /// as an interval. This is why the bash prototype reported "worst 500 ms".
     #[test]
     fn gap_between_snapshots_is_never_an_interval() {
         let mut fd = FrameData::new();
-        // İki görüntü, aralarında 1 saniyelik boşluk.
+        // Two snapshots with a 1 second gap between them.
         fd.add(&Snapshot { refresh_ns: 5_555_555,
             presents: vec![0, 5_555_555, 11_111_110] });
         fd.add(&Snapshot { refresh_ns: 5_555_555,
             presents: vec![1_011_111_110, 1_016_666_665] });
-        assert_eq!(fd.interval_count(), 3, "2+1 pencere-içi aralık olmalı");
+        assert_eq!(fd.interval_count(), 3, "2+1 within-window intervals expected");
         let worst = fd.percentile(100.0);
-        assert!(worst < 10.0, "sınır boşluğu aralık sayılmamalı, en kötü={worst}");
+        assert!(worst < 10.0, "a boundary gap must not count, worst={worst}");
     }
 
     #[test]
@@ -406,29 +406,29 @@ mod tests {
         fd.add(&Snapshot { refresh_ns: 5_555_555, presents: p });
         let (p50, p95, p99) = (fd.percentile(50.0), fd.percentile(95.0), fd.percentile(99.0));
         assert!(p50 <= p95 && p95 <= p99);
-        assert!((p50 - 5.5555).abs() < 0.01, "p50 refresh'e yakın olmalı: {p50}");
+        assert!((p50 - 5.5555).abs() < 0.01, "p50 must be close to refresh: {p50}");
     }
 
     #[test]
     fn jank_counts_long_intervals() {
         let mut fd = FrameData::new();
-        // Üç normal kare, sonra bir gecikmeli kare.
+        // Three normal frames, then one late frame.
         fd.add(&Snapshot { refresh_ns: 5_000_000, presents: vec![
             0, 5_000_000, 10_000_000, 30_000_000,
         ]});
-        assert_eq!(fd.jank_count(1.5), 1, "20ms'lik aralık jank olmalı");
+        assert_eq!(fd.jank_count(1.5), 1, "a 20ms interval must be jank");
         assert!((fd.jank_pct(1.5) - 33.33).abs() < 0.1);
     }
 
-    /// Örnekleme aralığı yenileme hızından TÜRETİLMELİ; sabit değer
-    /// yüksek Hz'de kare kaybettirir.
+    /// The sampling interval must be DERIVED from the refresh rate; a fixed
+    /// value loses frames at high Hz.
     #[test]
     fn sample_interval_shrinks_at_high_refresh() {
         let at60 = sample_interval_ms(16_666_667);
         let at180 = sample_interval_ms(5_555_555);
-        assert!(at180 < at60, "180Hz'de aralık daha kısa olmalı: {at180} vs {at60}");
-        assert!(at180 >= 80, "alt sınır korunmalı");
-        assert!(at60 <= 1000, "üst sınır korunmalı");
+        assert!(at180 < at60, "the interval must be shorter at 180Hz: {at180} vs {at60}");
+        assert!(at180 >= 80, "the lower bound must hold");
+        assert!(at60 <= 1000, "the upper bound must hold");
     }
 
     #[test]
@@ -443,11 +443,11 @@ mod tests {
     #[test]
     fn coverage_reports_missing_frames() {
         let mut fd = FrameData::new();
-        // 10 kare aralığı süren bir span'de yalnızca 6 kare görüldü.
+        // Only 6 frames were seen across a span lasting 10 frame intervals.
         fd.add(&Snapshot { refresh_ns: 5_000_000, presents: vec![
             0, 5_000_000, 10_000_000, 15_000_000, 40_000_000, 50_000_000,
         ]});
         let c = fd.coverage_pct();
-        assert!(c > 50.0 && c < 70.0, "kapsam ~60% olmalı, {c}");
+        assert!(c > 50.0 && c < 70.0, "coverage must be ~60%, {c}");
     }
 }

@@ -35,6 +35,6 @@ sudo journalctl -u liwd-helper -n 25 --no-pager 2>&1 | tail -20 | sed 's/^/  /'
 S "5. polkit servis loglari"
 sudo journalctl -u polkit -n 15 --no-pager 2>&1 | tail -12 | sed 's/^/  /'
 
-S "6. polkit calisiyor mu, eylemleri gorüyor mu"
+S "6. is polkit running and does it see the actions"
 systemctl is-active polkit 2>&1 | sed 's/^/  polkit: /'
 pkaction 2>/dev/null | grep -c "^id.liwinux" | sed 's/^/  taninan liwinux eylemi: /'

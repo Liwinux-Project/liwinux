@@ -1,11 +1,12 @@
-// Odak değişimlerini liwd'ye bildirir.
+// Reports focus changes to liwd.
 //
-// Neden gerekli: Android, pencerenin host'ta küçültüldüğünü BİLMEZ. Oyun alt
-// tabdayken bile Android onu ön planda sanar, profil etkin kalır ve dokunuşlar
-// ekran uzayında gidip kullanıcının gerçek masaüstüne düşer.
+// Why this is needed: Android does NOT know the window was minimised on the
+// host. Even with the game in the background Android still considers it
+// foreground, the profile stays active, and touches are delivered in screen
+// space — landing on the user's real desktop.
 //
-// KWin API'si sürümler arasında değişti (clientActivated -> windowActivated);
-// ikisine de bağlanıyoruz.
+// The KWin API changed between versions (clientActivated -> windowActivated);
+// we connect to both.
 function liwReport(w) {
     var cls = "";
     try { cls = w ? (w.resourceClass || "").toString().toLowerCase() : ""; }
@@ -20,7 +21,8 @@ if (typeof workspace.windowActivated !== "undefined") {
     workspace.clientActivated.connect(liwReport);
 }
 
-// Başlangıç durumunu da bildir; yoksa script yüklenene kadarki odak kaybolur.
+// Report the initial state too, otherwise the focus held before the script
+// loaded is lost.
 var cur = (typeof workspace.activeWindow !== "undefined")
     ? workspace.activeWindow
     : (typeof workspace.activeClient !== "undefined" ? workspace.activeClient : null);

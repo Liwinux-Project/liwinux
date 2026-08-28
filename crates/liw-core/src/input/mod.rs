@@ -1,4 +1,4 @@
-//! Girdi motoru: host klavye/faresini Android dokunuşlarına çevirir.
+//! Input engine: translates host keyboard/mouse into Android touches.
 
 pub mod backend;
 pub mod capture;

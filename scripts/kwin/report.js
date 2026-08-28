@@ -1,18 +1,23 @@
-// Waydroid penceresinin durumunu liwd'ye BİLDİRİR — hiçbir şeyi değiştirmez.
+// Reports the Waydroid window's state to liwd — changes NOTHING.
 //
-// Neden ayrı bir script: fullscreen.js pencereyi tam ekran YAPAR. Durumu
-// öğrenmek için onu çağırmak, sırf bakmak isterken kullanıcının kasten
-// çıktığı tam ekranı geri zorlamak demekti.
+// Why a separate script: fullscreen.js MAKES the window fullscreen. Calling it
+// just to learn the current state would force fullscreen back on a user who
+// deliberately left it.
 //
-// liwd bunu düzenli aralıkla çağırır. Pencere KAYBOLDUĞUNDA tam ekran
-// bayrağını sıfırlar; böylece `show-full-ui` kapatılıp yeniden açılınca
-// yeni pencere tekrar tam ekran yapılır. Session'ın durmasını beklemek
-// yetmiyordu: kullanıcı session'ı durdurmadan pencereyi kapatıp açıyor.
-
-// Yalnızca resourceClass'a bakılır.
+// liwd calls this periodically. When the window DISAPPEARS it clears the
+// fullscreen flag, so that closing and reopening `show-full-ui` gets the new
+// window made fullscreen again. Waiting for the session to stop was not enough:
+// users close and reopen the window without stopping the session.
+// Match on resourceClass ONLY.
 //
-// Başlığa (caption) bakmak TEHLİKELİ: kullanıcının terminali "waydroid ..."
-// komutunu çalıştırırken başlığında o kelimeyi taşır. Gerçekte yaşandı.
+// Matching the caption or resourceName is DANGEROUS: the user's terminal
+// carries that word in its title while running a "waydroid ..." command and
+// would match by accident. This actually happened — a diagnostic tool mistook
+// the user's console window for the Waydroid window. A script matching on the
+// caption could have made that window fullscreen.
+//
+// If several genuine matches exist, the largest by area wins; list order
+// depends on KWin's stacking order and is therefore non-deterministic.
 function liwFindWaydroid(wins) {
     var best = null, bestArea = -1;
     for (var i = 0; i < wins.length; i++) {

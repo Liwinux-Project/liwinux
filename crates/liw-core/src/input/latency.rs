@@ -1,31 +1,32 @@
-//! Gecikme ölçümü.
+//! Latency measurement.
 //!
-//! Zincirin tamamı şu:
+//! The full chain is:
 //!
 //! ```text
-//! tuş → çekirdek evdev → [BİZ] → uinput → libinput → KWin
-//!     → wl_touch → Waydroid → Android girdi hattı → oyun
+//! key -> kernel evdev -> [US] -> uinput -> libinput -> KWin
+//!     -> wl_touch -> Waydroid -> Android input pipeline -> game
 //! ```
 //!
-//! Yalnızca `[BİZ]` kısmını doğrudan ölçebiliyoruz: evdev olayının çekirdek
-//! zaman damgası ile dokunuşu gönderdiğimiz an arasındaki fark. Geri kalanı
-//! bu araçla göremeyiz ve **görüyormuş gibi yapmak yanlış olur** — bu yüzden
-//! rapor neyi kapsayıp neyi kapsamadığını açıkça yazar.
+//! Only the `[US]` part is directly measurable: the difference between the
+//! kernel timestamp of the evdev event and the moment we dispatch the touch.
+//! The rest is invisible to this tool and **pretending otherwise would be
+//! wrong** — so the report states plainly what it does and does not cover.
 
 use std::time::{Duration, SystemTime};
 
 #[derive(Debug, Default)]
 pub struct LatencyStats {
     samples_us: Vec<u64>,
-    /// Zaman damgası geçmişte değil gelecekte görünen olaylar. Saat
-    /// kayması varsa ölçüm anlamsızlaşır; sessizce sıfır saymak yerine sayıyoruz.
+    /// Events whose timestamp appears in the future rather than the past.
+    /// Clock skew makes the measurement meaningless; we count these instead
+    /// of silently treating them as zero.
     pub skipped: usize,
 }
 
 impl LatencyStats {
     pub fn new() -> Self { Self::default() }
 
-    /// evdev olayının zaman damgasından şu ana kadar geçen süreyi kaydeder.
+    /// Records the time elapsed from the evdev event timestamp until now.
     pub fn record(&mut self, event_time: SystemTime) {
         match SystemTime::now().duration_since(event_time) {
             Ok(d) => self.samples_us.push(d.as_micros() as u64),
@@ -46,7 +47,7 @@ impl LatencyStats {
         sorted[i.min(sorted.len() - 1)]
     }
 
-    /// (p50, p95, p99, en kötü) mikrosaniye.
+    /// (p50, p95, p99, worst) in microseconds.
     pub fn percentiles(&self) -> (u64, u64, u64, u64) {
         let mut s = self.samples_us.clone();
         s.sort_unstable();
@@ -61,23 +62,23 @@ impl LatencyStats {
 
     pub fn report(&self, label: &str) -> String {
         if self.is_empty() {
-            // Atlananları burada da söyle: hepsi saat kayması yüzünden
-            // atlandıysa "örnek yok" demek asıl nedeni gizler.
+            // Report the skipped count here too: if every sample was skipped
+            // due to clock skew, saying "no samples" hides the real reason.
             return if self.skipped > 0 {
-                format!("{label}: kullanılabilir örnek yok                          ({} örnek saat kayması nedeniyle atlandı)", self.skipped)
+                format!("{label}: no usable samples                                 ({} skipped due to clock skew)", self.skipped)
             } else {
-                format!("{label}: örnek yok")
+                format!("{label}: no samples")
             };
         }
         let (p50, p95, p99, max) = self.percentiles();
         let mut s = format!(
-            "{label}  ({} örnek)\n\
-             \x20 p50 {:6.2} ms   p95 {:6.2} ms   p99 {:6.2} ms   en kötü {:6.2} ms   ort {:6.2} ms",
+            "{label}  ({} samples)\n\
+             \x20 p50 {:6.2} ms   p95 {:6.2} ms   p99 {:6.2} ms   worst {:6.2} ms   mean {:6.2} ms",
             self.len(),
             p50 as f64 / 1000.0, p95 as f64 / 1000.0, p99 as f64 / 1000.0,
             max as f64 / 1000.0, self.mean_us() as f64 / 1000.0);
         if self.skipped > 0 {
-            s.push_str(&format!("\n  uyarı: {} örnek atlandı (saat kayması)", self.skipped));
+            s.push_str(&format!("\n  warning: {} samples skipped (clock skew)", self.skipped));
         }
         s
     }
@@ -101,17 +102,17 @@ mod tests {
         let l = LatencyStats::new();
         assert_eq!(l.percentiles(), (0, 0, 0, 0));
         assert_eq!(l.mean_us(), 0);
-        assert!(l.report("x").contains("örnek yok"));
+        assert!(l.report("x").contains("no samples"));
     }
 
-    /// Gelecekten gelen zaman damgası sessizce sıfır sayılmamalı.
+    /// A timestamp from the future must not be silently counted as zero.
     #[test]
     fn future_timestamps_are_counted_not_swallowed() {
         let mut l = LatencyStats::new();
         l.record(SystemTime::now() + Duration::from_secs(10));
         assert_eq!(l.len(), 0);
         assert_eq!(l.skipped, 1);
-        assert!(l.report("x").contains("saat kayması"));
+        assert!(l.report("x").contains("clock skew"));
     }
 
     #[test]

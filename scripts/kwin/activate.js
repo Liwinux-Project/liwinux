@@ -1,13 +1,13 @@
-// Yalnızca resourceClass'a bakılır.
+// Match on resourceClass ONLY.
 //
-// Başlığa (caption) veya resourceName'e bakmak TEHLİKELİ: kullanıcının
-// terminali "waydroid ..." komutunu çalıştırırken başlığında o kelimeyi
-// taşır ve yanlışlıkla eşleşir. Gerçekte yaşandı — teşhis aracı kullanıcının
-// konsol penceresini Waydroid penceresi sandı. Başlıkla eşleştiren bir
-// script o pencereyi tam ekran yapabilirdi.
+// Matching the caption or resourceName is DANGEROUS: the user's terminal
+// carries that word in its title while running a "waydroid ..." command and
+// would match by accident. This actually happened — a diagnostic tool mistook
+// the user's console window for the Waydroid window. A script matching on the
+// caption could have made that window fullscreen.
 //
-// Birden fazla gerçek eşleşme olursa en büyük alanlı seçilir; listedeki
-// sıra KWin'in yığın düzenine bağlı olduğu için belirlenimsizdir.
+// If several genuine matches exist, the largest by area wins; list order
+// depends on KWin's stacking order and is therefore non-deterministic.
 function liwFindWaydroid(wins) {
     var best = null, bestArea = -1;
     for (var i = 0; i < wins.length; i++) {
@@ -23,12 +23,12 @@ function liwFindWaydroid(wins) {
 }
 
 
-// Waydroid penceresini ÖNE GETİRİR ve odaklar.
+// RAISES and focuses the Waydroid window.
 //
-// Ayrı script: fullscreen.js pencereyi yalnızca tam ekran DEĞİLSE
-// aktifleştiriyordu, zaten tam ekransa atlıyordu. Ekran görüntüsü almadan
-// önce aktifleştirme şart — `spectacle -a` aktif pencereyi yakalar ve
-// aktif pencere terminal olursa terminalin görüntüsü alınır. Gerçekte oldu.
+// A separate script because fullscreen.js only activated the window when it was
+// NOT already fullscreen, skipping it otherwise. Activation is mandatory before
+// taking a screenshot — `spectacle -a` captures the active window, and if that
+// is the terminal you get a picture of the terminal. This actually happened.
 var wins = (typeof workspace.windowList === "function")
     ? workspace.windowList()
     : (typeof workspace.stackingOrder !== "undefined" ? workspace.stackingOrder

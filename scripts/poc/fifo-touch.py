@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""POC: Waydroid'in dokunuş FIFO'suna DOĞRUDAN yaz ve ekran dışına çık.
+"""POC: write DIRECTLY to Waydroid's touch FIFO and leave the screen.
 
-İki iddiayı aynı anda sınar:
+It tests two claims at once:
 
   1. Konteynerdeki `/dev/input/wl_touch_events` FIFO'suna ham `input_event`
-     yazmak Android'e gerçek bir çoklu dokunuş verir.
+     writing gives Android a genuine multi-touch.
      (uinput → libinput → KWin → wl_touch zincirini TAMAMEN atlar.)
 
-  2. Bu yolda koordinat KIRPILMAZ. Parmak ekranın dışına çıkabilir ve
-     dokunuş yine de oyuna ulaşır — çünkü:
-       * FIFO'da çekirdeğin evdev katmanı yok (ABS kırpması yok),
-       * TouchInputMapper::cookPointerData() kırpmaz,
-       * InputDispatcher yalnızca DOWN'da pencere seçer; MOVE mandallanmış
+  2. Coordinates are NOT CLAMPED on this path. The finger can leave the
+     screen and the touch still reaches the game — because:
+       * the FIFO has no kernel evdev layer (no ABS clamping),
+       * TouchInputMapper::cookPointerData() does not clamp,
+       * InputDispatcher only picks a window on DOWN; MOVE goes to the latched
          pencereye gider.
-     Doğruysa "kenara gelince ortala" ihtiyacı KÖKTEN ortadan kalkar.
+     If true, the need to "recentre at the edge" disappears at the root.
 
-Kullanım (root şart — FIFO system:system 0660):
+Usage (root required — the FIFO is system:system 0660):
 
     sudo python3 scripts/poc/fifo-touch.py
 
-Önce dokunuş göstergesini aç ki gözle görebilelim:
+Turn on the touch indicator first so it is visible:
 
     waydroid shell -- settings put system pointer_location 1
 """
@@ -40,8 +40,8 @@ FIFO = "dev/input/wl_touch_events"
 
 
 def container_pid():
-    """LXC konteynerinin init pid'i. Android süreçlerinden geriye gidiyoruz:
-    isim eşlemesi kırılgan, ama surfaceflinger konteyner dışında olamaz."""
+    """Init pid of the LXC container. We work backwards from Android processes:
+    name matching is fragile, but surfaceflinger cannot exist outside it."""
     for name in ("surfaceflinger", "system_server"):
         out = subprocess.run(["pgrep", "-x", name], capture_output=True, text=True)
         for line in out.stdout.split():
@@ -57,14 +57,14 @@ def monotonic_tv():
 def frame(fd, events):
     """Bir kare = tek write().
 
-    Tek çağrı ŞART: POSIX yalnızca PIPE_BUF'tan (4096) kısa yazmaların
-    bölünmezliğini garanti eder. Kareyi parçalarsak hwcomposer'ın kendi
-    yazmaları araya girer ve EventHub bozuk kayıt okur.
+    A single call is MANDATORY: POSIX only guarantees atomicity for writes
+    shorter than PIPE_BUF (4096). Splitting the frame lets hwcomposer's own
+    writes slip in and EventHub reads a corrupt record.
     """
     sec, usec = monotonic_tv()
     buf = b"".join(struct.pack(EV_FMT, sec, usec, t, c, v) for t, c, v in events)
     buf += struct.pack(EV_FMT, sec, usec, EV_SYN, SYN_REPORT, 0)
-    assert len(buf) <= 4096, "kare PIPE_BUF'u aşıyor"
+    assert len(buf) <= 4096, "frame exceeds PIPE_BUF"
     os.write(fd, buf)
 
 
@@ -93,60 +93,60 @@ def prop(key, default=None):
 
 def main():
     if os.geteuid() != 0:
-        sys.exit("root gerekiyor: FIFO system:system 0660.  sudo ile çalıştır.")
+        sys.exit("root required: the FIFO is system:system 0660.  Run with sudo.")
 
     pid = container_pid()
     if not pid:
-        sys.exit("Waydroid konteyneri çalışmıyor (surfaceflinger yok).")
+        sys.exit("The Waydroid container is not running (no surfaceflinger).")
 
     path = f"/proc/{pid}/root/{FIFO}"
     if not os.path.exists(path):
-        sys.exit(f"{path} yok — hwcomposer FIFO'yu henüz kurmamış olabilir.")
+        sys.exit(f"{path} does not exist — hwcomposer may not have created the FIFO yet.")
 
     st = os.stat(path)
     import stat as st_mod
     print(f"FIFO   : {path}")
-    print(f"tür    : {'FIFO ✅' if st_mod.S_ISFIFO(st.st_mode) else 'FIFO DEĞİL ❌'}"
+    print(f"type   : {'FIFO ✅' if st_mod.S_ISFIFO(st.st_mode) else 'NOT A FIFO ❌'}"
           f"  mod={oct(st.st_mode & 0o777)} uid={st.st_uid} gid={st.st_gid}")
 
     w = int(prop("waydroid.display_width", "0"))
     h = int(prop("waydroid.display_height", "0"))
     print(f"ekran  : {w}x{h}  (waydroid.display_width/height)")
     if not w or not h:
-        sys.exit("display_width/height okunamadı.")
+        sys.exit("could not read display_width/height.")
 
-    # O_NONBLOCK: okuyucu (EventHub) zaten açık olmalı. Değilse ENXIO alırız
+    # O_NONBLOCK: the reader (EventHub) should already be open. If not we get
     # ve bu, "Android bu FIFO'yu dinlemiyor" demektir — sessizce beklemek
-    # yerine bunu söylemek istiyoruz.
+    # ENXIO, and we would rather say that than hang.
     try:
         fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
     except OSError as e:
         if e.errno == errno.ENXIO:
-            sys.exit("ENXIO: FIFO'nun okuyucusu yok — EventHub bu boruyu açmamış.")
+            sys.exit("ENXIO: the FIFO has no reader — EventHub has not opened this pipe.")
         raise
-    print("açıldı : O_WRONLY|O_NONBLOCK ✅\n")
+    print("opened : O_WRONLY|O_NONBLOCK ✅\n")
 
-    slot = 9          # yüksek slot: gerçek dokunuşlarla çakışmasın
+    slot = 9          # a high slot, so it does not collide with real touches
     y = h // 2
-    x0 = int(w * 0.72)          # sağ yarı: FPS oyunlarında bakış bölgesi
+    x0 = int(w * 0.72)          # right half: the look area in FPS games
 
-    # --- 1. aşama: ekran İÇİNDE sürükleme (yol çalışıyor mu) ---
-    print("1) ekran içi sürükleme: x = %d → %d" % (x0, w - 40))
+    # --- stage 1: drag INSIDE the screen (does the path work?) ---
+    print("1) on-screen drag: x = %d -> %d" % (x0, w - 40))
     down(fd, slot, x0, y)
     time.sleep(0.02)
     for x in range(x0, w - 40, 24):
         move(fd, slot, x, y)
         time.sleep(0.005)
 
-    # --- 2. aşama: ekran DIŞINA devam (kırpma var mı) ---
+    # --- stage 2: continue OFF-SCREEN (is there clamping?) ---
     far = w * 3
-    print("2) ekran DIŞI sürükleme: x = %d → %d  (ekran genişliği %d)" % (w - 40, far, w))
+    print("2) off-screen drag: x = %d -> %d  (screen width %d)" % (w - 40, far, w))
     for x in range(w - 40, far, 24):
         move(fd, slot, x, y)
         time.sleep(0.005)
 
-    # --- 3. aşama: geri dön ve kaldır ---
-    print("3) geri dönüş ve kaldırma")
+    # --- stage 3: return and lift ---
+    print("3) return and lift")
     for x in range(far, x0, -48):
         move(fd, slot, x, y)
         time.sleep(0.005)
@@ -155,12 +155,12 @@ def main():
 
     print("""
 Ne aranacak:
-  * Aşama 1 iz bırakıyorsa  → FIFO yolu çalışıyor (compositor atlandı).
-  * Aşama 2'de oyun/uygulama DÖNMEYE DEVAM ediyorsa → kırpma yok:
-    kenarda ortalama ihtiyacı ortadan kalkar.
-  * pointer_location göstergesinde X değeri 2560'ı geçiyorsa doğrulandı.
-  * Aşama 2'de hareket duruyorsa → o oyun ekran dışı koordinatı
-    tolere etmiyor; sınırlı ama GENİŞ bir kutu (ör. 3 ekran) kullanılmalı.
+  * If stage 1 leaves a trace  -> the FIFO path works (compositor bypassed).
+  * If the game/app KEEPS TURNING in stage 2 -> there is no clamping:
+    the need to recentre at the edge disappears.
+  * If X exceeds 2560 in the pointer_location overlay, it is verified.
+  * If movement stops in stage 2 -> that game does not tolerate off-screen
+    coordinates; use a bounded but WIDE box (e.g. 3 screens).
 """)
 
 

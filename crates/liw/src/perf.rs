@@ -1,21 +1,21 @@
-//! `liw perf` — performans kaldıraçlarının teşhisi.
+//! `liw perf` — diagnosis of performance levers.
 //!
-//! Bu komut HİÇBİR ŞEYİ DEĞİŞTİRMEZ. Sistemin halini okur ve nerede
-//! performans bırakıldığını söyler. Uygulama ayrı bir adım.
+//! This command CHANGES NOTHING. It reads the state of the system and reports
+//! where performance is being left behind. Applying is a separate step.
 
 use anyhow::Result;
 use liw_core::perf::{self, Finding, Impact, Status, VirglClient};
 use std::process::Command;
 
-/// Bir dosyayı okur; yoksa boş dize döner (kaldıraç "yok" sayılır).
+/// Reads a file; returns an empty string if absent (the lever counts as "missing").
 fn read(path: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
-/// Komutu çalıştırıp stdout'unu döndürür. Başarısızsa boş dize.
+/// Runs a command and returns its stdout. Empty string on failure.
 ///
-/// Çıkış kodu KONTROL EDİLİYOR: başarısız komutun stdout'unu geçerli veri
-/// saymak daha önce sessiz yanlış teşhise yol açmıştı.
+/// The exit code IS CHECKED: treating a failed command's stdout as valid data
+/// previously caused a silent misdiagnosis.
 fn run(cmd: &str, args: &[&str]) -> String {
     Command::new(cmd).args(args).output().ok()
         .filter(|o| o.status.success())
@@ -23,7 +23,7 @@ fn run(cmd: &str, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-/// Sürecin saniye cinsinden yaşı. Yoksa 0.
+/// Age of a process in seconds. 0 if absent.
 fn process_age(pattern: &str) -> u64 {
     run("pgrep", &["-f", pattern]).lines().next()
         .map(|pid| run("ps", &["-o", "etimes=", "-p", pid.trim()]))
@@ -31,11 +31,11 @@ fn process_age(pattern: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// virgl istemci ağaçlarının köklerini bulur.
+/// Finds the roots of the virgl client trees.
 ///
-/// Ağaç yapısı: ana `virgl_test_server` her istemci için bir çocuk
-/// çatallar, o da render sunucularını doğurur. İstemci sayısı ANA
-/// SÜRECİN DOĞRUDAN ÇOCUKLARI kadardır — toplam süreç sayısı değil.
+/// Tree shape: the main `virgl_test_server` forks a child per client, and that
+/// child spawns the render servers. The number of clients equals the MAIN
+/// PROCESS'S DIRECT CHILDREN — not the total process count.
 fn virgl_clients() -> Vec<VirglClient> {
     let raw = run("ps", &["-eo", "pid=,ppid=,etimes=,args="]);
     let rows: Vec<(u32, u32, u64)> = raw.lines()
@@ -47,7 +47,7 @@ fn virgl_clients() -> Vec<VirglClient> {
         })
         .collect();
 
-    // Ana süreç: virgl_test_server olmayan bir ata tarafından doğurulan.
+    // Main process: spawned by an ancestor that is not virgl_test_server.
     let pids: Vec<u32> = rows.iter().map(|(p, _, _)| *p).collect();
     let masters: Vec<u32> = rows.iter()
         .filter(|(_, pp, _)| !pids.contains(pp))
@@ -63,8 +63,8 @@ pub fn status() -> Result<()> {
     const CPU: &str = "/sys/devices/system/cpu/cpu0/cpufreq";
 
     let refresh = perf::parse_active_refresh(&run("kscreen-doctor", &["-o"]));
-    // Oturumun grafik yaşı SurfaceFlinger'dan alınıyor: bu oturumun GPU
-    // istemcileri ondan sonra doğmak zorunda.
+    // The session's graphics age comes from SurfaceFlinger: this session's GPU
+    // clients must have been born after it.
     let session_age = process_age("surfaceflinger");
 
     let findings = vec![
@@ -86,20 +86,20 @@ pub fn status() -> Result<()> {
 }
 
 fn report(findings: &[Finding]) {
-    println!("\n  Performans teşhisi\n  {}", "─".repeat(60));
+    println!("\n  Performance diagnosis\n  {}", "─".repeat(60));
     for f in findings {
         let (mark, label) = match f.status {
             Status::Optimal => ("✓", "hedefte"),
-            Status::Improvable => ("!", "iyileştirilebilir"),
-            Status::Unavailable => ("·", "bu makinede yok"),
+            Status::Improvable => ("!", "improvable"),
+            Status::Unavailable => ("·", "not available here"),
         };
         println!("\n  {mark} {}  [{label}]", f.title);
-        println!("      şu an : {}", f.current);
+        println!("      current: {}", f.current);
         if f.status == Status::Improvable {
             println!("      hedef : {}", f.target);
         }
         if f.impact == Impact::Unknown && f.status == Status::Improvable {
-            println!("      etki  : ÖLÇÜLMEDİ");
+            println!("      impact : NOT MEASURED");
         }
         for line in wrap(&f.note, 66) {
             println!("      {line}");
@@ -108,15 +108,15 @@ fn report(findings: &[Finding]) {
 
     let (ok, imp, na) = perf::summarise(findings);
     println!("\n  {}", "─".repeat(60));
-    println!("  {ok} hedefte · {imp} iyileştirilebilir · {na} yok\n");
+    println!("  {ok} on target · {imp} improvable · {na} unavailable\n");
     if imp > 0 {
-        println!("  Hiçbirinin etkisi bu sistemde ÖLÇÜLMEDİ. Uygulamadan önce");
-        println!("  taban çizgisi al:\n");
+        println!("  None of these has been MEASURED on this system. Take a");
+        println!("  baseline before applying anything:\n");
         println!("      liw bench <paket> --duration 60\n");
     }
 }
 
-/// Notu sözcük sınırından katlar.
+/// Wraps a note at word boundaries.
 fn wrap(s: &str, width: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut line = String::new();
@@ -137,10 +137,10 @@ mod tests {
 
     #[test]
     fn wrap_respects_width_and_keeps_all_words() {
-        let s = "bir iki üç dört beş altı yedi sekiz dokuz on";
+        let s = "one two three four five six seven eight nine ten";
         let lines = wrap(s, 12);
         assert!(lines.iter().all(|l| l.chars().count() <= 12), "{lines:?}");
-        assert_eq!(lines.join(" "), s, "sözcük kaybolmamalı");
+        assert_eq!(lines.join(" "), s, "no word may be lost");
     }
 
     #[test]
@@ -148,10 +148,10 @@ mod tests {
         assert!(wrap("", 20).is_empty());
     }
 
-    /// Tek sözcük genişlikten uzunsa yine de kaybolmamalı.
+    /// A single word longer than the width must still not be lost.
     #[test]
     fn wrap_keeps_overlong_word() {
-        assert_eq!(wrap("aşırıuzunbirsözcük", 5), vec!["aşırıuzunbirsözcük"]);
+        assert_eq!(wrap("anextremelylongword", 5), vec!["anextremelylongword"]);
     }
 
     #[test]

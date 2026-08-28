@@ -1,4 +1,4 @@
-//! Host kaynak örneklemesi. Root gerektirmez.
+//! Host resource sampling. Requires no root.
 
 use std::process::Stdio;
 use tokio::process::Command;
@@ -7,27 +7,27 @@ use tokio::process::Command;
 pub struct HostSample {
     pub gpu_pct: f64,
     pub vram_mb: f64,
-    /// Toplam VRAM. Kullanılanı TEK BAŞINA göstermek yanıltıyor:
-    /// "4094 MB" doluymuş gibi okunuyor, oysa 12288'in üçte biri.
+    /// Total VRAM. Showing the used amount ALONE is misleading:
+    /// "4094 MB" reads as full, when it is a third of 12288.
     pub vram_total_mb: f64,
     pub cpu_pct: f64,
     pub ram_used_mb: f64,
     pub mem_pressure: f64,
 }
 
-/// `/proc/stat` farkından CPU kullanımı hesaplar.
+/// Computes CPU usage from the delta of `/proc/stat`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CpuMeter {
     prev_total: u64,
     prev_idle: u64,
-    /// İlk örnek alındı mı. Bayraksız, ilk çağrıda prev_* sıfır olduğu için
-    /// fark "açılıştan beri geçen tüm süre" olur ve anlamsız bir yüzde çıkar.
+    /// Whether the first sample was taken. Without the flag, prev_* is zero on
+    /// the first call so the delta becomes "all time since boot" and yields a
     primed: bool,
 }
 
 impl CpuMeter {
-    /// İlk çağrı 0 döner (fark yok); bu doğru davranış — uydurma bir
-    /// değer vermek ilk örneği bozar.
+    /// The first call returns 0 (no delta); that is correct behaviour —
+    /// inventing a value would corrupt the first sample.
     pub fn sample(&mut self, proc_stat_first_line: &str) -> f64 {
         let v: Vec<u64> = proc_stat_first_line.split_whitespace().skip(1)
             .filter_map(|x| x.parse().ok()).collect();
@@ -65,7 +65,7 @@ pub fn parse_pressure_some_avg10(pressure: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// `nvidia-smi` çıktısı: "39, 3493, 12288" -> (gpu%, kullanılan, toplam)
+/// `nvidia-smi` output: "39, 3493, 12288" -> (gpu%, used, total)
 pub fn parse_nvidia(csv: &str) -> (f64, f64, f64) {
     let mut it = csv.trim().split(',').map(|x| x.trim().parse::<f64>().unwrap_or(0.0));
     (it.next().unwrap_or(0.0), it.next().unwrap_or(0.0), it.next().unwrap_or(0.0))
@@ -93,35 +93,35 @@ pub async fn sample(cpu: &mut CpuMeter) -> HostSample {
     }
 }
 
-/// Boottan beri geçen süre (ms), `CLOCK_MONOTONIC`.
+/// Milliseconds since boot, `CLOCK_MONOTONIC`.
 ///
-/// Kare zaman damgaları ve `logcat -v monotonic` bu eksende; host
-/// örneklerini de aynı eksene koymadan korelasyon yapılamaz.
+/// Frame timestamps and `logcat -v monotonic` are on this axis; correlation is
+/// impossible unless host samples sit on the same axis.
 pub fn monotonic_ms() -> f64 {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-    // SAFETY: geçerli bir timespec'e yazıyoruz.
+    // SAFETY: writing into a valid timespec.
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
     ts.tv_sec as f64 * 1000.0 + ts.tv_nsec as f64 / 1e6
 }
 
-/// YEREL saatle gün içi saniye.
+/// Seconds into the day, in LOCAL time.
 ///
-/// Yalnızca duvar saatli logcat çıktısını hizalamak için gerekiyor
-/// (helper'ın eski sürümü). Konteyner host çekirdeğini ve aynı saat
-/// dilimini kullandığı için bu karşılaştırma geçerli.
+/// Only needed to align wall-clock logcat output (from an older helper). The
+/// comparison is valid because the container uses the host kernel and the same
+/// timezone.
 pub fn local_secs_of_day() -> f64 {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let t = now.as_secs() as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: geçerli bir time_t ve tm veriyoruz; localtime_r yeniden
-    // girişli, global durum kullanmıyor.
+    // SAFETY: passing a valid time_t and tm; localtime_r is reentrant and uses
+    // no global state.
     unsafe { libc::localtime_r(&t, &mut tm) };
     tm.tm_hour as f64 * 3600.0 + tm.tm_min as f64 * 60.0 + tm.tm_sec as f64
         + now.subsec_millis() as f64 / 1000.0
 }
 
-/// Örnek dizisinden ortalama ve tepe.
+/// Mean and peak of a sample series.
 pub fn summarise(vals: &[f64]) -> (f64, f64) {
     if vals.is_empty() { return (0.0, 0.0); }
     let mean = vals.iter().sum::<f64>() / vals.len() as f64;
@@ -137,7 +137,7 @@ mod tests {
     fn cpu_first_sample_is_zero_not_garbage() {
         let mut m = CpuMeter::default();
         let v = m.sample("cpu  100 0 100 800 0 0 0 0 0 0");
-        assert_eq!(v, 0.0, "ilk örnekte fark yok, uydurma değer verilmemeli");
+        assert_eq!(v, 0.0, "no delta on the first sample; no value may be invented");
     }
 
     #[test]
@@ -167,8 +167,8 @@ mod tests {
         assert_eq!(parse_nvidia("39, 3493, 12288"), (39.0, 3493.0, 12288.0));
     }
 
-    /// Toplam yoksa 0 dönmeli — uydurma bir toplam "VRAM dolu" yalanı
-    /// söyletirdi.
+    /// Without a total it must return 0 — inventing one would tell a "VRAM is
+    /// full" lie.
     #[test]
     fn missing_vram_total_is_zero_not_guessed() {
         assert_eq!(parse_nvidia("39, 3493"), (39.0, 3493.0, 0.0));
@@ -182,7 +182,8 @@ mod tests {
         assert_eq!(summarise(&[]), (0.0, 0.0));
     }
 
-    /// Monotonik saat ilerlemeli ve makul olmalı; korelasyonun ekseni bu.
+    /// The monotonic clock must advance and stay plausible; it is the axis
+    /// that correlation rests on.
     #[test]
     fn monotonic_clock_advances() {
         let a = monotonic_ms();

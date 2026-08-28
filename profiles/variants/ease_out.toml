@@ -12,7 +12,7 @@
 # easing = "ease_out": 75% of the distance is covered in the first half of the duration.
 # The game crosses its swipe threshold sooner, so it reacts sooner.
 # Options: "linear" (default), "ease_out", "ease_out_strong".
-name = "Subway Surfers (WASD, ease_out)"
+name = "Subway Surfers (ease_out)"
 package = "com.kiloo.subwaysurf"
 
 [bindings.left]

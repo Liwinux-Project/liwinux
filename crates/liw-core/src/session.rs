@@ -1,21 +1,23 @@
-//! Session yaşam döngüsü ve sağlık gözetimi.
+//! Session lifecycle and health supervision.
 //!
-//! # Neden bu modül var
+//! # Why this module exists
 //!
-//! `waydroid session start` ön planda çalışan bir süreçtir. Öldüğü anda zincir şu:
+//! `waydroid session start` runs in the foreground. The moment it dies the
+//! chain is:
 //!
 //! ```text
-//! composer HAL ölür
+//! composer HAL dies
 //!   -> SurfaceFlinger SIGABRT ("HIDL return status ... DEAD_OBJECT")
-//!   -> system_server ölür
-//!   -> tüm uygulamalar DeadSystemException
+//!   -> system_server dies
+//!   -> every app gets DeadSystemException
 //! ```
 //!
-//! Android bundan tam kurtulamaz: sistem yeniden başlar ama **varsayılan rota
-//! geri gelmez**, yani ağsız bir zombi kalır. Kullanıcıya görünen belirti
-//! ("Play Store internet yok" gibi) kök nedene hiç benzemez.
+//! Android never fully recovers: the system restarts but the **default route
+//! does not come back**, leaving a network-less zombie. The visible symptom
+//! ("Play Store has no internet") looks nothing like the root cause.
 //!
-//! Bu yüzden session asla bir terminale bağlı olmamalı ve sahibi `liwd` olmalı.
+//! That is why the session must never be tied to a terminal, and `liwd` must
+//! own it.
 
 use crate::helper::HelperClient;
 use crate::waydroid::{Status, Waydroid, WaydroidError};
@@ -23,13 +25,13 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 
-/// Session'ın gözlemlenen durumu.
+/// Observed state of the session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SessionState {
     Stopped,
     Starting,
     Running,
-    /// Süreçler ayakta ama sağlık kontrolleri geçmiyor (ağsız zombi hali).
+    /// Processes are up but health checks fail (the network-less zombie state).
     Degraded,
     Recovering,
 }
@@ -46,64 +48,64 @@ impl SessionState {
     }
 }
 
-/// Tek tek sağlık göstergeleri. Hepsi ayrı ayrı kırılabilir; bu yüzden
-/// tek bir bayrak yerine ayrıntı tutuyoruz — bugünkü teşhis deneyimi
-/// "çalışıyor/çalışmıyor" ikiliğinin yetmediğini gösterdi.
+/// Individual health signals. Each can break on its own, which is why we keep
+/// the detail rather than a single flag — diagnostic experience showed a
+/// "works / does not work" binary is not enough.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Health {
     pub session_running: bool,
     pub container_running: bool,
     pub has_ip: bool,
     pub boot_completed: bool,
-    /// Waydroid composer HAL süreci yaşıyor mu. Ölürse çökme zinciri başlar.
+    /// Is the Waydroid composer HAL process alive? Its death starts the chain.
     pub composer_alive: bool,
-    /// composer, session'dan SONRA yeniden başlamış mı.
+    /// Did composer restart AFTER the session?
     ///
-    /// Bu durumda session'ın binder bağlantısı bayattır: süreçler ayakta
-    /// görünür, IP vardır, boot tamamlanmıştır — ama pencere oluşmaz ve
-    /// `waydroid app launch` "Sending reply failed" der. Yani "her şey
-    /// yolunda" diyen bir sağlık kontrolü yanıltıcı olur.
+    /// If so the session's binder connection is stale: processes look alive,
+    /// there is an IP, boot completed — but no window appears and
+    /// `waydroid app launch` says "Sending reply failed". A health check
+    /// reporting "all good" would be misleading.
     pub composer_stale: bool,
 }
 
 impl Health {
-    /// Oyun oynanabilir mi? Tüm göstergeler gerekli.
+    /// Is the game playable? Every signal is required.
     pub fn is_healthy(&self) -> bool {
         self.session_running && self.container_running
             && self.has_ip && self.boot_completed
             && self.composer_alive && !self.composer_stale
     }
-    /// Neyin eksik olduğunu insan okuyabilsin diye.
+    /// So a human can read what is missing.
     pub fn failures(&self) -> Vec<&'static str> {
         let mut v = Vec::new();
-        if !self.session_running { v.push("session çalışmıyor"); }
-        if !self.container_running { v.push("konteyner çalışmıyor"); }
-        if !self.composer_alive { v.push("composer HAL ölü (çökme zinciri riski)"); }
+        if !self.session_running { v.push("session not running"); }
+        if !self.container_running { v.push("container not running"); }
+        if !self.composer_alive { v.push("composer HAL dead (crash-chain risk)"); }
         if self.composer_stale {
-            v.push("composer session'dan sonra yeniden başlamış — bayat binder bağlantısı                     (pencere açılmaz, app launch 'Sending reply failed' der)");
+            v.push("composer restarted after the session — stale binder connection                     (no window appears, app launch says 'Sending reply failed')");
         }
-        if !self.boot_completed { v.push("Android boot tamamlanmadı"); }
-        if !self.has_ip { v.push("IP atanmamış"); }
+        if !self.boot_completed { v.push("Android boot did not complete"); }
+        if !self.has_ip { v.push("no IP assigned"); }
         v
     }
 }
 
-/// Android günlüğünde AudioFlinger'ın yayınlanamadığı işareti.
+/// Marker in the Android log for AudioFlinger failing to publish.
 const AF_MARKER: &str = "AudioFlinger not published";
 
-/// Ses altyapısının kilitlenip kilitlenmediğini günlükten anlar.
+/// Detects from the log whether the audio stack is wedged.
 ///
-/// Zincir şöyle işliyor ve tamamı ölçüldü: ses HAL'i kilitlenir →
-/// `audioserver` ona `registerClient` çağrısında takılır → `mediautils`
-/// gözcüsü 5 saniye sonra süreci abort eder → yeniden başlar, aynı yerde
-/// takılır. Sonuç: `AudioFlinger` servis yöneticisine HİÇ yayınlanamaz ve
-/// sese dokunan her uygulama sonsuza kadar bekler.
+/// The chain works like this and all of it was measured: the audio HAL wedges
+/// -> `audioserver` blocks in its `registerClient` call -> the `mediautils`
+/// watchdog aborts the process after 5 seconds -> it restarts and wedges in
+/// the same place. Result: `AudioFlinger` NEVER publishes to the service
+/// manager and every app that touches audio waits forever.
 ///
-/// Belirti kullanıcıya "oyun açılış ekranında donuyor" olarak görünür;
-/// sesle ilgisi olduğu hiçbir yerden anlaşılmaz. Bu yüzden tespit şart.
+/// The symptom the user sees is "the game freezes on its loading screen"; there
+/// is nothing anywhere to suggest audio is involved. Hence the detection.
 ///
-/// Tek satır YETMEZ: açılış sırasında AudioFlinger gerçekten birkaç kez
-/// beklenir ve bu normaldir. Yalnızca ısrarlı tekrar sorunu gösterir.
+/// ONE line is NOT enough: during boot AudioFlinger genuinely is waited for a
+/// few times and that is normal. Only persistent repetition indicates a fault.
 pub fn audio_flinger_stalled(log: &str) -> bool {
     const MIN_REPEATS: usize = 5;
     log.lines().filter(|l| l.contains(AF_MARKER)).count() >= MIN_REPEATS
@@ -113,8 +115,8 @@ pub fn audio_flinger_stalled(log: &str) -> bool {
 pub struct SupervisorConfig {
     pub poll_interval: Duration,
     pub boot_timeout: Duration,
-    /// Ardışık kaç sağlıksız yoklamadan sonra kurtarma denensin.
-    /// 1 çok agresif olur: geçici dalgalanmalarda gereksiz yeniden başlatma yapar.
+    /// After how many consecutive unhealthy polls to attempt recovery.
+    /// 1 is too aggressive: transient dips would trigger pointless restarts.
     pub unhealthy_threshold: u32,
     pub max_recovery_attempts: u32,
     pub auto_recover: bool,
@@ -135,7 +137,8 @@ impl Default for SupervisorConfig {
 pub struct Supervisor {
     wd: Waydroid,
     cfg: SupervisorConfig,
-    /// Ayrıcalıklı okumalar için. Yoksa boot durumu ÖLÇÜLEMEZ, çıkarsanır.
+    /// For privileged reads. Without it the boot state cannot be MEASURED, only
+    /// inferred.
     helper: Option<HelperClient>,
 }
 
@@ -144,12 +147,12 @@ impl Supervisor {
         Self { wd: Waydroid::new(), cfg, helper: None }
     }
 
-    /// liwd-helper'a bağlanmayı dener. Başarısızlık ölümcül değildir:
-    /// süpervizör helper'sız da çalışır, yalnızca boot durumu ölçülemez.
+    /// Tries to connect to liwd-helper. Failure is not fatal: the supervisor
+    /// works without it, only the boot state cannot be measured.
     pub async fn with_helper(mut self) -> Self {
         match HelperClient::connect().await {
-            Ok(h) => { tracing::info!("liwd-helper bağlandı — boot durumu ölçülecek"); self.helper = Some(h); }
-            Err(e) => tracing::warn!(hata = %e, "liwd-helper yok — boot durumu çıkarsanacak"),
+            Ok(h) => { tracing::info!("liwd-helper connected — boot state will be measured"); self.helper = Some(h); }
+            Err(e) => tracing::warn!(error = %e, "no liwd-helper — boot state will be inferred"),
         }
         self
     }
@@ -162,17 +165,17 @@ impl Supervisor {
         self.wd.status().await
     }
 
-    /// Session'ı **terminalden bağımsız** başlatır.
+    /// Starts the session **detached from any terminal**.
     ///
-    /// `setsid` ile yeni oturum lideri yapılır ve stdio kapatılır; böylece
-    /// çağıran kabuk ölse (Ctrl+C, pencere kapatma) session ayakta kalır.
+    /// `setsid` makes it a new session leader and stdio is closed, so the
+    /// session survives the calling shell dying (Ctrl+C, closing the window).
     pub async fn start_detached(&self) -> Result<(), WaydroidError> {
         let st = self.wd.status().await.unwrap_or_default();
         if st.session_running() {
-            tracing::info!("session zaten çalışıyor");
+            tracing::info!("session already running");
             return Ok(());
         }
-        tracing::info!("session başlatılıyor (ayrık)");
+        tracing::info!("starting session (detached)");
         Command::new("setsid")
             .args(["--fork", "waydroid", "session", "start"])
             .stdin(Stdio::null())
@@ -189,11 +192,11 @@ impl Supervisor {
         self.wd.session_stop().await
     }
 
-    /// Composer HAL süreci yaşıyor mu?
+    /// Is the composer HAL process alive?
     ///
-    /// Bu, çökme zincirinin ilk halkası — SurfaceFlinger'ın DEAD_OBJECT alması
-    /// bundan sonra gelir. Süreç adı vendor imajına göre değişebildiği için
-    /// tam eşleşme yerine desen araması yapıyoruz.
+    /// This is the first link of the crash chain — SurfaceFlinger getting
+    /// DEAD_OBJECT comes after it. The process name varies by vendor image, so
+    /// we pattern-match rather than compare exactly.
     async fn composer_alive(&self) -> bool {
         Command::new("pgrep")
             .args(["-f", "hardware.graphics.composer"])
@@ -202,10 +205,10 @@ impl Supervisor {
             .map(|s| s.success()).unwrap_or(false)
     }
 
-    /// Süreç başlangıç zamanını jiffy cinsinden okur (/proc/PID/stat, 22. alan).
+    /// Reads a process start time in jiffies (/proc/PID/stat, field 22).
     async fn start_time(pid: &str) -> Option<u64> {
         let stat = tokio::fs::read_to_string(format!("/proc/{pid}/stat")).await.ok()?;
-        // comm alanı boşluk içerebilir; ')' sonrasından say.
+        // The comm field may contain spaces; count from after the ')'.
         let rest = stat.rsplit_once(')')?.1;
         rest.split_whitespace().nth(19)?.parse().ok()
     }
@@ -222,13 +225,13 @@ impl Supervisor {
         newest
     }
 
-    /// composer, session sürecinden belirgin şekilde sonra mı başlamış?
+    /// Did composer start noticeably later than the session process?
     ///
-    /// Eşik gerekli: normal başlatmada composer session'dan birkaç saniye
-    /// sonra doğar. Sorun, ARADAN UZUN ZAMAN GEÇTİKTEN sonra yeniden
-    /// doğmasıdır. 60 saniye, normal başlatma gecikmesinin çok üstünde.
+    /// A threshold is needed: on a normal start composer appears a few seconds
+    /// after the session. The problem is it being reborn LONG AFTERWARDS.
+    /// 60 seconds is far above the normal startup delay.
     async fn composer_stale(&self) -> bool {
-        const HZ: u64 = 100; // çekirdek USER_HZ
+        const HZ: u64 = 100; // kernel USER_HZ
         const THRESHOLD_SEC: u64 = 60;
         let (Some(sess), Some(comp)) = (
             Self::newest_start("waydroid session start").await,
@@ -241,15 +244,15 @@ impl Supervisor {
         let st = self.wd.status().await.unwrap_or_default();
         let composer = self.composer_alive().await;
         let stale = composer && self.composer_stale().await;
-        // boot_completed root ister. Önce helper'a sor (GERÇEK ölçüm);
-        // helper yoksa doğrudan dene (liwd root çalışmadığı için genelde
-        // başarısız); o da olmazsa session durumundan ÇIKARSA.
-        // Çıkarsama son çare: yanlış negatif gereksiz yeniden başlatma yapar.
+        // boot_completed needs root. Ask the helper first (a REAL measurement);
+        // without a helper try directly (usually fails because liwd does not run
+        // as root); failing that, INFER from the session state.
+        // Inference is the last resort: a false negative causes a pointless restart.
         let boot = match &self.helper {
             Some(h) => match h.boot_completed().await {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::warn!(hata = %e, "helper boot sorgusu başarısız — çıkarsanıyor");
+                    tracing::warn!(error = %e, "helper boot query failed — inferring");
                     st.session_running()
                 }
             },
@@ -274,12 +277,12 @@ impl Supervisor {
         if h.is_healthy() { SessionState::Running } else { SessionState::Degraded }
     }
 
-    /// Bozulmuş session'ı tam döngüyle kurtarır.
+    /// Recovers a broken session with a full cycle.
     ///
-    /// Kısmi kurtarma işe yaramaz: composer öldüğünde Android içeriden
-    /// toparlanamaz, session'ın komple yeniden kurulması gerekir.
+    /// Partial recovery does not work: once composer dies Android cannot
+    /// recover from the inside; the session must be rebuilt completely.
     pub async fn recover(&self) -> Result<(), WaydroidError> {
-        tracing::warn!("session kurtarılıyor (tam yeniden başlatma)");
+        tracing::warn!("recovering session (full restart)");
         let _ = self.wd.session_stop().await;
         tokio::time::sleep(Duration::from_secs(5)).await;
         self.start_detached().await
@@ -288,7 +291,7 @@ impl Supervisor {
 
 #[cfg(test)]
 mod tests {
-    /// Gerçek ölçüm: HAL kilitliyken günlük bu satırla dolar.
+    /// Real measurement: with the HAL wedged the log fills with this line.
     #[test]
     fn detects_wedged_audio_from_real_log() {
         let real = "08-27 17:26:45.329  1086 20805 W AudioSystem: AudioFlinger not published, waiting...\n\
@@ -299,7 +302,7 @@ mod tests {
         assert!(super::audio_flinger_stalled(real));
     }
 
-    /// Açılışta birkaç kez beklemek NORMAL — panik yapmamalı.
+    /// Waiting a few times at boot is NORMAL — it must not panic.
     #[test]
     fn a_few_waits_during_boot_are_normal() {
         let boot = "W AudioSystem: AudioFlinger not published, waiting...\n\
@@ -310,7 +313,7 @@ mod tests {
 
     #[test]
     fn healthy_log_is_not_flagged() {
-        assert!(!super::audio_flinger_stalled("I ActivityManager: her şey yolunda"));
+        assert!(!super::audio_flinger_stalled("I ActivityManager: all is well"));
         assert!(!super::audio_flinger_stalled(""));
     }
 
@@ -327,7 +330,7 @@ mod tests {
         assert!(full.failures().is_empty());
     }
 
-    /// Bugünkü gerçek arıza: her şey ayakta ama IP yok (rota kaybolmuş).
+    /// A real failure seen today: everything up but no IP (route lost).
     #[test]
     fn missing_ip_is_degraded_not_healthy() {
         let h = Health { has_ip: false, ..Health {
@@ -335,10 +338,10 @@ mod tests {
             has_ip: true, boot_completed: true,
             composer_alive: true, composer_stale: false } };
         assert!(!h.is_healthy());
-        assert_eq!(h.failures(), vec!["IP atanmamış"]);
+        assert_eq!(h.failures(), vec!["no IP assigned"]);
     }
 
-    /// composer ölümü ayrıca raporlanmalı: çökme zincirinin kökü budur.
+    /// Composer death must be reported separately: it is the root of the chain.
     #[test]
     fn dead_composer_is_reported_explicitly() {
         let h = Health {
@@ -350,9 +353,9 @@ mod tests {
         assert!(h.failures().iter().any(|f| f.contains("composer")));
     }
 
-    /// Gerçek vaka: her şey ayakta ama composer session'dan sonra yeniden
-    /// başlamış. Pencere oluşmuyor, app launch "Sending reply failed" diyor.
-    /// Sağlık kontrolü bunu YAKALAMALI, yoksa "sağlıklı" diyerek yanıltır.
+    /// Real case: everything up but composer restarted after the session.
+    /// No window appears and app launch says "Sending reply failed".
+    /// The health check MUST catch this, or it misleads by reporting "healthy".
     #[test]
     fn stale_composer_is_not_healthy() {
         let h = Health {
@@ -360,8 +363,8 @@ mod tests {
             has_ip: true, boot_completed: true,
             composer_alive: true, composer_stale: true,
         };
-        assert!(!h.is_healthy(), "bayat composer sağlıklı sayılmamalı");
-        assert!(h.failures().iter().any(|f| f.contains("bayat")), "{:?}", h.failures());
+        assert!(!h.is_healthy(), "a stale composer must not count as healthy");
+        assert!(h.failures().iter().any(|f| f.contains("stale")), "{:?}", h.failures());
     }
 
     #[test]

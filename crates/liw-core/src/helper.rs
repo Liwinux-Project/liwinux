@@ -1,8 +1,8 @@
-//! `liwd-helper` istemcisi.
+//! `liwd-helper` client.
 //!
-//! Ayrıcalıklı okumalar buradan geçer. Helper yoksa çağrı başarısız olur ve
-//! çağıran KENDİ kararını verir — sessizce iyimser bir değer uydurmak
-//! teşhisi bozar (bkz. `Supervisor::health`).
+//! Privileged reads go through here. If the helper is absent the call fails
+//! and the caller makes its OWN decision — silently inventing an optimistic
+//! value corrupts diagnosis (see `Supervisor::health`).
 
 use zbus::Connection;
 
@@ -11,9 +11,9 @@ const PATH: &str = "/id/liwinux/Helper1";
 
 #[derive(Debug, thiserror::Error)]
 pub enum HelperError {
-    #[error("liwd-helper'a bağlanılamadı: {0}")]
+    #[error("could not connect to liwd-helper: {0}")]
     Connect(#[from] zbus::Error),
-    #[error("liwd-helper çağrısı başarısız: {0}")]
+    #[error("liwd-helper call failed: {0}")]
     Call(String),
 }
 
@@ -23,12 +23,12 @@ pub struct HelperClient {
 }
 
 impl HelperClient {
-    /// Helper'a bağlanır. Servis çalışmıyorsa `Err` döner.
+    /// Connects to the helper. Returns `Err` if the service is not running.
     pub async fn connect() -> Result<Self, HelperError> {
         let conn = Connection::system().await?;
         let proxy = zbus::Proxy::new(&conn, BUS, PATH, BUS).await?;
-        // Gerçekten orada mı: introspect ucuz ve yetkilendirme gerektirmez.
-        // (fdo::Error ayrı bir tür; Call'a sarıyoruz.)
+        // Is it really there? Introspection is cheap and needs no authorization.
+        // (fdo::Error is a separate type; wrap it into Call.)
         proxy.introspect().await.map_err(|e| HelperError::Call(e.to_string()))?;
         Ok(Self { proxy })
     }
@@ -43,7 +43,7 @@ impl HelperClient {
             .await.map_err(|e| HelperError::Call(e.to_string()))
     }
 
-    /// Ön plandaki paket adı. Boş dize = tespit edilemedi.
+    /// Foreground package name. Empty string = could not be determined.
     pub async fn foreground_package(&self) -> Result<String, HelperError> {
         self.proxy.call("ForegroundPackage", &())
             .await.map_err(|e| HelperError::Call(e.to_string()))
@@ -64,16 +64,16 @@ impl HelperClient {
             .await.map_err(|e| HelperError::Call(e.to_string()))
     }
 
-    /// Waydroid'in dokunuş borusuna YAZMA tanıtıcısı ister.
+    /// Requests a WRITE handle to Waydroid's touch pipe.
     ///
-    /// Başarılıysa keymapper compositor zincirini tamamen atlar ve
-    /// koordinat kırpılmaz — sınırsız nişanın ön şartı
-    /// (`docs/fare-nisan.md`). Dönen boyut ANDROID ekranıdır; host
-    /// penceresininki değil.
+    /// On success the keymapper bypasses the compositor chain entirely and
+    /// coordinates are not clamped — the prerequisite for unbounded aim
+    /// (`docs/mouse-aim.md`). The returned size is the ANDROID display, not
+    /// the host window.
     ///
-    /// Başarısızlık ölümcül DEĞİL: çağıran uinput yoluna düşebilir. Ama
-    /// sessizce düşmemeli — kullanıcı hangi yolda olduğunu bilmeli, çünkü
-    /// nişanın hissi tamamen buna bağlı.
+    /// Failure is NOT fatal: the caller can fall back to the uinput path. But
+    /// it must not fall back silently — the user needs to know which path is
+    /// active, because how aim feels depends entirely on it.
     pub async fn open_touch_pipe(&self)
         -> Result<(std::fs::File, u32, u32), HelperError>
     {
@@ -83,11 +83,11 @@ impl HelperClient {
         Ok((std::fs::File::from(std::os::fd::OwnedFd::from(fd)), w, h))
     }
 
-    /// Monotonik zaman damgalı logcat (teşhis korelasyonu).
+    /// logcat with monotonic timestamps (for diagnostic correlation).
     ///
-    /// Helper eski sürümdeyse bu metot yoktur; çağıran `Logcat`e
-    /// düşmelidir. Sessizce boş dönmek, "hiç olay yok" gibi görünüp
-    /// teşhisi tamamen yanlış yönlendirirdi.
+    /// An older helper does not have this method; the caller must fall back to
+    /// `Logcat`. Returning empty silently would look like "no events at all"
+    /// and send diagnosis completely the wrong way.
     pub async fn log_trace(&self, buffer: &str, lines: u32)
         -> Result<String, HelperError>
     {

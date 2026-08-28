@@ -1,8 +1,8 @@
-//! Waydroid penceresinin KWin üzerinden yönetimi.
+//! Managing the Waydroid window through KWin.
 //!
-//! Neden gerekli: dokunuşlar EKRAN uzayında gidiyor. Pencere çıkışla hizalı
-//! değilse profil koordinatları kayar ve kenar dokunuşları pencerenin dışına
-//! düşer. Ölçüldü: pencere 10,10 / 2540x1370 iken x=0.0 ve x=1.0 kayboluyordu.
+//! Why it is needed: touches travel in SCREEN space. If the window is not
+//! aligned with the output, profile coordinates shift and edge touches fall
+//! outside it. Measured: at 10,10 / 2540x1370 both x=0.0 and x=1.0 were lost.
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
@@ -12,7 +12,7 @@ const SCRIPT_NAME: &str = "liwinux-fullscreen";
 const ACTIVATE_SCRIPT: &str = "liwinux-activate";
 const REPORT_SCRIPT: &str = "liwinux-report";
 
-/// KWin script'inin bildirdiği pencere geometrisi.
+/// Window geometry as reported by the KWin script.
 #[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub struct WindowGeometry {
     pub found: bool,
@@ -26,7 +26,8 @@ pub struct WindowGeometry {
 #[derive(Default)]
 pub struct WindowState {
     geometry: RwLock<WindowGeometry>,
-    /// Bu session'da tam ekran bir kez denendi mi. Session düşünce sıfırlanır.
+    /// Whether fullscreen was attempted once in this session. Reset when the
+    /// session goes down.
     attempted: RwLock<bool>,
 }
 
@@ -44,53 +45,53 @@ impl WindowState {
     pub async fn fullscreen_attempted(&self) -> bool { *self.attempted.read().await }
     pub async fn mark_fullscreen_attempted(&self) { *self.attempted.write().await = true; }
 
-    /// Session düştüğünde çağrılır: yeni session'da yeniden denensin.
+    /// Called when the session goes down, so a new session retries.
     pub async fn reset(&self) {
         *self.attempted.write().await = false;
         *self.geometry.write().await = WindowGeometry::default();
     }
 
-    /// Pencere kaybolduysa tam ekran bayrağını sıfırlar.
+    /// Clears the fullscreen flag if the window disappeared.
     ///
-    /// Session'ın durmasını beklemek YETMİYORDU: kullanıcı session'ı ayakta
-    /// tutup `show-full-ui` penceresini kapatıp açıyor. O durumda bayrak
-    /// sıfırlanmadığı için yeni pencere hiçbir zaman tam ekran yapılmıyordu
-    /// — 10 saatlik bir daemon ömrü boyunca tek deneme. Gerçekte yaşandı.
+    /// Waiting for the session to stop was NOT ENOUGH: users keep the session
+    /// up and close/reopen the `show-full-ui` window. In that case the flag was
+    /// never cleared and a new window was never made fullscreen — a single
+    /// attempt across a 10-hour daemon lifetime. This actually happened.
     ///
-    /// Pencere DURUYOR ama tam ekran değilse dokunulmuyor: kullanıcı kasten
-    /// çıkmış olabilir ve her seferinde geri zorlamak düşmanca olur.
+    /// If the window IS there but not fullscreen, nothing is touched: the user
+    /// may have left it deliberately and forcing it back would be hostile.
     ///
-    /// `true` dönerse yeni pencere için deneme yapılabilir.
+    /// Returns `true` when a retry is now allowed for a new window.
     pub async fn note_window_gone(&self) -> bool {
-        // found == false → pencere YOK. Duruyorsa hiçbir şey yapılmaz.
+        // found == false -> no window. If it is there, do nothing.
         if self.geometry.read().await.found { return false; }
         std::mem::replace(&mut *self.attempted.write().await, false)
     }
 }
 
-/// Tam ekran script'ini bir kez çalıştırır.
+/// Runs the fullscreen script once.
 ///
-/// Sonuç `ReportWindowGeometry` ile geri gelir; bu fonksiyon yalnızca
-/// tetikler. KWin scripting API'si çıktıyı çağırana döndürmez.
+/// The result comes back via `ReportWindowGeometry`; this function only
+/// triggers it. The KWin scripting API does not return output to the caller.
 pub async fn request_fullscreen() -> Result<()> {
-    let path = script_path().context("fullscreen.js bulunamadı")?;
+    let path = script_path().context("fullscreen.js not found")?;
     let conn = zbus::Connection::session().await?;
     let p = zbus::Proxy::new(&conn, "org.kde.KWin", "/Scripting",
                              "org.kde.kwin.Scripting").await?;
-    // Aynı ad iki kez yüklenirse iki kez çalışır; önce temizle.
+    // Loading the same name twice runs it twice; unload first.
     let _: Result<bool, _> = p.call("unloadScript", &(SCRIPT_NAME,)).await;
     let _id: i32 = p.call("loadScript", &(path.to_string_lossy().as_ref(), SCRIPT_NAME))
-        .await.context("loadScript başarısız")?;
-    let _: () = p.call("start", &()).await.context("script başlatılamadı")?;
+        .await.context("loadScript failed")?;
+    let _: () = p.call("start", &()).await.context("could not start script")?;
     Ok(())
 }
 
-/// Waydroid penceresini öne getirir ve odaklar.
+/// Raises and focuses the Waydroid window.
 ///
-/// Ekran görüntüsü almadan önce şart: `spectacle -a` AKTİF pencereyi
-/// yakalar. Aktif pencere terminal olursa terminalin görüntüsü alınır.
+/// Mandatory before taking a screenshot: `spectacle -a` captures the ACTIVE
+/// window, and if that is the terminal you get a picture of the terminal.
 pub async fn activate() -> Result<()> {
-    let path = script_path_named("activate.js").context("activate.js bulunamadı")?;
+    let path = script_path_named("activate.js").context("activate.js not found")?;
     let conn = zbus::Connection::session().await?;
     let p = zbus::Proxy::new(&conn, "org.kde.KWin", "/Scripting",
                              "org.kde.kwin.Scripting").await?;
@@ -101,13 +102,13 @@ pub async fn activate() -> Result<()> {
     Ok(())
 }
 
-/// Pencere durumunu sorar — HİÇBİR ŞEYİ DEĞİŞTİRMEZ.
+/// Queries the window state — CHANGES NOTHING.
 ///
-/// Sonuç `ReportWindowGeometry` ile geri gelir. Durumu öğrenmek için
-/// `request_fullscreen` çağırmak, sırf bakmak isterken kullanıcının kasten
-/// çıktığı tam ekranı geri zorlamak olurdu.
+/// The result comes back via `ReportWindowGeometry`. Calling
+/// `request_fullscreen` just to learn the state would force fullscreen back
+/// on a user who deliberately left it.
 pub async fn request_report() -> Result<()> {
-    let path = script_path_named("report.js").context("report.js bulunamadı")?;
+    let path = script_path_named("report.js").context("report.js not found")?;
     let conn = zbus::Connection::session().await?;
     let p = zbus::Proxy::new(&conn, "org.kde.KWin", "/Scripting",
                              "org.kde.kwin.Scripting").await?;
@@ -118,11 +119,11 @@ pub async fn request_report() -> Result<()> {
     Ok(())
 }
 
-/// Pencere görünene kadar birkaç kez dener.
+/// Retries a few times until the window appears.
 ///
-/// Boot tamamlandığında pencere HENÜZ OLMAYABİLİR: `show-full-ui` ayrı bir
-/// adım ve compositor yüzeyi oluşturması zaman alır. Tek deneme çoğu zaman
-/// erken gelir.
+/// When boot completes the window may NOT EXIST YET: `show-full-ui` is a
+/// separate step and the compositor takes time to create the surface. A single
+/// attempt usually arrives too early.
 pub async fn fullscreen_with_retry(
     state: Arc<WindowState>,
     attempts: u32,
@@ -130,13 +131,13 @@ pub async fn fullscreen_with_retry(
 ) -> bool {
     for i in 1..=attempts {
         if let Err(e) = request_fullscreen().await {
-            tracing::warn!(deneme = i, hata = %e, "tam ekran isteği gönderilemedi");
+            tracing::warn!(attempt = i, error = %e, "could not send fullscreen request");
         }
         tokio::time::sleep(gap).await;
         let g = state.get().await;
         if g.found && g.fullscreen {
             tracing::info!(
-                genişlik = g.width, yükseklik = g.height,
+                width = g.width, height = g.height,
                 "Waydroid penceresi tam ekran");
             return true;
         }
@@ -144,16 +145,17 @@ pub async fn fullscreen_with_retry(
     let g = state.get().await;
     if g.found {
         tracing::warn!(
-            genişlik = g.width, yükseklik = g.height, x = g.x, y = g.y,
-            "pencere bulundu ama tam ekran yapılamadı — dokunuş koordinatları kayabilir");
+            width = g.width, height = g.height, x = g.x, y = g.y,
+            "window found but could not be made fullscreen — touch coordinates may shift");
     } else {
-        tracing::info!("Waydroid penceresi yok — tam ekran atlandı");
+        tracing::info!("no Waydroid window — fullscreen skipped");
     }
     false
 }
 
-/// `fullscreen.js` arar. Çalışma dizinine BAKILMAZ (profil deposundaki
-/// aynı ders: dizine bağlı davranış teşhis edilemeyen hatalar üretir).
+/// Looks for `fullscreen.js`. The WORKING DIRECTORY IS NOT CONSULTED (the same
+/// lesson as the profile store: cwd-dependent behaviour produces bugs nobody
+/// can diagnose).
 fn script_path() -> Option<std::path::PathBuf> { script_path_named("fullscreen.js") }
 
 fn script_path_named(name: &str) -> Option<std::path::PathBuf> {
@@ -184,7 +186,7 @@ fn script_path_named(name: &str) -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
 
-    /// Session yeniden başlayınca tam ekran YENİDEN denenmeli.
+    /// Fullscreen must be RETRIED when the session restarts.
     #[tokio::test]
     async fn reset_clears_attempt_flag() {
         let s = WindowState::new();
@@ -207,11 +209,11 @@ mod tests {
         assert_eq!((g.width, g.height), (2560, 1440));
     }
 
-    /// Pencere kapanınca tam ekran yeniden denenebilmeli.
+    /// Closing the window must re-enable the fullscreen attempt.
     ///
-    /// Gerçekte yaşandı: kullanıcı session'ı ayakta tutup `show-full-ui`
-    /// penceresini kapatıp açtı; bayrak sıfırlanmadığı için 10 saat boyunca
-    /// hiçbir yeni pencere tam ekran yapılmadı.
+    /// This actually happened: the user kept the session up and closed/reopened
+    /// the `show-full-ui` window; because the flag was never cleared, no new
+    /// window was made fullscreen for 10 hours.
     #[tokio::test]
     async fn closed_window_reenables_fullscreen_attempt() {
         let s = WindowState::new();
@@ -219,17 +221,17 @@ mod tests {
             width: 2560, height: 1440, fullscreen: true }).await;
         s.mark_fullscreen_attempted().await;
 
-        // Pencere duruyorken dokunulmamalı.
-        assert!(!s.note_window_gone().await, "pencere dururken sıfırlanmamalı");
+        // Nothing must happen while the window is there.
+        assert!(!s.note_window_gone().await, "must not reset while the window exists");
         assert!(s.fullscreen_attempted().await);
 
         // Pencere kayboldu.
         s.set(WindowGeometry::default()).await;
         assert!(s.note_window_gone().await, "kapanma bildirilmeli");
-        assert!(!s.fullscreen_attempted().await, "bayrak sıfırlanmalı");
+        assert!(!s.fullscreen_attempted().await, "the flag must be cleared");
     }
 
-    /// Kullanıcı tam ekrandan KASTEN çıktıysa geri zorlanmamalı.
+    /// If the user left fullscreen DELIBERATELY it must not be forced back.
     #[tokio::test]
     async fn user_leaving_fullscreen_is_not_fought() {
         let s = WindowState::new();
@@ -237,18 +239,18 @@ mod tests {
             width: 1280, height: 720, fullscreen: false }).await;
         s.mark_fullscreen_attempted().await;
         assert!(!s.note_window_gone().await);
-        assert!(s.fullscreen_attempted().await, "kullanıcının kararı korunmalı");
+        assert!(s.fullscreen_attempted().await, "the user decision must be kept");
     }
 
-    /// Pencere hiç olmadıysa ve deneme yapılmadıysa bildirilecek bir şey yok.
+    /// With no window ever seen and no attempt made there is nothing to report.
     #[tokio::test]
     async fn nothing_to_report_when_never_attempted() {
         let s = WindowState::new();
         assert!(!s.note_window_gone().await);
     }
 
-    /// Aynı kapanma iki kez bildirilmemeli — yoksa her yoklamada
-    /// tam ekran zorlanır ve kullanıcıyla kavga edilir.
+    /// The same closure must not be reported twice — otherwise every poll
+    /// forces fullscreen and fights the user.
     #[tokio::test]
     async fn closure_is_reported_once() {
         let s = WindowState::new();

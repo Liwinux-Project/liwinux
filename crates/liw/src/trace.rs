@@ -1,20 +1,20 @@
-//! `liw trace` — takılmanın NEDENİNİ söyleyen teşhis.
+//! `liw trace` — diagnosis that tells you WHY it stutters.
 //!
-//! `liw bench` "ne kadar kötü" der, `liw perf` "hangi kaldıraçlar açık"
-//! der. İkisi de "bu düşüşü ne yaptı" sorusuna cevap vermez.
+//! `liw bench` says "how bad", `liw perf` says "which levers are on". Neither
+//! answers "what caused this drop".
 //!
-//! Buradaki fikir tek: her şeyi AYNI SAATE koy. Kare sunum zamanları
-//! `CLOCK_MONOTONIC`, `logcat -v monotonic` de öyle, host örneklerine de
-//! aynı saati yazıyoruz. Ortak eksen olunca "takılma anında ne oluyordu"
-//! sorusu ölçülebilir hale geliyor.
+//! The idea here is a single one: put everything on the SAME CLOCK. Frame
+//! present times are `CLOCK_MONOTONIC`, so is `logcat -v monotonic`, and we
+//! stamp host samples with it too. With a shared axis, "what was happening
+//! during the stutter" becomes measurable.
 //!
 //! # Donma yakalama
 //!
-//! FPS düşüşü ile donma farklı şeyler ve farklı yöntem ister. 60 saniye
-//! kare gelmiyorsa ortada "uzun aralık" yoktur — hiç aralık yoktur.
-//! Bu yüzden döngü "en son ne zaman yeni kare gördüm" diye ayrıca bakar
-//! ve donma SÜRERKEN günlüğü yakalar. Sonradan bakmak çoğu zaman geç
-//! kalıyor: logcat halkası dolup kanıtı düşürüyor.
+//! An FPS drop and a freeze are different things needing different methods. If
+//! no frames arrive for 60 seconds there is no "long interval" — there are no
+//! intervals at all. So the loop separately tracks "when did I last see a new
+//! frame" and captures the log WHILE the freeze is happening. Looking afterwards
+//! is usually too late: the logcat ring fills and drops the evidence.
 
 use anyhow::{Context, Result};
 use liw_core::bench::{parse_latency, sample_interval_ms, FrameData};
@@ -23,13 +23,13 @@ use liw_core::trace::{self, Kind, LogEvent};
 use liw_core::HelperClient;
 use std::collections::HashSet;
 
-/// Donma sayılmadan önce kaç ms kare gelmemeli.
+/// How many ms without a frame before it counts as a freeze.
 const STALL_MS: f64 = 900.0;
 
-/// Günlük kuyruğunun kaç satırı çekilsin.
+/// How many lines of log tail to pull.
 ///
-/// Çok küçük olursa iki çekim arasında olaylar kaçar; çok büyük olursa
-/// D-Bus mesajı şişer ve her çekim yavaşlar.
+/// Too small and events are missed between pulls; too large and the D-Bus
+/// message bloats, slowing every pull.
 const LOG_LINES: u32 = 400;
 
 struct Stall {
@@ -38,11 +38,11 @@ struct Stall {
     log: Vec<LogEvent>,
 }
 
-/// Günlük olaylarını tekrarsız biriktirir.
+/// Accumulates log events without duplicates.
 ///
-/// `logcat -t N` her çekimde son N satırı verir, yani ardışık çekimler
-/// büyük ölçüde ÜST ÜSTE biner. Tekilleştirmeden biriktirmek aynı olayı
-/// onlarca kez sayar ve hüküm tamamen bozulur.
+/// `logcat -t N` returns the last N lines on every pull, so consecutive pulls
+/// OVERLAP heavily. Accumulating without deduplication counts the same event
+/// dozens of times and wrecks the verdict entirely.
 #[derive(Default)]
 struct LogSink {
     seen: HashSet<(u64, u32, String)>,
@@ -63,12 +63,11 @@ impl LogSink {
     }
 }
 
-/// Günlüğü çeker ve ayrıştırır.
+/// Pulls and parses the log.
 ///
-/// Önce monotonik biçimi dener; helper eski sürümdeyse duvar saatli
-/// `Logcat`e düşer. Sessizce boş dönmek "hiç olay yok" gibi görünüp
-/// teşhisi yanlış yönlendirirdi, o yüzden hangi yolun kullanıldığı
-/// çağırana bildiriliyor.
+/// Tries the monotonic format first; falls back to wall-clock `Logcat` if the
+/// helper is older. Returning empty silently would look like "no events at all"
+/// and misdirect the diagnosis, so the caller is told which path was used.
 async fn fetch_log(h: &HelperClient, monotonic: bool) -> (Vec<LogEvent>, bool) {
     let now = hostsample::monotonic_ms();
     let sod = hostsample::local_secs_of_day();
@@ -85,41 +84,41 @@ async fn fetch_log(h: &HelperClient, monotonic: bool) -> (Vec<LogEvent>, bool) {
 
 pub async fn run(pkg: String, duration_s: u64, jank_ms: Option<f64>) -> Result<()> {
     let h = HelperClient::connect().await
-        .context("liwd-helper'a bağlanılamadı — systemctl status liwd-helper")?;
+        .context("could not connect to liwd-helper — systemctl status liwd-helper")?;
 
-    println!("Katman aranıyor...");
+    println!("Looking for a layer...");
     let layer = crate::bench::pick_layer(&h, &pkg).await?;
     let first = parse_latency(&h.surface_latency(&layer).await?)
-        .context("ilk anlık görüntü ayrıştırılamadı")?;
+        .context("could not parse the first snapshot")?;
     let interval = sample_interval_ms(first.refresh_ns);
     let refresh_ms = first.refresh_ns as f64 / 1e6;
-    // Canlı gösterim için KABA eşik: oyunun gerçek kadansını ancak
-    // ölçtükten sonra biliyoruz. Nihai rapor onu kullanır.
+    // A ROUGH threshold for the live display: the game's real cadence is only
+    // known after measuring. The final report uses that.
     let jank_arg = jank_ms;
     let jank_ms = jank_arg.unwrap_or((refresh_ms * 2.0).max(20.0));
 
-    // Monotonik günlük var mı? Bir kez dene ve sonucu SÖYLE.
+    // Is a monotonic log available? Try once and SAY so.
     let mono = h.log_trace("main", 1).await.is_ok();
 
     println!("Katman : {layer}");
-    println!("Refresh: {refresh_ms:.2} ms ({:.1} Hz)  ->  örnekleme {interval} ms",
+    println!("Refresh: {refresh_ms:.2} ms ({:.1} Hz)  ->  sampling every {interval} ms",
         1000.0 / refresh_ms.max(0.001));
     if jank_arg.is_some() {
-        println!("Eşik   : takılma >{jank_ms:.1} ms   donma >{:.0} ms", STALL_MS);
+        println!("Thresholds: jank >{jank_ms:.1} ms   freeze >{:.0} ms", STALL_MS);
     } else {
-        println!("Eşik   : donma >{:.0} ms — takılma eşiği ölçülen kadanstan \
-                  türetilecek", STALL_MS);
+        println!("Thresholds: freeze >{:.0} ms — the jank threshold will be \
+                  derived from the measured cadence", STALL_MS);
     }
-    println!("Günlük : {}", if mono { "monotonik (tam hizalı)" }
-                            else { "duvar saati (helper eski — hizalama yaklaşık)" });
-    println!("Süre   : {duration_s}s — SORUNU YAŞADIĞIN ŞEYİ YAP");
+    println!("Log    : {}", if mono { "monotonic (fully aligned)" }
+                            else { "wall clock (old helper — alignment approximate)" });
+    println!("Length : {duration_s}s — DO THE THING THAT GOES WRONG");
 
-    // Günlük gürültüsünü ölç: teşhis penceresinin ne kadarını kaplıyor?
-    // Ölçüm FİLTRESİZ yapılmalı, yoksa susturduğumuz şeyi göremeyiz.
+    // Measure log noise: how much of the diagnostic window does it take?
+    // The measurement must be UNFILTERED, or we cannot see what we silenced.
     let noise = measure_log_noise(&h).await;
     if let Some((tag, rate)) = noise.first() {
         if *rate > 50.0 {
-            println!("Gürültü: '{tag}' saniyede {rate:.0} satır yazıyor                       — teşhis penceresini daraltıyor");
+            println!("Noise  : '{tag}' writes {rate:.0} lines/second                            — it narrows the diagnostic window");
         }
     }
     println!();
@@ -139,10 +138,10 @@ pub async fn run(pkg: String, duration_s: u64, jank_ms: Option<f64>) -> Result<(
 
     let deadline = tokio::time::Instant::now()
         + std::time::Duration::from_secs(duration_s);
-    // İzlemenin BAŞLANGICI: bundan önceki günlük olayları rapora
-    // girmemeli. `logcat -t N` halkanın son N satırını verir ve sistem
-    // sessizken bu DAKİKALARI kapsar; onları saymak "20 saniyede 60 olay
-    // oldu" yalanını söyletiyordu.
+    // START of the trace: log events from before this must not enter the
+    // report. `logcat -t N` returns the ring's last N lines, which on a quiet
+    // system spans MINUTES; counting those told the lie "60 events in 20
+    // seconds".
     let t_start_ms = hostsample::monotonic_ms();
     let mut last_frame_ms = hostsample::monotonic_ms();
     let mut last_seen: Option<f64> = None;
@@ -158,7 +157,7 @@ pub async fn run(pkg: String, duration_s: u64, jank_ms: Option<f64>) -> Result<(
                 let Some(s) = parse_latency(&raw) else { continue };
                 fd.add(&s);
                 let now = hostsample::monotonic_ms();
-                // "Yeni kare geldi mi": tamponun EN SON karesi ilerlediyse.
+                // "Did a new frame arrive?": whether the buffer's LAST frame advanced.
                 if fd.last_frame_ms() != last_seen {
                     last_seen = fd.last_frame_ms();
                     last_frame_ms = now;
@@ -167,13 +166,13 @@ pub async fn run(pkg: String, duration_s: u64, jank_ms: Option<f64>) -> Result<(
                         if let Some(st) = stalls.last_mut() { st.end_ms = Some(now); }
                         let d = (now - stalls.last().map(|s| s.start_ms)
                                  .unwrap_or(now)) / 1000.0;
-                        println!("  \x1b[32m✓ donma bitti\x1b[0m ({d:.1} sn sürdü)");
+                        println!("  \x1b[32m✓ freeze ended\x1b[0m (lasted {d:.1} s)");
                     }
                 } else if !in_stall && now - last_frame_ms > STALL_MS {
                     in_stall = true;
                     stalls.push(Stall { start_ms: last_frame_ms,
                                         end_ms: None, log: Vec::new() });
-                    println!("  \x1b[33m⏸ DONMA başladı\x1b[0m — günlük yakalanıyor…");
+                    println!("  \x1b[33m⏸ FREEZE started\x1b[0m — capturing the log…");
                 }
             }
 
@@ -185,8 +184,8 @@ pub async fn run(pkg: String, duration_s: u64, jank_ms: Option<f64>) -> Result<(
             _ = log_tick.tick() => {
                 let (evs, _) = fetch_log(&h, mono).await;
                 let fresh = sink.add(evs);
-                // Donma SÜRERKEN kanıtı hemen göster ve sakla: logcat
-                // halkası dolarsa sonradan bakmak geç kalır.
+                // Show and keep the evidence WHILE the freeze lasts: if the
+                // logcat ring fills, looking later is too late.
                 if in_stall {
                     if let Some(st) = stalls.last_mut() {
                         for e in &fresh {
@@ -205,7 +204,7 @@ pub async fn run(pkg: String, duration_s: u64, jank_ms: Option<f64>) -> Result<(
                 let gpu = host.last().map(|(_, s)| s.gpu_pct).unwrap_or(0.0);
                 let cpup = host.last().map(|(_, s)| s.cpu_pct).unwrap_or(0.0);
                 print!("\r  {:5.1} FPS   p99 {:6.2} ms   jank {:3}   \
-                        GPU %{gpu:.0}  CPU %{cpup:.0}   ({n} aralık)      ",
+                        GPU {gpu:.0}%  CPU {cpup:.0}%   ({n} intervals)      ",
                     1000.0 / fd.percentile(50.0).max(0.001),
                     fd.percentile(99.0), fd.jank_count(1.5));
                 use std::io::Write;
@@ -219,17 +218,17 @@ pub async fn run(pkg: String, duration_s: u64, jank_ms: Option<f64>) -> Result<(
     Ok(())
 }
 
-/// Günlük yazma hızını etiket başına ölçer.
+/// Measures log write rate per tag.
 ///
-/// İki filtresiz çekim arasındaki FARK sayılıyor; tek çekim yalnızca
-/// halkada ne olduğunu söyler, hızını söylemez.
+/// The DIFFERENCE between two unfiltered pulls is counted; a single pull only
+/// says what is in the ring, not how fast it is filling.
 async fn measure_log_noise(h: &HelperClient) -> Vec<(String, f64)> {
     let Ok(a) = h.logcat("main", 2000).await else { return Vec::new() };
     let t0 = hostsample::monotonic_ms();
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
     let Ok(b) = h.logcat("main", 2000).await else { return Vec::new() };
     let span = (hostsample::monotonic_ms() - t0) / 1000.0;
-    // İkinci çekimde YENİ olan satırlar.
+    // Lines that are NEW in the second pull.
     let old: std::collections::HashSet<&str> = a.lines().collect();
     let fresh: String = b.lines().filter(|l| !old.contains(l))
         .collect::<Vec<_>>().join("\n");
@@ -238,32 +237,32 @@ async fn measure_log_noise(h: &HelperClient) -> Vec<(String, f64)> {
 
 fn report(fd: &FrameData, host: &[(f64, HostSample)], sink: &LogSink,
           stalls: &[Stall], jank_arg: Option<f64>, mono: bool, noise: &[(String, f64)]) {
-    // Takılma eşiği OYUNUN ölçülen kare periyodundan türetilir.
+    // The jank threshold is derived from the GAME's measured frame period.
     //
-    // Tazelemeden türetmek yanlış sonuç veriyordu: 180 Hz ekranda 60 FPS'e
-    // kilitli bir oyunda 20 ms eşiği, tamamen normal olan 22 ms'lik
-    // kareleri de takılma sayıyordu. Özet 11 takılma derken hüküm bölümü
-    // 450 diyordu — aynı çalıştırmada iki farklı sayı.
+    // Deriving it from the refresh rate gave the wrong answer: on a game locked
+    // to 60 FPS on a 180 Hz display, a 20 ms threshold counted the entirely
+    // normal 22 ms frames as jank. The summary said 11 stutters while the
+    // verdict said 450 — two different numbers from one run.
     let jank_ms = jank_arg.unwrap_or_else(|| (fd.target_period_ms() * 1.5).max(8.0));
     let line = "=".repeat(64);
     println!("{line}");
 
     if fd.interval_count() < 30 {
-        println!("Yeterli kare verisi yok ({} aralık).", fd.interval_count());
-        println!("Oyun ön planda ve HAREKETLİ miydi? Durgun ekran kare üretmez.");
+        println!("Not enough frame data ({} intervals).", fd.interval_count());
+        println!("Was the game in the foreground and MOVING? A static screen produces no frames.");
         println!("{line}");
         return;
     }
 
-    println!("KARE   {} aralık, {} tekil kare, kapsam %{:.0}",
+    println!("FRAMES {} intervals, {} unique frames, coverage {:.0}%",
         fd.interval_count(), fd.frame_count(), fd.coverage_pct());
     if fd.is_below_refresh() {
-        println!("       oyun {:.0} FPS'e kilitli (ekran {:.0} Hz)",
+        println!("       the game is locked to {:.0} FPS (display {:.0} Hz)",
             fd.target_fps(), 1000.0 / fd.refresh_ms().max(0.001));
     }
-    println!("       takılma eşiği >{jank_ms:.1} ms (oyunun {:.2} ms periyodunun 1.5 katı)",
+    println!("       jank threshold >{jank_ms:.1} ms (1.5x the game period of {:.2} ms)",
         fd.target_period_ms());
-    println!("  p50 {:.2} ms ({:.0} FPS)   p99 {:.2} ms   en kötü {:.2} ms   \
+    println!("  p50 {:.2} ms ({:.0} FPS)   p99 {:.2} ms   worst {:.2} ms   \
               jank>1.5x %{:.2}",
         fd.percentile(50.0), 1000.0 / fd.percentile(50.0).max(0.001),
         fd.percentile(99.0), fd.percentile(100.0), fd.jank_pct(1.5));
@@ -277,11 +276,11 @@ fn report(fd: &FrameData, host: &[(f64, HostSample)], sink: &LogSink,
             let d = s.end_ms.map(|e| (e - s.start_ms) / 1000.0);
             match d {
                 Some(d) => println!("  {d:.1} sn"),
-                None => println!("  (ölçüm bitene kadar sürüyordu)"),
+                None => println!("  (still ongoing when the trace ended)"),
             }
             if s.log.is_empty() {
-                println!("      Android tarafında hiçbir olay yok — sebep \
-                          büyük ihtimalle konteynerin DIŞINDA.");
+                println!("      No event at all on the Android side — the cause \
+                          is most likely OUTSIDE the container.");
             }
             for e in s.log.iter().take(6) {
                 println!("      {:<24} {}: {}", e.kind.label(), e.tag, e.msg);
@@ -299,15 +298,15 @@ fn report(fd: &FrameData, host: &[(f64, HostSample)], sink: &LogSink,
         }
     }
 
-    // --- takılmalar ve korelasyon ---
+    // --- stutters and correlation ---
     let iv = fd.intervals_ms();
     let mut hs = trace::hitches(&iv, jank_ms);
-    // Pencere, zaman hizalamasının DOĞRULUĞUNA bağlı olmalı.
+    // The window must depend on the ACCURACY of the time alignment.
     //
-    // Monotonik günlükte hizalama tam; dar pencere doğru eşleştirme
-    // yapar. Duvar saatinde hata ±1 sn'ye kadar çıkıyor ve dar pencere
-    // hiçbir şey eşleştiremiyor — araç da "açıklanamadı" diyerek sebebi
-    // Android'in dışında sanmaya itiyordu. Gerçekte yaşandı.
+    // With a monotonic log the alignment is exact and a narrow window matches
+    // correctly. On wall clock the error reaches ±1 s and a narrow window
+    // matches nothing — which made the tool say "unexplained" and suggest the
+    // cause lay outside Android. This actually happened.
     let (before, after) = if mono { (150.0, 80.0) } else { (1500.0, 1500.0) };
     trace::correlate(&mut hs, &sink.events, before, after);
     hs.sort_by(|a, b| b.len_ms.partial_cmp(&a.len_ms).unwrap_or(std::cmp::Ordering::Equal));
@@ -318,91 +317,90 @@ fn report(fd: &FrameData, host: &[(f64, HostSample)], sink: &LogSink,
         for hh in hs.iter().take(6) {
             println!("  {:.1} ms", hh.len_ms);
             if hh.evidence.is_empty() {
-                println!("      (Android tarafında eşzamanlı olay yok)");
+                println!("      (no concurrent event on the Android side)");
             }
             for e in &hh.evidence {
                 println!("      {:<24} {}: {}", e.kind.label(), e.tag, e.msg);
             }
-            // Aynı ana denk gelen host örneği.
+            // The host sample coinciding with that moment.
             if let Some((_, s)) = host.iter()
                 .min_by(|a, b| (a.0 - hh.t_ms).abs()
                     .partial_cmp(&(b.0 - hh.t_ms).abs()).unwrap())
             {
-                println!("      host: GPU %{:.0}  CPU %{:.0}  mem.baskı {:.2}",
+                println!("      host: GPU {:.0}%  CPU {:.0}%  mem.pressure {:.2}",
                          s.gpu_pct, s.cpu_pct, s.mem_pressure);
             }
         }
     }
 
-    // --- günlük imzaları ---
+    // --- log signatures ---
     if !sink.events.is_empty() {
         let mut tally: std::collections::HashMap<Kind, usize> = Default::default();
         for e in &sink.events { *tally.entry(e.kind).or_default() += 1; }
         let mut v: Vec<_> = tally.into_iter().collect();
         v.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
         println!();
-        println!("GÜNLÜK İMZALARI ({} olay, izleme penceresinde)",
+        println!("LOG SIGNATURES ({} events, within the trace window)",
                  sink.events.len());
         for (k, n) in &v { println!("  {:<26} {n}", k.label()); }
-        // Girdi yolu kaybı tek başına bir uyarıyı hak ediyor: enjeksiyon
-        // sessizce ölür ve kullanıcı bunu "fare çalışmıyor" diye yaşar.
+        // Losing the input path deserves a warning of its own: injection dies
+        // silently and the user experiences it as "the mouse does not work".
         if v.iter().any(|(k, _)| *k == Kind::Input) {
             println!();
-            for l in wrap("UYARI: Android dokunuş cihazımızı kaybetti/yeniden                 kurdu. Bu olduğunda elimizdeki boru tanıtıcısı ölür ve                 enjeksiyon durur. `liw keymap stop && liw keymap start --grab`                 ile geri gelir.", 62) { println!("  {l}"); }
+            for l in wrap("WARNING: Android lost and re-created our touch device.                 When that happens the pipe handle we hold dies and injection                 stops. `liw keymap stop && liw keymap start --grab`                 brings it back.", 62) { println!("  {l}"); }
         }
     } else if !mono {
         println!();
-        println!("Günlükten hiç olay çıkmadı. Helper eski sürüm olduğu için \
-                  zaman hizalaması yaklaşık;");
-        println!("`sudo bash dist/install-helper.sh` sonrası teşhis belirgin \
-                  şekilde keskinleşir.");
+        println!("No events came out of the log. Because the helper is old the \
+                  time alignment is approximate;");
+        println!("diagnosis sharpens noticeably after `sudo bash dist/install-helper.sh`.");
     }
 
     // --- host ---
     if !host.is_empty() {
         println!();
-        println!("HOST ({} örnek)", host.len());
+        println!("HOST ({} samples)", host.len());
         for (label, vals, unit) in [
             ("GPU", host.iter().map(|(_, h)| h.gpu_pct).collect::<Vec<_>>(), "%"),
             ("CPU", host.iter().map(|(_, h)| h.cpu_pct).collect(), "%"),
-            ("mem.baskı", host.iter().map(|(_, h)| h.mem_pressure).collect(), ""),
+            ("mem.pressure", host.iter().map(|(_, h)| h.mem_pressure).collect(), ""),
         ] {
             let (mean, peak) = hostsample::summarise(&vals);
-            println!("  {label:<10} ort {mean:7.1}{unit}   tepe {peak:7.1}{unit}");
+            println!("  {label:<10} mean {mean:7.1}{unit}   peak {peak:7.1}{unit}");
         }
-        // VRAM'i TOPLAMLA birlikte göster. Ham "4094 MB" doluymuş gibi
-        // okunuyor; 12288'in üçte biri olduğu ancak oranla anlaşılıyor.
+        // Show VRAM WITH the total. A bare "4094 MB" reads as full; only the
+        // ratio shows it is a third of 12288.
         let total = host.iter().map(|(_, h)| h.vram_total_mb).fold(0.0, f64::max);
         let (vmean, vpeak) = hostsample::summarise(
             &host.iter().map(|(_, h)| h.vram_mb).collect::<Vec<_>>());
         if total > 0.0 {
-            println!("  {:<10} ort {vmean:7.0}MB   tepe {vpeak:7.0}MB  / {total:.0}MB                       (tepe %{:.0})", "VRAM", 100.0 * vpeak / total);
+            println!("  {:<10} mean {vmean:7.0}MB   peak {vpeak:7.0}MB  / {total:.0}MB                       (peak {:.0}%)", "VRAM", 100.0 * vpeak / total);
         } else {
-            println!("  {:<10} ort {vmean:7.0}MB   tepe {vpeak:7.0}MB                        (toplam okunamadı)", "VRAM");
+            println!("  {:<10} mean {vmean:7.0}MB   peak {vpeak:7.0}MB                        (total unreadable)", "VRAM");
         }
     }
 
-    // --- günlük gürültüsü ---
+    // --- log noise ---
     if let Some((tag, rate)) = noise.first() {
         if *rate > 50.0 {
             println!();
-            println!("GÜNLÜK GÜRÜLTÜSÜ");
-            println!("  '{tag}' saniyede {rate:.0} satır yazıyor.");
+            println!("LOG NOISE");
+            println!("  '{tag}' writes {rate:.0} lines per second.");
             for l in wrap(&format!(
-                "Bu iki şeye mal oluyor: teşhis kuyruğu saniyeler yerine                  milisaniyeleri kapsıyor (olaylar görülmeden düşüyor), ve                  her satır logd'ye kopyalanıyor. Susturmak için:                  waydroid prop set log.tag.{tag} S"), 62)
+                "This costs two things: the diagnostic tail covers milliseconds                  instead of seconds (events drop before they are seen), and                  every line is copied to logd. To silence it:                  waydroid prop set log.tag.{tag} S"), 62)
             { println!("  {l}"); }
         }
     }
 
-    // --- hüküm ---
+    // --- verdict ---
     println!();
-    println!("HÜKÜM");
+    println!("VERDICT");
     for v in trace::verdicts(&hs, fd.frame_count(), fd.jank_pct(1.5)) {
         println!("  ▸ {}", v.headline);
         for l in wrap(&v.detail, 62) { println!("    {l}"); }
     }
 
-    // Android'de kanıt bulunamayan takılmaların host tarafındaki karşılığı.
+    // The host-side counterpart of stutters with no Android evidence.
     let mut facts = trace::HostFacts::default();
     let vram_total = host.iter().map(|(_, h)| h.vram_total_mb).fold(0.0, f64::max);
     for hh in hs.iter().filter(|h| h.evidence.is_empty()) {
@@ -419,20 +417,20 @@ fn report(fd: &FrameData, host: &[(f64, HostSample)], sink: &LogSink,
         println!("  ▸ {}", v.headline);
         for l in wrap(&v.detail, 62) { println!("    {l}"); }
     } else if facts.unexplained > 0 {
-        println!("  ▸ Host kaynakları da doymamış");
-        for l in wrap("Ne Android tarafında olay var ne de host'ta doyma.             Geriye compositor/sunum yolu ve güç yönetimi kalıyor:             `liw perf status` çıktısına bak. Günlük hizalaması yaklaşıksa             (helper eski) kanıt kaçmış da olabilir.", 62)
+        println!("  ▸ Host resources are not saturated either");
+        for l in wrap("No event on the Android side and no saturation on the host.             That leaves the compositor/presentation path and power             management: look at `liw perf status`. If the log alignment is             approximate (old helper), evidence may also have been missed.", 62)
         { println!("    {l}"); }
     }
     if !mono {
         println!();
-        println!("  NOT: helper eski sürüm — günlük duvar saatiyle geliyor ve");
-        println!("  eşleştirme ±1 sn belirsiz. `sudo bash dist/install-helper.sh`");
-        println!("  sonrası korelasyon kare hassasiyetine iner.");
+        println!("  NOTE: the helper is old — the log arrives on wall clock and");
+        println!("  matching is ±1 s uncertain. After `sudo bash dist/install-helper.sh`");
+        println!("  correlation drops to frame precision.");
     }
     println!("{line}");
 }
 
-/// Basit satır sarma; hüküm metinleri uzun ve terminalde okunmalı.
+/// Simple line wrapping; verdict text is long and must read in a terminal.
 fn wrap(s: &str, w: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -452,25 +450,25 @@ mod tests {
     use super::*;
     use liw_core::trace::Kind;
 
-    /// Üst üste binen logcat çekimleri aynı olayı BİR kez saymalı.
+    /// Overlapping logcat pulls must count the same event ONCE.
     ///
-    /// `logcat -t N` her çağrıda son N satırı verir; tekilleştirmeden
-    /// biriktirmek aynı olayı onlarca kez sayar ve hükmü tamamen bozar.
+    /// `logcat -t N` returns the last N lines on every call; accumulating
+    /// without deduplication counts one event dozens of times and wrecks the
     #[test]
     fn overlapping_log_fetches_are_deduplicated() {
         let mut s = LogSink::default();
         let e = |t: f64| LogEvent { t_ms: t, pid: 7, tag: "art".into(),
             kind: Kind::Gc, msg: "GC freed".into() };
         assert_eq!(s.add(vec![e(1.0), e(2.0)]).len(), 2);
-        // İkinci çekim: biri eski, biri yeni.
+        // Second pull: one old line, one new.
         assert_eq!(s.add(vec![e(2.0), e(3.0)]).len(), 1);
         assert_eq!(s.events.len(), 3);
     }
 
     #[test]
     fn wrap_keeps_every_word_within_width() {
-        let t = "kısa kelimeler ile uzun bir metin sarılmalı ve hiçbir \
-                 kelime kaybolmamalı";
+        let t = "short words in a long piece of text must wrap and no \
+                 word may be lost";
         let ls = wrap(t, 20);
         assert!(ls.iter().all(|l| l.chars().count() <= 20), "{ls:?}");
         assert_eq!(ls.join(" ").split_whitespace().count(),

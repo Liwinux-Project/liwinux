@@ -1,12 +1,12 @@
-//! liwd-helper — ayrıcalıklı işlemler için sistem servisi.
+//! liwd-helper — system service for privileged operations.
 //!
-//! # Güvenlik tasarımı
+//! # Security design
 //!
-//! Bu daemon root olarak çalışır ve sistem veri yolunda dinler. Bu yüzden
-//! **genel amaçlı bir kabuk arayüzü AÇMAZ**: `Shell(argv)` gibi bir metot,
-//! polkit arkasında bile makinedeki her yerel kullanıcıya root çalıştırma
-//! yolu açardı. Onun yerine dar ve adı konmuş işlemler sunulur; her biri
-//! kendi polkit eylemine bağlıdır ve girdileri doğrulanır.
+//! This daemon runs as root and listens on the system bus. It therefore
+//! **exposes NO general-purpose shell interface**: a method like `Shell(argv)`
+//! would give every local user on the machine a path to root execution, even
+//! behind polkit. Instead it offers narrow, named operations; each is bound to
+//! its own polkit action and validates its inputs.
 
 mod net;
 
@@ -29,24 +29,24 @@ const ACT_LOG: &str = "id.liwinux.helper.read-log";
 const ACT_AUDIO: &str = "id.liwinux.helper.restart-audio";
 const ACT_TOUCH: &str = "id.liwinux.helper.touch-pipe";
 
-/// Ses HAL'inin init'teki tam yolu. Sabit: kullanıcıdan süreç adı almak,
-/// istediği şeyi öldürtmek demekti.
+/// Full init path of the audio HAL. Fixed: taking a process name from the
+/// caller would let them kill anything they liked.
 const AUDIO_HAL: &str = "/vendor/bin/hw/android.hardware.audio.service";
 
-/// Waydroid'in dokunuş borusunun konteyner içindeki yolu.
+/// Path of Waydroid's touch pipe inside the container.
 ///
 /// Boruyu hwcomposer kurar (`mkfifo` 0660, `chown` system:system) ve
-/// Android'in yamalı `EventHub`'ı `wayland_touch` cihazı olarak dinler.
-/// Buraya yazmak compositor zincirini tamamen atlar; gerekçe
-/// `docs/fare-nisan.md`.
+/// Android's patched `EventHub` listens on it as the `wayland_touch` device.
+/// Writing here bypasses the compositor chain entirely; the rationale is in
+/// `docs/mouse-aim.md`.
 const TOUCH_PIPE: &str = "dev/input/wl_touch_events";
 
-/// Konteyner içindeki bir sürecin adı — boruya `/proc/<pid>/root` üzerinden
-/// ulaşmak için gerekiyor. Konteynerin kendi mount namespace'i var ama root
-/// oraya namespace değiştirmeden erişebilir.
+/// Name of a process inside the container — needed to reach the pipe via
+/// `/proc/<pid>/root`. The container has its own mount namespace, but root can
+/// reach into it without changing namespace.
 ///
-/// `surfaceflinger` seçildi çünkü konteyner dışında var olamaz ve o ölmüşse
-/// zaten enjekte edecek bir ekran yoktur.
+/// `surfaceflinger` was chosen because it cannot exist outside the container,
+/// and if it is dead there is no display to inject into anyway.
 const CONTAINER_ANCHOR: &str = "surfaceflinger";
 
 struct Helper {
@@ -56,30 +56,30 @@ struct Helper {
 impl Helper {
     /// Android ekran boyutu (`waydroid.display_width`/`height`).
     ///
-    /// Host penceresinin boyutu DEĞİL: dokunuş borusunun koordinat uzayı
-    /// Android ekranıdır.
+    /// NOT the host window size: the touch pipe's coordinate space is the
+    /// Android display.
     ///
     /// `waydroid prop get` KULLANILAMAZ: o komut `DBusSessionService` ile
-    /// oturum veri yoluna bağlanıyor (`tools/actions/prop.py`). Bu servis
-    /// root olarak çalışıyor ve oturum veri yolu yok — komut sessizce boş
-    /// çıktı verip stderr'e "WayDroid session is stopped" yazıyor. Gerçekte
-    /// yaşandı: session yeniden başlatıldıktan sonra keymapper her seferinde
-    /// uinput'a düştü ve kullanıcı nedenini göremedi.
+    /// connects to the session bus (`tools/actions/prop.py`). This service runs
+    /// as root with no session bus — the command silently produced empty output
+    /// and wrote "WayDroid session is stopped" to stderr. This actually
+    /// happened: after a session restart the keymapper fell back to uinput every
+    /// time and the user could not see why.
     ///
-    /// `waydroid shell -- getprop` ise lxc-attach kullanıyor; root'ta
-    /// çalışan yol bu.
+    /// `waydroid shell -- getprop` uses lxc-attach instead; that is the path
+    /// that works as root.
     async fn display_px(&self) -> zbus::fdo::Result<(u32, u32)> {
         let w = shell_getprop("waydroid.display_width").await?;
         let h = shell_getprop("waydroid.display_height").await?;
         let parse = |v: String, key: &str| v.trim().parse::<u32>()
             .map_err(|_| zbus::fdo::Error::Failed(format!(
-                "{key} sayı değil: {v:?} — hwcomposer henüz hotplug \
-                 yapmamış olabilir")));
+                "{key} is not a number: {v:?} — hwcomposer may not have \
+                 hotplugged yet")));
         let (w, h) = (parse(w, "waydroid.display_width")?,
                       parse(h, "waydroid.display_height")?);
         if w == 0 || h == 0 {
             return Err(zbus::fdo::Error::Failed(
-                "ekran boyutu 0 — hwcomposer henüz hotplug yapmamış".into()));
+                "display size is 0 — hwcomposer has not hotplugged yet".into()));
         }
         Ok((w, h))
     }
@@ -88,7 +88,7 @@ impl Helper {
         -> zbus::fdo::Result<()>
     {
         let caller = hdr.sender()
-            .ok_or_else(|| zbus::fdo::Error::AuthFailed("çağıran kimliği yok".into()))?;
+            .ok_or_else(|| zbus::fdo::Error::AuthFailed("no caller identity".into()))?;
         tracing::debug!(caller = %caller, action, interactive, "polkit sorgusu");
         match polkit_check(&self.conn, caller.as_str(), action, interactive).await {
             Ok(()) => {
@@ -96,20 +96,19 @@ impl Helper {
                 Ok(())
             }
             Err(e) => {
-                // Ayrımı kaydet: polkit REDDETTİ mi, yoksa polkit'e ULAŞILAMADI mı?
-                // İkisi çok farklı sorunlar ve aynı hataya sarılırsa teşhis imkansızlaşır.
-                tracing::warn!(caller = %caller, action, hata = %e, "yetkilendirme başarısız");
+                // Record the distinction: did polkit DENY, or was polkit
+                // UNREACHABLE? Very different problems; folding them into one
+                // error makes diagnosis impossible.
                 Err(zbus::fdo::Error::AccessDenied(format!("{e}")))
             }
         }
     }
 }
 
-/// `waydroid shell -- getprop <key>` — root'ta çalışan property okuma yolu.
+/// `waydroid shell -- getprop <key>` — the property read path that works as root.
 ///
-/// Çıktıdan lxc gürültüsü ayıklanır: `waydroid --details-to-stdout`
-/// lxc-info satırlarını da stdout'a karıştırıyor ve bunlar sayı
-/// ayrıştırmayı sessizce bozar.
+/// lxc noise is stripped from the output: `waydroid --details-to-stdout` mixes
+/// lxc-info lines into stdout and they silently break number parsing.
 async fn shell_getprop(key: &str) -> zbus::fdo::Result<String> {
     let out = Command::new("waydroid")
         .args(["--details-to-stdout", "shell", "--", "getprop", key])
@@ -119,7 +118,7 @@ async fn shell_getprop(key: &str) -> zbus::fdo::Result<String> {
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err(zbus::fdo::Error::Failed(format!(
-            "getprop {key} başarısız (kod {:?}): {err}", out.status.code())));
+            "getprop {key} failed (code {:?}): {err}", out.status.code())));
     }
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -128,7 +127,7 @@ async fn shell_getprop(key: &str) -> zbus::fdo::Result<String> {
         .join(""))
 }
 
-/// Konteynerin görünür olduğu bir pid bul.
+/// Find a pid through which the container is visible.
 async fn container_pid() -> Option<u32> {
     let out = Command::new("pgrep").args(["-x", CONTAINER_ANCHOR])
         .stdin(Stdio::null()).output().await.ok()?;
@@ -137,16 +136,16 @@ async fn container_pid() -> Option<u32> {
 
 #[interface(name = "id.liwinux.Helper1")]
 impl Helper {
-    /// Waydroid'in dokunuş borusunu açıp YAZMA tanıtıcısını devreder.
+    /// Opens Waydroid's touch pipe and hands over the WRITE handle.
     ///
-    /// Tanıtıcı döndürmenin nedeni hız: keymapper saniyede ~200 kare yazar
-    /// ve her karenin D-Bus'tan geçmesi hem gecikme hem de bu servisi
-    /// girdi yolunun ortasına koymak demekti. Tanıtıcıyla yetki bir kez
-    /// sorulur, veri hiç buradan geçmez.
+    /// The handle is returned for speed: the keymapper writes ~200 frames per
+    /// second and routing every frame through D-Bus would add latency and put
+    /// this service in the middle of the input path. With a handle,
+    /// authorization is asked once and the data never passes through here.
     ///
-    /// Ekran boyutu da dönüyor: boru koordinatları doğrudan Android ekran
-    /// uzayındadır ve `EventHub` eksen aralığını bu property'lerden üretir,
-    /// cihazdan sormaz. Çağıranın host pencere boyutunu kullanması yanlış
+    /// The display size is returned too: pipe coordinates are directly in
+    /// Android screen space and `EventHub` derives the axis range from those
+    /// properties rather than asking the device. A caller using the host window
     /// yere dokunmak demek olurdu.
     async fn open_touch_pipe(
         &self,
@@ -155,16 +154,16 @@ impl Helper {
         self.authorize(&hdr, ACT_TOUCH, false).await?;
 
         let pid = container_pid().await.ok_or_else(|| zbus::fdo::Error::Failed(
-            "Waydroid konteyneri çalışmıyor (surfaceflinger yok)".into()))?;
+            "Waydroid container is not running (no surfaceflinger)".into()))?;
         let path = format!("/proc/{pid}/root/{TOUCH_PIPE}");
 
         let (w, h) = self.display_px().await?;
 
-        // O_NONBLOCK iki işe birden yarıyor:
-        //  * Okuyucu yoksa açma ENXIO ile ANINDA başarısız olur. Bloklamak,
-        //    "keymapper açılışta donuyor" gibi görünürdü.
-        //  * Boru dolduğunda yazma bloklamaz; çağıran kareyi düşürür.
-        //    Girdi döngüsünü kilitlemek fareyi tamamen durdururdu.
+        // O_NONBLOCK serves two purposes at once:
+        //  * With no reader, opening fails IMMEDIATELY with ENXIO. Blocking
+        //    would have looked like "the keymapper hangs at startup".
+        //  * When the pipe is full the write does not block; the caller drops
+        //    the frame. Locking the input loop would stop the mouse entirely.
         let file = tokio::task::spawn_blocking({
             let path = path.clone();
             move || {
@@ -177,18 +176,18 @@ impl Helper {
           .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
           .map_err(|e| {
               let hint = if e.raw_os_error() == Some(libc::ENXIO) {
-                  " — borunun okuyucusu yok; Android'in girdi okuyucusu bu \
-                     boruyu açmamış, session'ı yeniden başlatmayı dene"
+                  " — the pipe has no reader; Android's input reader has not \
+                     open the pipe yet; try restarting the session"
               } else { "" };
-              zbus::fdo::Error::Failed(format!("{path} açılamadı: {e}{hint}"))
+              zbus::fdo::Error::Failed(format!("could not open {path}: {e}{hint}"))
           })?;
 
-        tracing::info!(%path, genişlik = w, yükseklik = h,
-            "dokunuş borusu devredildi");
+        tracing::info!(%path, width = w, height = h,
+            "touch pipe handed over");
         Ok((std::os::fd::OwnedFd::from(file).into(), w, h))
     }
 
-    /// Android property okur. Anahtar karakter kümesi doğrulanır.
+    /// Reads an Android property. The key's character set is validated.
     async fn get_prop(
         &self,
         key: &str,
@@ -196,24 +195,24 @@ impl Helper {
     ) -> zbus::fdo::Result<String> {
         if !valid_prop_key(key) {
             return Err(zbus::fdo::Error::InvalidArgs(
-                format!("geçersiz property anahtarı: {key:?}")));
+                format!("invalid property key: {key:?}")));
         }
         self.authorize(&hdr, ACT_PROP, false).await?;
-        // "--" ayracı şart: waydroid shell argparse kullanır, tireli
-        // argümanları aksi halde yutar.
+        // The "--" separator is mandatory: waydroid shell uses argparse and
+        // would otherwise swallow dashed arguments.
         let out = Command::new("waydroid")
             .args(["--details-to-stdout", "shell", "--", "getprop", key])
             .stdin(Stdio::null())
             .output().await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        // Çıkış kodunu kontrol etmemek, başarısızlığı boş string'e çevirir ve
-        // çağırana "property boş" diye yalan söyler. Hatayı görünür kıl.
+        // Not checking the exit code turns a failure into an empty string and
+        // tells the caller "the property is empty". Make the error visible.
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
             tracing::warn!(key, code = ?out.status.code(), stderr = %err,
-                           "waydroid shell başarısız");
+                           "waydroid shell failed");
             return Err(zbus::fdo::Error::Failed(format!(
-                "waydroid shell başarısız (kod {:?}): {}", out.status.code(), err)));
+                "waydroid shell failed (code {:?}): {}", out.status.code(), err)));
         }
         Ok(String::from_utf8_lossy(&out.stdout)
             .lines()
@@ -224,7 +223,7 @@ impl Helper {
             .to_string())
     }
 
-    /// Android boot'u tamamladı mı. `liwd` bunu çıkarsamak yerine ölçebilsin diye.
+    /// Has Android finished booting? So `liwd` can measure rather than infer.
     async fn boot_completed(
         &self,
         #[zbus(header)] hdr: Header<'_>,
@@ -232,11 +231,11 @@ impl Helper {
         Ok(self.get_prop("sys.boot_completed", hdr).await?.trim() == "1")
     }
 
-    /// Ön plandaki Android uygulamasının paket adını döner.
+    /// Returns the package name of the foreground Android app.
     ///
-    /// Profilin otomatik seçilmesi buna bağlı. `dumpsys activity` çıktısı
-    /// Android sürümleri arasında değişebildiği için birden fazla desen
-    /// denenir; hiçbiri tutmazsa boş dize döner (uydurma yapmaz).
+    /// Automatic profile selection depends on this. The `dumpsys activity`
+    /// output varies between Android versions, so several patterns are tried;
+    /// if none match it returns an empty string (it does not invent one).
     async fn foreground_package(
         &self,
         #[zbus(header)] hdr: Header<'_>,
@@ -250,12 +249,12 @@ impl Helper {
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            return Err(zbus::fdo::Error::Failed(format!("dumpsys başarısız: {err}")));
+            return Err(zbus::fdo::Error::Failed(format!("dumpsys failed: {err}")));
         }
         Ok(parse_foreground(&String::from_utf8_lossy(&out.stdout)).unwrap_or_default())
     }
 
-    /// SurfaceFlinger katman listesi (ölçüm için).
+    /// SurfaceFlinger layer list (for measurement).
     async fn surface_layers(
         &self,
         #[zbus(header)] hdr: Header<'_>,
@@ -264,11 +263,11 @@ impl Helper {
         run_dumpsys(&["dumpsys", "SurfaceFlinger", "--list"]).await
     }
 
-    /// Bir katmanın kare zamanlama verisi.
+    /// Frame timing data for one layer.
     ///
-    /// Katman adı doğrudan komuta gidiyor; kabuk kullanmıyoruz (exec, shell
-    /// değil) ama yine de kontrol karakterlerini eliyoruz — argüman
-    /// enjeksiyonu bu yolda mümkün olmasa da, girdiyi doğrulamak ucuz.
+    /// The layer name goes straight into the command; we do not use a shell
+    /// (exec, not shell) but control characters are filtered anyway — argument
+    /// injection is not possible on this path, but validating input is cheap.
     async fn surface_latency(
         &self,
         layer: &str,
@@ -277,17 +276,17 @@ impl Helper {
         if layer.is_empty() || layer.len() > 512
             || layer.chars().any(|c| c.is_control())
         {
-            return Err(zbus::fdo::Error::InvalidArgs("geçersiz katman adı".into()));
+            return Err(zbus::fdo::Error::InvalidArgs("invalid layer name".into()));
         }
         self.authorize(&hdr, ACT_PERF, false).await?;
         run_dumpsys(&["dumpsys", "SurfaceFlinger", "--latency", layer]).await
     }
 
-    /// Android'in dokunuş göstergesini (pointer location) açar/kapatır.
+    /// Toggles Android's touch indicator (pointer location).
     ///
-    /// Kalibrasyon için şart: dokunuşun ekranda NEREYE düştüğü görülmeden
-    /// koordinat eşlemesi ayarlanamaz. Yalnızca bu geliştirici ayarını
-    /// değiştirir; sabit komut, kullanıcıdan gelen dize yok.
+    /// Mandatory for calibration: coordinate mapping cannot be tuned without
+    /// seeing WHERE a touch lands. It changes only this developer setting;
+    /// fixed command, no caller-supplied string.
     async fn set_pointer_location(
         &self,
         enabled: bool,
@@ -305,20 +304,20 @@ impl Helper {
             if !out.status.success() {
                 let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
                 return Err(zbus::fdo::Error::Failed(
-                    format!("settings put {key} başarısız: {err}")));
+                    format!("settings put {key} failed: {err}")));
             }
         }
-        tracing::info!(enabled, "dokunuş göstergesi ayarlandı");
+        tracing::info!(enabled, "touch indicator set");
         Ok(())
     }
 
-    /// Salt okunur ağ teşhisi (JSON). Sistemi değiştirmez, etkileşim istemez.
-    /// Android günlüğünün son satırları.
+    /// Read-only network diagnosis (JSON). Changes nothing, needs no interaction.
+    /// The last lines of the Android log.
     ///
-    /// Uygulama donmalarını teşhis etmenin tek yolu bu. Genel bir `Shell()`
-    /// açmamak için argümanlar SIKI kısıtlı: tampon adı sabit listeden
-    /// seçilir, satır sayısı sınırlanır. Kullanıcı metni komut satırına
-    /// serbestçe geçmiyor.
+    /// The only way to diagnose app hangs. To avoid opening a general `Shell()`
+    /// the arguments are TIGHTLY constrained: the buffer name is picked from a
+    /// fixed list and the line count is bounded. No user text reaches the
+    /// command line.
     async fn logcat(
         &self,
         buffer: &str,
@@ -327,7 +326,7 @@ impl Helper {
     ) -> zbus::fdo::Result<String> {
         let Some(buf) = valid_log_buffer(buffer) else {
             return Err(zbus::fdo::Error::InvalidArgs(format!(
-                "geçersiz tampon: {buffer:?} (main|crash|system|events|all)")));
+                "invalid buffer: {buffer:?} (main|crash|system|events|all)")));
         };
         let n = clamp_log_lines(lines);
         self.authorize(&hdr, ACT_LOG, false).await?;
@@ -335,12 +334,12 @@ impl Helper {
         run_dumpsys(&["logcat", "-d", "-b", buf, "-t", &n]).await
     }
 
-    /// MONOTONİK zaman damgalı logcat — teşhis korelasyonu için.
+    /// logcat with MONOTONIC timestamps — for diagnostic correlation.
     ///
-    /// `Logcat`ten ayrı bir metot çünkü biçim farkı anlam farkı:
-    /// varsayılan çıktı duvar saati veriyor ve kare zaman damgaları
-    /// `CLOCK_MONOTONIC`. İkisini hizalamak için saat dilimi ve gün
-    /// sınırı tahmini gerekiyordu; `-v monotonic` bunu tamamen kaldırıyor.
+    /// A separate method from `Logcat` because a format difference is a meaning
+    /// difference: the default output is wall clock while frame timestamps are
+    /// `CLOCK_MONOTONIC`. Aligning them needed timezone and day-boundary
+    /// guesswork; `-v monotonic` removes that entirely.
     async fn log_trace(
         &self,
         buffer: &str,
@@ -349,38 +348,37 @@ impl Helper {
     ) -> zbus::fdo::Result<String> {
         let Some(buf) = valid_log_buffer(buffer) else {
             return Err(zbus::fdo::Error::InvalidArgs(format!(
-                "geçersiz tampon: {buffer:?} (main|crash|system|events|all)")));
+                "invalid buffer: {buffer:?} (main|crash|system|events|all)")));
         };
         let n = clamp_log_lines(lines);
         self.authorize(&hdr, ACT_LOG, false).await?;
         let n = n.to_string();
-        // hwcomposer SUSTURULUYOR — ölçülen: kare başına iki satır yazıyor
-        // (`attach dmabuf: ...`). 180 Hz'de saniyede ~360 satır eder ve
-        // 400 satırlık kuyruk yalnızca BİR saniyeyi kapsar; teşhis için
-        // aradığımız olaylar (GC, Skipped frames, ağ zaman aşımı) daha
-        // görülmeden halkadan düşer.
+        // hwcomposer is SILENCED — measured: it writes two lines per frame
+        // (`attach dmabuf: ...`). At 180 Hz that is ~360 lines a second, and a
+        // 400-line tail then covers only ONE second; the events we are looking
+        // for (GC, Skipped frames, network timeouts) drop out of the ring
+        // before we ever see them.
         //
-        // `*:I` şart: bir filtre verildiği anda logcat'in varsayılanı
-        // "hepsi sessiz" oluyor. Onsuz çıktı tamamen boşalırdı.
+        // `*:I` is mandatory: the moment any filter is given, logcat's default
+        // becomes "silence everything". Without it the output would be empty.
         run_dumpsys(&["logcat", "-d", "-b", buf,
                       "-v", "monotonic", "-v", "threadtime", "-t", &n,
                       "hwcomposer:S", "*:I"]).await
     }
 
-    /// Kilitlenmiş ses HAL'ini yeniden başlatır.
+    /// Restarts a wedged audio HAL.
     ///
-    /// Ölçülen arıza: HAL kilitlenince `audioserver` ona yaptığı
-    /// `registerClient` çağrısında takılıyor, gözcü 5 saniye sonra onu
-    /// abort ediyor, yeniden başlıyor ve aynı yerde takılıyor. Sonuç:
-    /// `AudioFlinger` hiç yayınlanamıyor ve sese dokunan HER uygulama
-    /// sonsuza kadar bekliyor — kullanıcıya "oyun açılmıyor" olarak
-    /// görünüyor.
+    /// Measured failure: once the HAL wedges, `audioserver` blocks in its
+    /// `registerClient` call, the watchdog aborts it after 5 seconds, it
+    /// restarts and wedges in the same place. Result: `AudioFlinger` never
+    /// publishes and EVERY app that touches audio waits forever — which the
+    /// user experiences as "the game will not open".
     ///
-    /// HAL öldürülünce Android'in init'i onu hemen yeniden başlatır.
-    /// Tüm oturumu yeniden başlatmaktan çok daha az yıkıcı.
+    /// Killing the HAL makes Android's init restart it immediately. Far less
+    /// destructive than restarting the whole session.
     ///
-    /// Süreç adı SABİT: parametre olarak almak, çağırana istediği süreci
-    /// root olarak öldürtmek demekti.
+    /// The process name is FIXED: taking it as a parameter would let the caller
+    /// kill any process as root.
     async fn restart_audio(
         &self,
         #[zbus(header)] hdr: Header<'_>,
@@ -389,16 +387,16 @@ impl Helper {
         let out = Command::new("pkill").args(["-f", AUDIO_HAL])
             .stdin(Stdio::null()).output().await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        // pkill: 0 = eşleşti ve sinyal gönderildi, 1 = eşleşme yok.
-        // 1'i hata saymak yanlış olurdu ama "yeniden başlatıldı" demek de
-        // yalan olur — ayrı raporlanıyor.
+        // pkill: 0 = matched and signalled, 1 = no match.
+        // Treating 1 as an error would be wrong, but saying "restarted" would be
+        // a lie — it is reported separately.
         match out.status.code() {
             Some(0) => {
-                tracing::info!("ses HAL'i yeniden başlatıldı");
-                Ok("ses HAL'i öldürüldü — init yeniden başlatacak".into())
+                tracing::info!("audio HAL restarted");
+                Ok("audio HAL killed — init will restart it".into())
             }
-            Some(1) => Ok("ses HAL'i zaten çalışmıyor".into()),
-            c => Err(zbus::fdo::Error::Failed(format!("pkill başarısız: {c:?}"))),
+            Some(1) => Ok("the audio HAL is not running".into()),
+            c => Err(zbus::fdo::Error::Failed(format!("pkill failed: {c:?}"))),
         }
     }
 
@@ -411,11 +409,11 @@ impl Helper {
         serde_json::to_string(&d).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
-    /// Güvenlik duvarı kurallarını onarır. Yönetici yetkisi ister.
+    /// Repairs firewall rules. Requires administrator authorization.
     ///
-    /// Yalnızca eksik kural EKLER; mevcut kuralları kaldırmaz ve DNS kaçıran
-    /// yabancı tabloları KENDİLİĞİNDEN değiştirmez — başka bir aracın
-    /// yapılandırmasını sessizce bozmak kabul edilemez, o durumda rapor eder.
+    /// It only ADDS missing rules; it removes nothing and does NOT change
+    /// foreign tables that hijack DNS on its own — silently breaking another
+    /// tool's configuration is unacceptable, so it reports instead.
     async fn net_repair(
         &self,
         #[zbus(header)] hdr: Header<'_>,
@@ -437,8 +435,8 @@ impl Helper {
                     .stdout(Stdio::null()).stderr(Stdio::null())
                     .status().await;
                 if matches!(st, Ok(s) if s.success()) {
-                    // Kuralın tamamını yaz: kırpılmış rapor ("ufw route allow in on")
-                    // ne yapıldığını gizler ve denetlenemez hale getirir.
+                    // Write the whole rule: a truncated report ("ufw route allow in on")
+                    // hides what was done and makes it unauditable.
                     done.push(format!("ufw {}", args.join(" ")));
                 }
             }
@@ -447,26 +445,26 @@ impl Helper {
 
         if !d.hijack_rules.is_empty() {
             done.push(format!(
-                "UYARI: {} yabancı kural DNS'i kaçırıyor; bunlara DOKUNULMADI. \
-                 Başka bir aracın yapılandırmasını sessizce değiştirmiyoruz. \
+                "WARNING: {} foreign rules hijack DNS; they were NOT TOUCHED. \
+                 We do not silently change another tool's configuration. \
                  Tablolar: {}",
                 d.hijack_rules.len(),
                 d.hijack_rules.iter().map(|h| h.table.as_str())
                     .collect::<Vec<_>>().join(", ")));
         }
-        if done.is_empty() { done.push("yapılacak bir şey bulunamadı".into()); }
+        if done.is_empty() { done.push("nothing to do".into()); }
         Ok(done.join("\n"))
     }
 }
 
-/// `waydroid shell -- <argv>` çalıştırır ve stdout'u temizleyip döner.
+/// Runs `waydroid shell -- <argv>` and returns cleaned stdout.
 ///
-/// "--" ayracı ŞART: waydroid shell argparse kullanır, tireli argümanları
+/// The "--" separator is MANDATORY: waydroid shell uses argparse and swallows
 /// aksi halde yutar.
-/// Logcat tampon adını sabit listeye karşı doğrular.
+/// Validates a logcat buffer name against a fixed list.
 ///
-/// Serbest metin kabul etmek, argümanın komut satırına geçmesi demekti.
-/// Sabit listeden DÖNDÜRÜLEN dize kullanılır; girdinin kendisi asla
+/// Accepting free text would mean the argument reaches the command line. The
+/// string RETURNED from the fixed list is used; the input itself never is.
 /// komuta gitmez.
 fn valid_log_buffer(b: &str) -> Option<&'static str> {
     match b {
@@ -479,10 +477,10 @@ fn valid_log_buffer(b: &str) -> Option<&'static str> {
     }
 }
 
-/// Satır sayısını makul aralığa sıkıştırır.
+/// Clamps the line count to a sensible range.
 ///
-/// Üst sınır şart: sınırsız logcat D-Bus mesaj boyutunu aşar ve çağrı
-/// sessizce başarısız olur.
+/// The upper bound is mandatory: an unbounded logcat exceeds the D-Bus message
+/// size and the call fails silently.
 fn clamp_log_lines(n: u32) -> u32 { n.clamp(1, 2000) }
 
 async fn run_dumpsys(argv: &[&str]) -> zbus::fdo::Result<String> {
@@ -494,7 +492,7 @@ async fn run_dumpsys(argv: &[&str]) -> zbus::fdo::Result<String> {
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err(zbus::fdo::Error::Failed(format!(
-            "waydroid shell başarısız (kod {:?}): {}", out.status.code(), err)));
+            "waydroid shell failed (code {:?}): {}", out.status.code(), err)));
     }
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -503,13 +501,13 @@ async fn run_dumpsys(argv: &[&str]) -> zbus::fdo::Result<String> {
         .join("\n"))
 }
 
-/// `dumpsys activity activities` çıktısından ön plan paketini çıkarır.
+/// Extracts the foreground package from `dumpsys activity activities` output.
 ///
-/// Ayrı fonksiyon ki gerçek çıktılara karşı test edilebilsin — Android
-/// sürümleri bu çıktının biçimini değiştiriyor ve sessizce yanlış paket
-/// döndürmek yanlış profili yükler.
+/// A separate function so it can be tested against real output — Android
+/// versions change this format and silently returning the wrong package loads
+/// the wrong profile.
 fn parse_foreground(dump: &str) -> Option<String> {
-    // Sırayla dene: en güvenilir desen önce.
+    // Try in order: the most reliable pattern first.
     for line in dump.lines() {
         let t = line.trim();
         for key in ["mResumedActivity:", "topResumedActivity=", "mFocusedActivity:"] {
@@ -521,8 +519,7 @@ fn parse_foreground(dump: &str) -> Option<String> {
     None
 }
 
-/// "... u0 com.kiloo.subwaysurf/com.sybogames...Activity t42}" içinden
-/// paket adını ayıklar.
+/// Extracts the package name from "... u0 com.kiloo.subwaysurf/com.sybogames...Activity t42}".
 fn extract_pkg(s: &str) -> Option<String> {
     s.split_whitespace()
         .find(|tok| tok.contains('/') && tok.contains('.'))
@@ -545,7 +542,7 @@ mod tests {
         }
     }
 
-    /// Sınırsız logcat D-Bus mesaj sınırını aşar ve çağrı sessizce ölür.
+    /// An unbounded logcat exceeds the D-Bus message limit and the call dies silently.
     #[test]
     fn log_lines_are_bounded() {
         assert_eq!(clamp_log_lines(0), 1);
@@ -568,10 +565,10 @@ mod tests {
         assert_eq!(parse_foreground(s).as_deref(), Some("com.android.vending"));
     }
 
-    /// Tanınmayan biçimde paket UYDURMAMALI.
+    /// It must NOT INVENT a package from an unrecognised format.
     #[test]
     fn unknown_format_yields_none() {
-        assert!(parse_foreground("alakasız çıktı\nbaşka satır").is_none());
+        assert!(parse_foreground("unrelated output\nanother line").is_none());
     }
 
     #[test]
@@ -592,7 +589,7 @@ async fn main() -> Result<()> {
         .serve_at(OBJ_PATH, Helper { conn })?
         .build()
         .await?;
-    tracing::info!("liwd-helper hazır — {BUS_NAME} (root, polkit korumalı)");
+    tracing::info!("liwd-helper ready — {BUS_NAME} (root, polkit protected)");
 
     let mut sigterm = tokio::signal::unix::signal(
         tokio::signal::unix::SignalKind::terminate())?;

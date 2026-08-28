@@ -1,9 +1,11 @@
-// Waydroid penceresinin ve masaüstünün geometrisini bir dosyaya yazar.
-// print() ile journal'a yazmak yerine dosya: ayrıştırması güvenilir.
+// Writes the Waydroid window's and the desktop's geometry to a file.
+// A file rather than print() into the journal: parsing is reliable.
 var wins = (typeof workspace.windowList === "function")
-    ? workspace.windowList() : workspace.clientList();
-// Yalnızca resourceClass. Başlığa bakmak kullanıcının "waydroid ..."
-// yazdığı terminali eşleştiriyordu — gerçekte yaşandı.
+    ? workspace.windowList()
+    : (typeof workspace.stackingOrder !== "undefined" ? workspace.stackingOrder
+                                                      : workspace.clientList());
+// resourceClass only. Matching the caption matched the user's terminal while
+// it displayed a "waydroid ..." command — this actually happened.
 var out = "";
 for (var i = 0; i < wins.length; i++) {
     var w = wins[i];

@@ -34,13 +34,13 @@ wx,wy,ww,wh = map(float, sys.argv[1].split(','))
 dw,dh = map(float, sys.argv[2].split(','))
 print()
 print(f"  pencere  : {int(wx)},{int(wy)}  {int(ww)}x{int(wh)}")
-print(f"  masaüstü : {int(dw)}x{int(dh)}")
+print(f"  desktop  : {int(dw)}x{int(dh)}")
 print()
-print("  Dokunmatik ekran TÜM MASAÜSTÜNE eşleniyorsa:")
+print("  If the touchscreen maps to the WHOLE DESKTOP:")
 print(f"    --region {wx/dw:.5f},{wy/dh:.5f},{ww/dw:.5f},{wh/dh:.5f}")
 print()
 # Pencereyi iceren ciktiyi bul
-print("  Dokunmatik ekran YALNIZCA pencerenin bulundugu ciktiya eslenıyorsa:")
+print("  If the touchscreen maps ONLY to the output holding the window:")
 print("    (cikis boyutunu asagidan sec)")
 PY
 kscreen-doctor -j 2>/dev/null | python3 -c "

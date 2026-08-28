@@ -1,8 +1,8 @@
-//! liw-core — Waydroid ile konuşan tek katman.
+//! liw-core — the single layer that talks to Waydroid.
 //!
-//! Tasarım notu: `liwinux` Waydroid'i bir kütüphane gibi değil, bir *süreç*
-//! olarak kullanır. Bu modül o sürecin etrafındaki tüm bilgi birikimini
-//! (argüman tuzakları, sağlık göstergeleri, çökme zincirleri) tek yerde tutar.
+//! Design note: `liwinux` treats Waydroid as a *process*, not as a library.
+//! This module keeps everything learned about that process — argument
+//! pitfalls, health signals, crash chains — in one place.
 
 pub mod bench;
 pub mod perf;

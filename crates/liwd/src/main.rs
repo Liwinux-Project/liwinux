@@ -1,8 +1,8 @@
 //! liwd — liwinux session daemon.
 //!
-//! Kullanıcı bağlamında (systemd user servisi) çalışır; session Wayland
-//! görüntüsüne eriştiği için root'ta olamaz. Ayrıcalıklı işlemler ileride
-//! ayrı bir sistem yardımcısına + polkit'e taşınacak.
+//! Runs in the user context (a systemd user service); it cannot run as root
+//! because the session needs access to the Wayland display. Privileged
+//! operations live in a separate system helper behind polkit.
 
 mod keymapper;
 mod window;
@@ -13,11 +13,11 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use zbus::{connection, interface};
 
-/// Pencere yoklaması kaç sağlık turunda bir yapılsın.
+/// How often, in health ticks, the window is polled.
 ///
-/// Sağlık turu 5 sn; 6 turda bir = 30 sn. Kullanıcı pencereyi kapatıp
-/// açtığında en geç yarım dakikada fark edilir — tam ekran zaten pencere
-/// açıldıktan sonra uygulanacak, gecikme hissedilmez.
+/// A health tick is 5 s; every 6th tick = 30 s. Closing and reopening the
+/// window is noticed within half a minute — fullscreen is applied after the
+/// window appears anyway, so the delay is not felt.
 const WINDOW_POLL_EVERY: u32 = 6;
 
 const BUS_NAME: &str = "id.liwinux.Manager1";
@@ -32,7 +32,7 @@ struct Manager {
 
 #[interface(name = "id.liwinux.Manager1")]
 impl Manager {
-    /// Session'ı ayrık başlatır. Zaten çalışıyorsa işlemsizdir.
+    /// Starts the session detached. A no-op if it is already running.
     async fn start(&self) -> zbus::fdo::Result<()> {
         self.sup.start_detached().await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
@@ -48,23 +48,23 @@ impl Manager {
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
-    /// Süpervizörün en son gözlemlediği durum.
+    /// The last state observed by the supervisor.
     #[zbus(property)]
     async fn state(&self) -> String {
         self.state.read().await.as_str().to_string()
     }
 
-    /// Ayrıntılı sağlık: JSON. Hangi göstergenin düştüğünü tek tek verir,
-    /// çünkü "çalışmıyor" tek başına teşhis için yetersiz.
+    /// Detailed health as JSON. Reports each signal separately, because
+    /// "not working" alone is not enough to diagnose.
     async fn health(&self) -> zbus::fdo::Result<String> {
         let h: Health = self.sup.health().await;
         serde_json::to_string(&h).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
-    /// Keymapper'ı başlatır. Zaten çalışıyorsa işlemsizdir.
+    /// Starts the keymapper. A no-op if it is already running.
     ///
-    /// `grab` true ise cihaz YALNIZCA profil etkinken kilitlenir; oyundan
-    /// çıkınca bırakılır. Masaüstünde klavyenin çalışmaması kabul edilemez.
+    /// With `grab` true the device is grabbed ONLY while a profile is active;
+    /// released on exit. A non-working keyboard on the desktop is unacceptable.
     async fn start_keymapper(&self, grab: bool) -> zbus::fdo::Result<()> {
         self.km.start(grab).await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
@@ -83,19 +83,19 @@ impl Manager {
             found, x, y, width, height, fullscreen,
         }).await;
         if found {
-            // Motor en-boy düzeltmesi için gerçek piksel boyutunu ister.
+            // The engine needs the real pixel size for aspect correction.
             self.km.set_screen_px(width as u32, height as u32).await;
         }
         Ok(())
     }
 
-    /// Waydroid penceresini tam ekran yapmayı dener.
+    /// Tries to make the Waydroid window fullscreen.
     async fn fullscreen(&self) -> zbus::fdo::Result<bool> {
         Ok(window::fullscreen_with_retry(
             self.win.clone(), 5, std::time::Duration::from_millis(700)).await)
     }
 
-    /// Waydroid penceresini öne getirir ve odaklar.
+    /// Raises and focuses the Waydroid window.
     async fn activate_window(&self) -> zbus::fdo::Result<()> {
         window::activate().await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
@@ -107,21 +107,22 @@ impl Manager {
         serde_json::to_string(&g).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
-    /// KWin script'inin çağırdığı geri bildirim: hangi pencere odakta.
+    /// Callback invoked by the KWin script: which window has focus.
     ///
-    /// Android pencerenin küçültüldüğünü bilmez; bu bilgi olmadan oyun alt
-    /// tabdayken bile eşleme sürer ve dokunuşlar masaüstüne düşer.
+    /// Android does not know the window was minimised; without this the mapping
+    /// keeps running with the game in the background and touches land on the
+    /// desktop.
     async fn set_active_window(&self, class: &str) -> zbus::fdo::Result<()> {
         self.km.set_active_window(class).await;
 
-        // Pencere İLK kez etkinleştiğinde tam ekran yap.
+        // Make the window fullscreen the FIRST time it activates.
         //
-        // Session başlangıcında denemek yetmiyor: pencere o an henüz
-        // olmayabilir (`show-full-ui` ayrı bir adım ve kullanıcı ne zaman
-        // açacağını biz bilemeyiz). Olay güdümlü olmak tek doğru yol.
+        // Trying at session start is not enough: the window may not exist yet
+        // (`show-full-ui` is a separate step and we cannot know when the user
+        // will run it). Being event-driven is the only correct approach.
         //
-        // "İlk kez" şartı bilinçli: kullanıcı tam ekrandan kasten çıktıysa
-        // her odaklanmada geri zorlamak düşmanca olur.
+        // The "first time only" condition is deliberate: if the user left
+        // fullscreen on purpose, forcing it back on every focus would be hostile.
         if class.eq_ignore_ascii_case("waydroid")
             && !self.win.fullscreen_attempted().await
             && liw_core::Config::load().fullscreen_on_start
@@ -136,7 +137,7 @@ impl Manager {
         Ok(())
     }
 
-    /// Keymapper durumu (JSON): çalışıyor mu, ön plan, etkin profil, gecikme.
+    /// Keymapper state as JSON: running, foreground, active profile, latency.
     async fn keymapper_status(&self) -> zbus::fdo::Result<String> {
         let st = self.km.state().await;
         serde_json::to_string(&st).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
@@ -174,39 +175,39 @@ async fn main() -> Result<()> {
         })?
         .build()
         .await?;
-    tracing::info!("liwd hazır — {BUS_NAME} {OBJ_PATH}");
+    tracing::info!("liwd ready — {BUS_NAME} {OBJ_PATH}");
 
-    // Keymapper'ı kendiliğinden başlat.
+    // Start the keymapper automatically.
     //
-    // Önceden yalnızca açık D-Bus çağrısıyla başlıyordu; her
-    // `systemctl --user restart liwd` sonrası SESSİZCE kayboluyordu.
-    // Kullanıcının gördüğü tek şey "girdileri almıyor" oluyordu.
+    // It used to start only on an explicit D-Bus call and vanished SILENTLY
+    // after every `systemctl --user restart liwd`. All the user saw was
+    // "it is not taking input".
     //
-    // Klavye yapılandırılmamışsa başlatmayı denemek anlamsız — ama bunu
-    // sessizce geçmek de aynı hatayı tekrarlamak olurdu, o yüzden söyle.
+    // Trying with no keyboard configured is pointless — but passing over that
+    // silently would repeat the same mistake, so say it.
     {
         let c = liw_core::Config::load();
         if !c.keymapper_on_start {
-            tracing::info!("keymapper otomatik başlatma kapalı (keymapper_on_start = false)");
+            tracing::info!("keymapper autostart disabled (keymapper_on_start = false)");
         } else if c.keyboard.is_none() {
             tracing::warn!(
-                "keymapper başlatılmadı: yapılandırılmış klavye yok \
+                "keymapper not started: no keyboard configured \
                  — `liw keymap detect --save` ile kalibre et");
         } else if let Err(e) = km.start(true).await {
-            tracing::error!(hata = %e, "keymapper otomatik başlatılamadı");
+            tracing::error!(error = %e, "could not autostart the keymapper");
         }
     }
 
-    // Adımızı kaybedersek ÇIKMALIYIZ.
+    // If we lose our name we MUST EXIT.
     //
-    // Gerçekte oldu: eski bir liwd adını kaybetti ama çalışmaya devam etti.
-    // Ulaşılamaz bir daemon hâlâ cihaz kilitleyip dokunuş enjekte edebilir —
-    // kullanıcının klavyesi çalışmaz ve nedenini bulamaz. systemd zaten
-    // yeniden başlatacak; zombi kalmaktansa ölmek doğru.
+    // This actually happened: an old liwd lost its name but kept running. An
+    // unreachable daemon can still grab devices and inject touches — the user's
+    // keyboard stops working and they cannot find out why. systemd will restart
+    // us anyway; dying beats lingering as a zombie.
     let dbus = zbus::fdo::DBusProxy::new(&conn).await?;
     let own_id = conn.unique_name().map(|n| n.to_string());
 
-    // --- gözetim döngüsü ---
+    // --- supervision loop ---
     let mut unhealthy = 0u32;
     let mut attempts = 0u32;
     let mut was_running = false;
@@ -225,19 +226,19 @@ async fn main() -> Result<()> {
                     was_running = false;
                     SessionState::Stopped
                 } else if h.is_healthy() {
-                    if unhealthy > 0 { tracing::info!("session toparlandı"); }
+                    if unhealthy > 0 { tracing::info!("session recovered"); }
                     unhealthy = 0; attempts = 0;
 
                     // Pencere durumunu SEYREK yokla.
                     //
-                    // Sağlık döngüsü 5 saniyede bir dönüyor; her turda KWin
-                    // betiği yüklemek saatte 720 yükleme demekti. KWin'in
-                    // scripting motorunu bu kadar sık meşgul etmek gereksiz
-                    // ve riskli — pencerenin kaybolduğunu fark etmek 5
-                    // saniyelik çözünürlük istemiyor.
+                    // The health loop ticks every 5 seconds; loading a KWin
+                    // script on every tick meant 720 loads per hour. Keeping
+                    // KWin's scripting engine that busy is needless risk —
+                    // noticing the window disappeared does not need 5-second
+                    // resolution.
                     //
-                    // Ayrıca YALNIZCA tam ekran denenmişse yoklanır:
-                    // denenmediyse sıfırlanacak bir şey de yok.
+                    // Also polled ONLY if fullscreen was attempted: if it was
+                    // not, there is nothing to reset.
                     win_tick = win_tick.wrapping_add(1);
                     if was_running
                         && win_tick % WINDOW_POLL_EVERY == 0
@@ -246,13 +247,13 @@ async fn main() -> Result<()> {
                         let _ = window::request_report().await;
                         if win.note_window_gone().await {
                             tracing::info!(
-                                "Waydroid penceresi kapandı — tam ekran yeniden denenecek");
+                                "Waydroid window closed — fullscreen will be retried");
                         }
                     }
-                    // Session yeni ayağa kalktıysa pencereyi tam ekran yap.
-                    // Boot tamamlandığında pencere HENÜZ olmayabilir, o yüzden
-                    // tekrar denemeli; ayrıca her döngüde değil YALNIZCA
-                    // geçişte tetikliyoruz.
+                    // If the session just came up, make the window fullscreen.
+                    // The window may NOT exist when boot completes, so it must
+                    // retry; and we trigger ONLY on the transition, not on
+                    // every loop.
                     if !was_running && liw_core::Config::load().fullscreen_on_start {
                         let w = win.clone();
                         tokio::spawn(async move {
@@ -266,54 +267,54 @@ async fn main() -> Result<()> {
                     unhealthy += 1;
                     tracing::warn!(
                         strike = unhealthy, threshold = cfg.unhealthy_threshold,
-                        sorunlar = ?h.failures(), "session sağlıksız");
+                        failures = ?h.failures(), "session unhealthy");
                     SessionState::Degraded
                 };
                 *state.write().await = next;
 
-                // Eşik: tek bir dalgalanmada yeniden başlatma yapma.
+                // Threshold: do not restart on a single dip.
                 if cfg.auto_recover
                     && unhealthy >= cfg.unhealthy_threshold
                     && attempts < cfg.max_recovery_attempts
                 {
                     attempts += 1;
-                    tracing::error!(deneme = attempts, "kurtarma başlatılıyor");
+                    tracing::error!(attempt = attempts, "starting recovery");
                     *state.write().await = SessionState::Recovering;
                     if let Err(e) = sup.recover().await {
-                        tracing::error!(hata = %e, "kurtarma başarısız");
+                        tracing::error!(error = %e, "recovery failed");
                     }
                     unhealthy = 0;
                 } else if attempts >= cfg.max_recovery_attempts && unhealthy > 0 {
                     tracing::error!(
-                        "kurtarma denemeleri tükendi ({}); elle müdahale gerekiyor",
+                        "recovery attempts exhausted ({}); manual intervention needed",
                         cfg.max_recovery_attempts);
                 }
             }
-            _ = sigterm.recv() => { tracing::info!("SIGTERM — çıkılıyor"); break; }
+            _ = sigterm.recv() => { tracing::info!("SIGTERM — exiting"); break; }
             _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
-                // Sahiplik yoklaması. Sinyal dinlemek yerine yoklama:
+                // Ownership poll. Polling rather than listening for a signal:
                 // basit, ve 10 saniyelik gecikme zombi riskini kapatmaya yeter.
                 match dbus.get_name_owner(BUS_NAME.try_into().unwrap()).await {
                     Ok(owner) if Some(owner.to_string()) == own_id => {}
                     Ok(other) => {
                         tracing::error!(
                             sahip = %other, bizim = ?own_id,
-                            "D-Bus adı başkasına geçti — çıkılıyor (zombi kalmamak için)");
+                            "the D-Bus name went to someone else — exiting (to avoid a zombie)");
                         break;
                     }
                     Err(e) => {
-                        tracing::error!(hata = %e, "D-Bus adı sorgulanamadı — çıkılıyor");
+                        tracing::error!(error = %e, "could not query the D-Bus name — exiting");
                         break;
                     }
                 }
             }
-            _ = tokio::signal::ctrl_c() => { tracing::info!("SIGINT — çıkılıyor"); break; }
+            _ = tokio::signal::ctrl_c() => { tracing::info!("SIGINT — exiting"); break; }
         }
     }
-    // Keymapper'ı DURDURUYORUZ: kilitli bir cihazı sahipsiz bırakmak
-    // kullanıcının klavyesini rehin alır.
+    // We STOP the keymapper: leaving a grabbed device ownerless holds the
+    // user's keyboard hostage.
     km.stop().await;
-    // Not: session'ı kasıtlı olarak durdurmuyoruz. Daemon'un yeniden
-    // başlatılması çalışan Android'i öldürmemeli.
+    // Note: we deliberately do not stop the session. Restarting the daemon
+    // must not kill a running Android.
     Ok(())
 }

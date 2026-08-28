@@ -12,7 +12,7 @@ Restart=on-failure
 RestartSec=5
 Environment=LIWD_LOG=info
 
-# Root çalıştığı için yüzeyi daraltıyoruz.
+# It runs as root, so we keep the surface narrow.
 NoNewPrivileges=yes
 ProtectHome=read-only
 ProtectKernelTunables=no
@@ -22,12 +22,12 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
-# CapabilityBoundingSet BİLEREK ayarlanmadı.
-# `waydroid shell` altta `lxc-attach` çalıştırır; konteynere girmek için
-# CAP_SYS_CHROOT, CAP_SETUID, CAP_SETGID, CAP_SYS_PTRACE ve daha fazlası
-# gerekir. Daraltılmış bir küme komutu SESSİZCE başarısız kılar (boş çıktı).
-# Yetenek kısıtlaması yerine arayüz yüzeyini dar tutuyoruz: bu servis
-# genel amaçlı bir kabuk sunmaz, yalnızca adı konmuş işlemler sunar.
+# CapabilityBoundingSet is DELIBERATELY not set.
+# `waydroid shell` runs `lxc-attach` underneath; entering the container needs
+# CAP_SYS_CHROOT, CAP_SETUID, CAP_SETGID, CAP_SYS_PTRACE and more. A narrowed
+# set makes the command fail SILENTLY (empty output).
+# Instead of restricting capabilities we keep the interface surface narrow:
+# this service exposes no general-purpose shell, only named operations.
 
 [Install]
 WantedBy=multi-user.target

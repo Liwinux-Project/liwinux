@@ -1,17 +1,17 @@
-//! Oyun başına tuş eşleme profili.
+//! Per-game key mapping profile.
 //!
-//! Koordinatlar normalize (0..1) tutulur; böylece profil çözünürlükten ve
-//! pencere boyutundan bağımsız olur. Bir profili başka bir makinede
-//! kullanmak için düzenlemek gerekmez.
+//! Coordinates are kept normalized (0..1) so a profile is independent of
+//! resolution and window size. Using a profile on another machine needs no
+//! editing.
 
 use super::touch::Norm;
 use serde::{Deserialize, Serialize};
 
-/// Klavye/fare üzerinde bir tetikleyici.
+/// A trigger on the keyboard or mouse.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Trigger {
-    /// evdev tuş kodu (KEY_W = 17 gibi). Ham kod tutuyoruz ki klavye
-    /// düzeninden bağımsız olsun — "W" harfi değil, o fiziksel tuş.
+    /// evdev key code (e.g. KEY_W = 17). The raw code is stored so it stays
+    /// layout-independent — not the letter "W", but that physical key.
     Key(u16),
     MouseLeft,
     MouseRight,
@@ -20,33 +20,34 @@ pub enum Trigger {
     WheelDown,
 }
 
-/// Kaydırmanın hız eğrisi.
+/// Velocity curve of a swipe.
 ///
-/// Oyunlar kaydırma yönünü belirli bir mesafe eşiği aşılınca anlar. Doğrusal
-/// eğride bu eşik jestin ortalarında aşılır; öne yüklenmiş eğride çok daha
-/// erken. Yani eğri, oyunun tepki verme anını doğrudan etkiler.
+/// Games recognise a swipe direction once a distance threshold is crossed. On a
+/// linear curve that happens mid-gesture; on a front-loaded curve much earlier.
+/// The curve therefore directly affects when the game reacts.
 ///
-/// Varsayılan `Linear` — hangi eğrinin hangi oyunda iyi hissettireceği
-/// ölçülmeden bilinemez, o yüzden davranışı sessizce değiştirmiyoruz.
+/// Default `Linear` — which curve feels right in which game cannot be known
+/// without measuring, so we do not change behaviour silently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Easing {
-    /// Sabit hız.
+    /// Constant speed.
     #[default]
     Linear,
-    /// Hızlı başlar, yavaşlar (quadratic ease-out). Mesafenin %75'i
-    /// sürenin yarısında katedilir.
+    /// Fast start, slowing down (quadratic ease-out). 75% of the distance is
+    /// covered in half the time.
     EaseOut,
-    /// Daha da öne yüklü (cubic). Mesafenin %87.5'i sürenin yarısında.
-    /// Çok agresif olursa jest "ışınlanma" gibi görünüp tanınmayabilir.
+    /// Even more front-loaded (cubic). 87.5% of the distance in half the time.
+    /// Too aggressive and the gesture looks like a "teleport" and may not be
+    /// recognised at all.
     EaseOutStrong,
 }
 
 impl Easing {
-    /// Normalize ilerlemeyi (0..1) katedilen mesafe oranına çevirir.
+    /// Maps normalized progress (0..1) to the fraction of distance covered.
     ///
-    /// Uç noktalar korunur: f(0)=0, f(1)=1. Aksi halde jest hedefe
-    /// varmaz veya başlangıçtan sıçrar.
+    /// Endpoints are preserved: f(0)=0, f(1)=1. Otherwise the gesture never
+    /// reaches its target, or jumps away from its start.
     pub fn apply(self, t: f32) -> f32 {
         let t = t.clamp(0.0, 1.0);
         match self {
@@ -60,104 +61,105 @@ impl Easing {
     }
 }
 
-/// Bir bağlantının davranışı.
+/// Behaviour of a binding.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Binding {
-    /// Tuş basılıyken parmak ekranda kalır.
+    /// The finger stays down while the key is held.
     Tap { trigger: Trigger, at: Norm },
 
-    /// Tuşa basıp bırakınca tek dokunuş (basılı tutmak tekrar etmez).
+    /// One tap on press-and-release (holding does not repeat).
     Toggle { trigger: Trigger, at: Norm },
 
-    /// WASD gibi dört yönlü sanal joystick.
-    /// Merkez etrafında `radius` yarıçapında hareket eden tek parmak.
+    /// A four-way virtual joystick such as WASD.
+    /// A single finger moving within `radius` around the centre.
     Joystick {
         up: Trigger, down: Trigger, left: Trigger, right: Trigger,
         center: Norm,
         radius: f32,
     },
 
-    /// FPS nişan alma: bağıl fare hareketi → sürekli sürükleme.
+    /// FPS aiming: relative mouse motion -> continuous drag.
     ///
-    /// `toggle` YOKSA nişan her zaman etkindir — FPS'te fare bakışı
-    /// sürekli olmalı, tuşa basılı tutmak gerekmemeli.
+    /// Without `toggle`, aim is always active — in an FPS the mouse look must
+    /// be continuous and should not require holding a key.
     Aim {
         #[serde(default)]
         toggle: Option<Trigger>,
         origin: Norm,
-        /// Fare pikselini normalize mesafeye çevirir.
+        /// Converts a mouse pixel into normalized distance.
         sensitivity: f32,
-        /// Bu eşiğin altındaki hareket yok sayılır (fare gürültüsü).
+        /// Motion below this threshold is ignored (mouse noise).
         deadzone: f32,
-        /// Parmak ekran kenarına bu kadar yaklaşınca kaldırılıp merkeze
-        /// geri konur.
+        /// When the finger gets this close to the screen edge it is lifted and
+        /// placed back at the centre.
         ///
-        /// Bu ŞART: parmak sonsuza kadar sürüklenemez. Yeniden ortalama
-        /// olmadan sınırlı açıdan fazla dönemezsin. Gerçek oyuncular da
-        /// aynı şeyi yapar, oyunlar bunu bekler.
+        /// This is MANDATORY: a finger cannot be dragged forever. Without
+        /// recentring you cannot turn past a limited angle. Real players do the
+        /// same thing and games expect it.
         #[serde(default = "default_recenter_margin")]
         recenter_margin: f32,
         /// Devir teslimle yeniden ortalama.
         ///
-        /// Açıkken ikinci parmak, birincisi kenara VARMADAN merkeze iner ve
-        /// ikisi birlikte hareket eder; birincisi ancak sonra bırakılır.
-        /// Böylece ekranda her an hareket eden bir parmak olur.
+        /// When on, a second finger goes down at the centre BEFORE the first
+        /// reaches the edge and both move together; the first is released only
+        /// afterwards. That way a moving finger is on screen at every instant.
         ///
-        /// Kapalıyken basit yol: kaldır, merkeze koy, devam et. O yolda
-        /// devir anında dönüş kesiliyor ve oyunun dokunuş yumuşatması
-        /// sıfırlandığı için "duruyor sonra devam ediyor" hissi oluşuyor.
+        /// When off, the simple path: lift, place at centre, continue. On that
+        /// path the turn is cut at the moment of handover and, because the
+        /// game's touch smoothing resets, it feels like "it stops then resumes".
         #[serde(default = "default_true_handoff")]
         handoff: bool,
-        /// Doğrusal olmayan ölçekleme.
+        /// Non-linear scaling.
         ///
-        /// Parmak merkezden uzaklaştıkça hassasiyet `sqrt(min/uzaklık)` ile
-        /// düşer; parmak kenara asimptotik yaklaşır ve pratikte hiç varmaz.
-        /// Yeniden yerleşme ihtiyacı böylece BAŞTAN doğmaz.
+        /// Sensitivity falls off as the finger moves away from the centre, by
+        /// `sqrt(min/distance)`; the finger approaches the edge asymptotically
+        /// and never really arrives. The need to reseat therefore never arises
+        /// in the first place.
         ///
-        /// XtMapper'ın MouseAimHandler'ından alındı (GPL-3, aynı fikir).
+        /// Taken from XtMapper's MouseAimHandler (GPL-3, same idea).
         #[serde(default = "default_true_nonlinear")]
         nonlinear: bool,
-        /// Kalkış ile inişin arasına konan gecikme (ms).
+        /// Delay inserted between the lift and the press (ms).
         ///
-        /// Aynı karede göndermek Android'in kalkışı gerçek bir dokunuş sonu
-        /// olarak işlemesine fırsat vermiyor; oyun ışınlanma görüyor.
+        /// Sending them in the same frame gives Android no chance to treat the
+        /// lift as a genuine touch end; the game sees a teleport.
         #[serde(default = "default_reset_delay_ms")]
         reset_delay_ms: u32,
-        /// Parmak ekranın DIŞINA çıkabilsin mi.
+        /// Whether the finger may travel OFF-SCREEN.
         ///
-        /// Açıkken yukarıdaki sıfırlama düzeneğinin tamamı (kenar payı,
-        /// devir teslim, doğrusal olmayan ölçekleme, gecikmeli iniş)
-        /// devre dışı kalır: parmak bir kez iner ve nişan bırakılana kadar
-        /// sınırsız düzlemde gezer. Kaldırılacak parmak olmadığı için
-        /// "algılamıyor" ve "aim kayıyor" belirtileri kökten kalkar.
+        /// When on, the whole recentring mechanism above (edge margin, handoff,
+        /// non-linear scaling, delayed press) is disabled: the finger goes down
+        /// once and roams an unbounded plane until aim is released. With no
+        /// finger to lift, the "not detecting" and "aim drifts" symptoms
+        /// disappear at the root.
         ///
-        /// Dayanağı Waydroid'e özgü: dokunuş borusunda kırpma yapan
-        /// katman yok ve `InputDispatcher` MOVE'da pencere aramıyor.
-        /// Bu yüzden yalnızca kırpmayan arka uçlarda geçerlidir —
-        /// `Engine::set_offscreen_ok` ile açılır. Kapalıysa motor sessizce
-        /// sınırlı kipe düşer; uinput yolunda ekran dışı koordinat
-        /// libinput'ta sıkışır ve parmak kenarda takılı kalırdı.
+        /// The justification is Waydroid-specific: nothing on the touch pipe
+        /// clamps, and `InputDispatcher` does not re-pick a window on MOVE.
+        /// It is therefore only valid on backends that do not clamp — enabled
+        /// via `Engine::set_offscreen_ok`. If off, the engine silently falls
+        /// back to bounded mode; on the uinput path an off-screen coordinate
+        /// gets squeezed by libinput and the finger would stick at the edge.
         #[serde(default = "default_unbounded")]
         unbounded: bool,
-        /// Emniyet kutusunun yarı genişliği (ekran katı).
+        /// Half-width of the safety box (in screens).
         ///
-        /// Sınırsız kipin tek sayısal sınırı. Amacı his değil taşma
-        /// koruması: `input_event.value` i32 ve konum f32. 32 ekran ≈
-        /// 82000 piksel; f32 hassasiyeti orada hâlâ 0.01 pikselin
-        /// altında. Bu kadar NET (gidiş-dönüş farkı) sürüklenmek pratikte
-        /// olmaz; olursa fare ilk durduğunda sessizce ortalanır.
+        /// The only numeric limit of unbounded mode. Its purpose is overflow
+        /// protection, not feel: `input_event.value` is i32 and the position is
+        /// f32. 32 screens is about 82000 pixels; f32 precision there is still
+        /// below 0.01 pixel. Drifting this far NET (outbound minus return) does not
+        /// happen in practice; if it does, the finger recentres silently when
         #[serde(default = "default_safety_span")]
         safety_span: f32,
     },
 
-    /// Kaydırma jesti (Subway Surfers gibi oyunlar için).
+    /// Swipe gesture (for games such as Subway Surfers).
     ///
-    /// `group` verilirse aynı gruptaki başka bir jest başlarken bu jest
-    /// İPTAL EDİLİR. Subway Surfers gibi tek parmakla oynanan oyunlarda
-    /// şart: A'ya sonra hızlıca W'ye basınca oyun iki ayrı parmak görmemeli.
-    /// Nişancı oyunlarında ise joystick + nişan + ateş eşzamanlı olmalı,
-    /// o yüzden dışlayıcılık varsayılan DEĞİL, açıkça istenir.
+    /// With `group` set, this gesture is CANCELLED when another gesture in the
+    /// same group starts. Mandatory in single-finger games like Subway Surfers:
+    /// pressing A then quickly W must not look like two separate fingers to the
+    /// game. In shooters, joystick + aim + fire must be simultaneous, so
+    /// exclusivity is NOT the default — it is requested explicitly.
     Swipe {
         trigger: Trigger,
         from: Norm,
@@ -171,7 +173,7 @@ pub enum Binding {
 }
 
 impl Binding {
-    /// Bu bağlantıyı tetikleyen girdiler.
+    /// The inputs that trigger this binding.
     pub fn triggers(&self) -> Vec<Trigger> {
         match self {
             Binding::Tap { trigger, .. }
@@ -186,38 +188,38 @@ impl Binding {
 }
 
 fn default_recenter_margin() -> f32 { 0.12 }
-/// Varsayılan KAPALI.
+/// Default OFF.
 ///
-/// Denendi ve Special Forces Group 2'de çalışmadı: oyun iki parmağı ayrı
-/// ayrı takip edip ortalıyor, ekranda iki dokunuş izi beliriyor. Oyuna
-/// göre değişebilir, o yüzden seçenek duruyor ama varsayılan değil.
+/// Tried and it did not work in Special Forces Group 2: the game tracks the
+/// two fingers separately and averages them, and two touch traces appear on
+/// screen. It may differ per game, so the option stays — just not by default.
 fn default_true_handoff() -> bool { false }
 fn default_true_nonlinear() -> bool { true }
 fn default_reset_delay_ms() -> u32 { 12 }
-/// Varsayılan AÇIK.
+/// Default ON.
 ///
-/// Sınırlı kip bu belirtileri üretiyordu ve hepsi kaçınılmazdı; korunacak
-/// bir davranış değil. Arka uç desteklemiyorsa motor zaten sınırlı kipe
-/// düşüyor, yani açık varsayılan hiçbir yolda kırılmıyor.
+/// Bounded mode produced those symptoms and all of them were unavoidable; it is
+/// not behaviour worth preserving. If the backend does not support it the
+/// engine falls back to bounded mode anyway, so an ON default breaks no path.
 fn default_unbounded() -> bool { true }
 fn default_safety_span() -> f32 { 32.0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub name: String,
-    /// Android paket adı; profil otomatik uygulansın diye.
+    /// Android package name, so the profile can be applied automatically.
     pub package: String,
-    /// Bağlantı adı -> davranış. Ad, işaretçi tahsisinin anahtarıdır.
+    /// Binding name -> behaviour. The name is the key for pointer allocation.
     pub bindings: std::collections::BTreeMap<String, Binding>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProfileError {
-    #[error("profil okunamadı: {0}")]
+    #[error("could not read profile: {0}")]
     Io(#[from] std::io::Error),
-    #[error("profil ayrıştırılamadı: {0}")]
+    #[error("could not parse profile: {0}")]
     Parse(#[from] toml::de::Error),
-    #[error("geçersiz profil: {0}")]
+    #[error("invalid profile: {0}")]
     Invalid(String),
 }
 
@@ -228,33 +230,33 @@ impl Profile {
         Ok(p)
     }
 
-    /// Profili yüklemeden önce tutarlılığını dener.
+    /// Checks the profile's consistency before loading it.
     ///
-    /// NOT: bağlantı SAYISINA sınır konmaz. `MAX_POINTERS` eşzamanlı
-    /// parmak sınırıdır; bir profilde 20 düğme olabilir ve aynı anda
-    /// yalnızca birkaçı basılır. İkisini karıştırmak geçerli profilleri
-    /// reddeder — gerçekte oldu: 11 düğmeli bir FPS profili reddedildi.
-    /// Havuz tükenirse motor çalışma zamanında uyarır.
+    /// NOTE: there is no limit on the NUMBER of bindings. `MAX_POINTERS` is the
+    /// simultaneous-finger limit; a profile may have 20 buttons of which only a
+    /// few are pressed at once. Conflating the two rejects valid profiles — it
+    /// actually happened: an FPS profile with 11 buttons was rejected. If the
+    /// pool runs dry the engine warns at runtime.
     ///
-    /// En önemlisi: **aynı tetikleyici birden fazla bağlantıda kullanılamaz.**
-    /// Kullanılırsa hangi bağlantının çalışacağı belirsizleşir ve kullanıcı
-    /// bunu "bazen çalışıyor" diye yaşar — teşhisi en zor hata türü.
+    /// Most important: **the same trigger cannot be used in two bindings.**
+    /// If it is, which binding runs becomes undefined and the user experiences
+    /// it as "sometimes it works" — the hardest class of bug to diagnose.
     pub fn validate(&self) -> Result<(), ProfileError> {
         if self.bindings.is_empty() {
-            return Err(ProfileError::Invalid("profilde hiç bağlantı yok".into()));
+            return Err(ProfileError::Invalid("profile has no bindings".into()));
         }
         let mut seen: std::collections::HashMap<Trigger, &str> = Default::default();
         for (name, b) in &self.bindings {
             for t in b.triggers() {
                 if let Some(prev) = seen.insert(t.clone(), name) {
                     return Err(ProfileError::Invalid(format!(
-                        "aynı tetikleyici iki bağlantıda: '{prev}' ve '{name}'")));
+                        "duplicate trigger in two bindings: '{prev}' and '{name}'")));
                 }
             }
             if let Binding::Joystick { radius, .. } = b {
                 if !(0.0..=0.5).contains(radius) {
                     return Err(ProfileError::Invalid(format!(
-                        "'{name}' joystick yarıçapı 0..0.5 aralığında olmalı, {radius} verildi")));
+                        "joystick radius of '{name}' must be within 0..0.5, got {radius}")));
                 }
             }
         }
@@ -296,27 +298,27 @@ duration_ms = 80
     fn rejects_duplicate_trigger() {
         let dup = SAMPLE.replace("trigger = { Key = 57 }", "trigger = { Key = 30 }");
         let err = Profile::from_toml(&dup).unwrap_err();
-        assert!(err.to_string().contains("aynı tetikleyici"), "{err}");
+        assert!(err.to_string().contains("duplicate trigger"), "{err}");
     }
 
-    /// Çok düğmeli profil KABUL EDİLMELİ: eşzamanlı parmak sınırı
-    /// toplam bağlantı sayısıyla aynı şey değil.
+    /// A profile with many buttons must be ACCEPTED: the simultaneous-finger
+    /// limit is not the same thing as the total number of bindings.
     #[test]
     fn accepts_profile_with_more_bindings_than_pointers() {
-        let mut t = String::from("name = \"çok\"\npackage = \"p\"\n");
+        let mut t = String::from("name = \"many\"\npackage = \"p\"\n");
         for i in 0..15u16 {
             t.push_str(&format!(
                 "[bindings.b{i}]\ntype = \"tap\"\ntrigger = {{ Key = {} }}\n\
                  at = {{ x = 0.5, y = 0.5 }}\n", 100 + i));
         }
-        let p = Profile::from_toml(&t).expect("15 bağlantı reddedilmemeli");
+        let p = Profile::from_toml(&t).expect("15 bindings must not be rejected");
         assert_eq!(p.bindings.len(), 15);
     }
 
     #[test]
     fn rejects_empty_profile() {
         let err = Profile::from_toml("name=\"x\"\npackage=\"y\"\n[bindings]\n").unwrap_err();
-        assert!(err.to_string().contains("hiç bağlantı yok"));
+        assert!(err.to_string().contains("no bindings"));
     }
 
     #[test]
@@ -334,7 +336,7 @@ center = { x = 0.2, y = 0.7 }
 radius = 0.9
 "#;
         let err = Profile::from_toml(t).unwrap_err();
-        assert!(err.to_string().contains("yarıçapı"), "{err}");
+        assert!(err.to_string().contains("radius"), "{err}");
     }
 
     #[test]
@@ -345,16 +347,16 @@ radius = 0.9
         }
     }
 
-    /// Öne yüklü eğri, doğrusaldan DAHA ERKEN mesafe katetmeli —
-    /// oyunun kaydırma eşiğini daha çabuk aşması bunun tek amacı.
+    /// A front-loaded curve must cover distance EARLIER than linear — that is
+    /// its only purpose: crossing the game's swipe threshold sooner.
     #[test]
     fn ease_out_is_front_loaded() {
         for t in [0.1f32, 0.25, 0.5, 0.75] {
             let lin = Easing::Linear.apply(t);
             let eo = Easing::EaseOut.apply(t);
             let eos = Easing::EaseOutStrong.apply(t);
-            assert!(eo > lin, "t={t}: ease_out {eo} > linear {lin} olmalı");
-            assert!(eos > eo, "t={t}: strong {eos} > ease_out {eo} olmalı");
+            assert!(eo > lin, "t={t}: ease_out {eo} > linear {lin} expected");
+            assert!(eos > eo, "t={t}: strong {eos} > ease_out {eo} expected");
         }
     }
 
@@ -370,7 +372,7 @@ radius = 0.9
         assert_eq!(Easing::EaseOut.apply(2.0), 1.0);
     }
 
-    /// Profilde belirtilmezse doğrusal olmalı — davranış sessizce değişmesin.
+    /// Unspecified in the profile it must be linear — behaviour must not change
     #[test]
     fn easing_defaults_to_linear_when_absent() {
         let p = Profile::from_toml(SAMPLE).unwrap();

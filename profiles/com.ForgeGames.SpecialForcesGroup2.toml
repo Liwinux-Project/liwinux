@@ -1,17 +1,17 @@
-# Special Forces Group 2 — FPS eşlemesi.
+# Special Forces Group 2 — FPS mapping.
 #
-# Koordinatlar oyun ekran görüntüsünden ölçüldü (2560x1440 tam ekran).
-# Düğmelerin İŞLEVLERİ tahmin — hangi ikonun ne yaptığı doğrulanmalı.
+# Coordinates were measured from a game screenshot (2560x1440 fullscreen).
+# The button FUNCTIONS are guesses — which icon does what should be verified.
 #
-# ÖNEMLİ: bu profil `--grab` ile kullanılmalı.
-# persist.waydroid.fake_touch bu paket için AÇIK; kilit olmadan fare hem
-# Waydroid'e (dokunma olarak) hem bize gider ve iki kez iş yapılır.
+# IMPORTANT: this profile must be used with `--grab`.
+# persist.waydroid.fake_touch is ON for this package; without the grab the
+# mouse goes both to Waydroid (as a touch) and to us, doing the work twice.
 #   liw keymap start --grab
 name = "Special Forces Group 2"
 package = "com.ForgeGames.SpecialForcesGroup2"
 
-# --- hareket: sol alttaki yön pedi ---
-[bindings.hareket]
+# --- movement: the direction pad at the bottom left ---
+[bindings.move]
 type = "joystick"
 up    = { Key = 17 }             # W
 down  = { Key = 31 }             # S
@@ -20,72 +20,68 @@ right = { Key = 32 }             # D
 center = { x = 0.148, y = 0.738 }
 radius = 0.085
 
-# --- bakış: fare (sınırsız — kenarda sıfırlama YOK) ---
+# --- look: the mouse (unbounded — NO recentring at the edge) ---
 #
-# Bu bölüm baştan yazıldı. Eski hali "kenara gelince kaldır ve ortala"
-# varsayımına dayanıyordu ve kullanıcının bildirdiği ÜÇ belirtinin de
-# kaynağı oydu: fare bazen hiç algılanmıyor, bazen 2-3 saniye ölü kalıyor,
-# bazen aim kayıyor. Gerekçe ve ölçüm: docs/fare-nisan.md
+# This section was rewritten. Its old form rested on the "lift and recentre at
+# the edge" assumption, and that was the source of all THREE symptoms the user
+# reported: the mouse sometimes not registering at all, sometimes going dead for
+# 2-3 seconds, sometimes drifting the aim. Reasoning and measurements:
+# docs/mouse-aim.md
 #
-# unbounded: parmak ekranın DIŞINA çıkabilir. Waydroid'in dokunuş borusunda
-#   kırpma yapan katman yok (çekirdek evdev devrede değil, TouchInputMapper
-#   kırpmıyor, InputDispatcher MOVE'da pencere aramıyor). Parmak oyunun
-#   içinde bir kez indikten sonra sınırsız düzlemde gezer; kaldırılmadığı
-#   için oyunun takibi hiç kesilmez.
-#   Yalnızca boru arka ucunda etkindir; uinput yoluna düşülürse motor
-#   sessizce sınırlı kipe döner.
+# unbounded: the finger may travel OFF-SCREEN. Nothing on Waydroid's touch pipe
+#   clamps (the kernel evdev layer is not involved, TouchInputMapper does not
+#   clamp, InputDispatcher does not re-pick a window on MOVE). Once the finger
+#   goes down inside the game it roams an unbounded plane; because it is never
+#   lifted, the game's tracking is never cut.
+#   Only active on the pipe backend; on a fallback to uinput the engine
+#   silently returns to bounded mode.
 #
-# origin: ekranın ORTASI — ama tam 0.50 değil, bir piksel sağı.
+# origin: the CENTRE of the screen — but not exactly 0.50, one pixel to the right.
 #
-#   Neden ortada: sınırsız kipte iniş bir KEZ oluyor ve parmak oradan
-#   sınırsız gezdiği için nokta yalnızca "oyun bunu bakış sayıyor mu"
-#   sorusunu belirliyor. Ekranın ortası her yöne eşit görünür yol bırakıyor
-#   ve dokunuş izini izlerken en okunaklısı bu.
+#   Why the centre: in unbounded mode the press happens ONCE and the finger
+#   roams freely from there, so the point only decides "does the game count this
+#   as look". The centre of the screen leaves equal visible room in every
+#   direction and is the easiest to read when watching the touch trace.
 #
-#   Neden tam 0.50 DEĞİL: FPS'lerin çoğu bakış/yürüyüş ayrımını
-#   `x > genişlik/2` ile yapar. 2560 pikselde 0.50 tam olarak 1280'dir ve
-#   `1280 > 1280` yanlıştır — testi `>` ile yazan bir oyunda parmak sol
-#   yarıya düşer, oyun onu hareket pedi sanır ve nişan komple ölür.
-#   0.5004 × 2560 = 1281: gözle ortadan ayırt edilemez, sınırın doğru
-#   tarafında. Çözünürlükten bağımsız çalışır çünkü oran hep merkezin
-#   birkaç yüzde binlik sağında kalıyor.
+#   Why NOT exactly 0.50: most FPS games separate look from walk with
+#   `x > width/2`. At 2560 pixels, 0.50 is exactly 1280 and `1280 > 1280` is
+#   false — in a game writing the test with `>`, the finger falls into the left
+#   half, the game takes it for the movement pad and aim dies entirely.
+#   0.5004 x 2560 = 1281: indistinguishable from the centre by eye, on the right
+#   side of the boundary. It works regardless of resolution because the ratio
+#   always stays a few ten-thousandths right of centre.
 #
-#   Nişan oyun kipini açar açmaz HİÇ çalışmıyorsa bakılacak ilk yer burası:
-#   0.60'a çekmek bakış bölgesini kesinleştirir.
+#   If aim does not work AT ALL the moment game mode turns on, look here first:
+#   moving it to 0.60 makes the look area unambiguous.
 #
-# nonlinear: KAPALI. Açıkken hassasiyet parmağın merkeze uzaklığıyla
-#   3 kata kadar değişiyordu. Aynı fare hareketi farklı açı döndürünce kas
-#   hafızası kurulamıyor — "aim kayıyor" tam olarak buydu. Sıfırlama
-#   olmadığı için asıl amacı (kenara varmayı geciktirmek) da anlamsız.
+# nonlinear: OFF. With it on, sensitivity varied by up to 3x with the finger's
+#   distance from the centre. When the same mouse movement turns a different
+#   angle, muscle memory cannot form — that was exactly "aim drifts". With no
+#   recentring, its original purpose (delaying arrival at the edge) is moot.
 #
-# sensitivity: 1 fare sayımı = 0.0006 ekran genişliği ≈ 1.5 piksel.
-#   Sınırsız kipte bu SADECE his ayarıdır; hiçbir sıfırlama sıklığını
-#   etkilemez. Oyun içi bakış hassasiyetini önce sabitle, sonra burayı
-#   kendi DPI'ına göre ayarla.
+# sensitivity: 1 mouse count = 0.0006 of screen width ~ 1.5 pixels.
+#   In unbounded mode this is ONLY a feel setting; it affects no reset rate.
+#   Fix the in-game look sensitivity first, then tune this to your own DPI.
 #
-# safety_span: taşma koruması, his değil. 32 ekran ≈ 82000 piksel; net
-#   sürüklenme oraya varırsa fare İLK DURDUĞUNDA sessizce ortalanır.
+# safety_span: overflow protection, not feel. 32 screens ~ 82000 pixels; if net
+#   drift ever reaches there, it recentres silently the moment the mouse STOPS.
 #
-# ÖNEMLİ: bu profil `--grab` ile kullanılmalı.
-#   liw keymap start --grab
+# `persist.waydroid.fake_touch` SHOULD STAY ON. An older comment said it had to
+# be turned off; that became wrong once we moved to the pipe path:
 #
-# `persist.waydroid.fake_touch` AÇIK KALSIN. Eski yorumda "kapatılmalı"
-# yazıyordu; boru yoluna geçince yanlış oldu:
+#   * fake_touch PRODUCES no new touches. All it does is relabel the source of
+#     MotionEvents reaching ViewRootImpl to SOURCE_TOUCHSCREEN (4098)
+#     (`0016-Fake-touch-inputs-for-select-apps.patch`). What we inject is
+#     already from that source, so it has no effect on us.
+#   * In game mode the mouse is GRABBED; no mouse event reaches Waydroid at all.
+#     There is nothing left for it to interfere with.
+#   * With game mode OFF, fake_touch is needed precisely because it is required:
+#     some UI elements in menus can only be clicked with the mouse through it.
 #
-#   * fake_touch yeni dokunuş ÜRETMEZ. Yaptığı tek şey ViewRootImpl'e
-#     ulaşan MotionEvent'lerin kaynağını SOURCE_TOUCHSCREEN'e (4098)
-#     çevirmek (`0016-Fake-touch-inputs-for-select-apps.patch`). Bizim
-#     enjekte ettiklerimiz zaten o kaynakta, yani üzerimizde etkisi yok.
-#   * Oyun kipinde fare KİLİTLİ; Waydroid'e hiç fare olayı gitmiyor.
-#     Kilitleyecek bir şey kalmıyor.
-#   * Oyun kipi KAPALIYKEN fake_touch tam da gerektiği için lazım:
-#     menülerdeki bazı UI öğeleri fareyle ancak böyle tıklanıyor.
-#
-# Ayrıca değeri çalışırken değiştirmenin bir anlamı yok: prop, pencere
-# oluşturulurken `final` bir alana okunuyor. Oyun kipiyle birlikte açıp
-# kapatmak çalışan oyunu ETKİLEMEZ (yalnızca sonradan açılan pencereleri),
-# yani plasebo olurdu.
-[bindings.bakis]
+# Changing the value at runtime is also pointless: the prop is read into a
+# `final` field when the window is created. Toggling it with game mode would NOT
+# AFFECT a running game (only windows opened afterwards), so it would be placebo.
+[bindings.look]
 type = "aim"
 origin = { x = 0.5004, y = 0.50 }
 sensitivity = 0.0006
@@ -93,59 +89,59 @@ deadzone = 0.4
 unbounded = true
 safety_span = 32.0
 nonlinear = false
-# Aşağıdakiler yalnızca sınırlı kipe (uinput yoluna) düşülürse kullanılır.
+# The following are used only if we fall back to bounded mode (the uinput path).
 recenter_margin = 0.03
 handoff = false
 reset_delay_ms = 12
 
-# --- ateş: sağ üstteki nişangah dairesi ---
-[bindings.ates]
+# --- fire: the crosshair circle at the top right ---
+[bindings.fire]
 type = "tap"
 trigger = "MouseLeft"
 at = { x = 0.938, y = 0.231 }
 
-# --- ikinci nişangah (sol kenar) — muhtemelen alternatif ateş/nişan ---
-[bindings.nisan]
+# --- second crosshair (left edge) — probably alternate fire/aim ---
+[bindings.aim]
 type = "tap"
 trigger = "MouseRight"
 at = { x = 0.060, y = 0.396 }
 
-# --- yan eğilme (hilal ikonlar) ---
-[bindings.egil_sol]
+# --- lean (the crescent icons) ---
+[bindings.lean_left]
 type = "tap"
 trigger = { Key = 16 }           # Q
 at = { x = 0.273, y = 0.551 }
 
-[bindings.egil_sag]
+[bindings.lean_right]
 type = "tap"
 trigger = { Key = 18 }           # E
 at = { x = 0.783, y = 0.551 }
 
-# --- silah değiştir (sağdaki oklu tüfek ikonu) ---
-[bindings.silah]
+# --- weapon switch (the rifle icon with an arrow, on the right) ---
+[bindings.weapon]
 type = "tap"
 trigger = { Key = 19 }           # R
 at = { x = 0.958, y = 0.662 }
 
-# --- duruş: sağ alttaki iki asker ikonu (çömel / yat) ---
-[bindings.comel]
+# --- stance: the two soldier icons at the bottom right (crouch / prone) ---
+[bindings.crouch]
 type = "tap"
 trigger = { Key = 29 }           # LEFTCTRL
 at = { x = 0.833, y = 0.924 }
 
-[bindings.yat]
+[bindings.prone]
 type = "tap"
 trigger = { Key = 42 }           # LEFTSHIFT
 at = { x = 0.950, y = 0.924 }
 
-# --- market (sol üst alışveriş sepeti) ---
-[bindings.market]
+# --- shop (the shopping cart at the top left) ---
+[bindings.shop]
 type = "tap"
 trigger = { Key = 33 }           # F
 at = { x = 0.151, y = 0.264 }
 
-# --- skor tablosu (alt orta liste ikonu) ---
-[bindings.skor]
+# --- scoreboard (the list icon at the bottom centre) ---
+[bindings.scoreboard]
 type = "tap"
 trigger = { Key = 15 }           # TAB
 at = { x = 0.325, y = 0.920 }

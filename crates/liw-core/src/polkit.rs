@@ -1,9 +1,9 @@
-//! polkit yetkilendirmesi.
+//! polkit authorization.
 //!
-//! Sistem veri yolundaki her ayrıcalıklı çağrı, çağıranın kimliği polkit'e
-//! sorulmadan yerine getirilmez. Çağıran özne olarak D-Bus benzersiz adını
-//! kullanıyoruz (`system-bus-name`); bu, PID yarışlarına açık olan
-//! PID tabanlı öznelerden güvenlidir.
+//! No privileged call on the system bus is served without asking polkit about
+//! the caller's identity. The caller subject is the D-Bus unique name
+//! (`system-bus-name`), which is safer than PID-based subjects — those are
+//! open to PID-reuse races.
 
 use std::collections::HashMap;
 use zbus::zvariant::Value;
@@ -11,16 +11,17 @@ use zbus::Connection;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PolkitError {
-    #[error("polkit'e ulaşılamadı: {0}")]
+    #[error("could not reach polkit: {0}")]
     Bus(#[from] zbus::Error),
-    #[error("yetki reddedildi: {action}")]
+    #[error("authorization denied: {action}")]
     Denied { action: String },
 }
 
-/// Çağıranın `action` eylemini yapmaya yetkili olup olmadığını sorar.
+/// Asks whether the caller is authorized to perform `action`.
 ///
-/// `allow_interaction` true ise polkit kullanıcıya parola sorabilir.
-/// Salt okunur teşhis için false, sistemi değiştiren işlemler için true uygundur.
+/// With `allow_interaction` true, polkit may prompt the user for a password.
+/// Use false for read-only diagnostics, true for operations that change the
+/// system.
 pub async fn check(
     conn: &Connection,
     caller: &str,
@@ -41,9 +42,10 @@ pub async fn check(
     )
     .await?;
 
-    // DİKKAT: polkit'in dönüş yapısı (bba{ss})'dir — details string->string'tir,
-    // variant DEĞİLDİR. a{sv} beklemek "Signature mismatch" ile başarısız olur ve
-    // bu, yetki reddiyle kolayca karıştırılır (bkz. PolkitError'ın ikiye ayrılması).
+    // CAREFUL: polkit's return signature is (bba{ss}) — details is
+    // string->string, NOT variant. Expecting a{sv} fails with "Signature
+    // mismatch", which is easily mistaken for an authorization denial (hence
+    // PolkitError being split into two variants).
     let (authorized, _challenge, _info): (bool, bool, HashMap<String, String>) = proxy
         .call("CheckAuthorization", &(subject, action, details, flags, ""))
         .await?;
@@ -55,11 +57,11 @@ pub async fn check(
     }
 }
 
-/// Android property anahtarı doğrulaması.
+/// Validates an Android property key.
 ///
-/// `GetProp` root olarak çalıştığı için anahtarın komut enjeksiyonuna
-/// dönüşmemesi şart. Beyaz liste yaklaşımı: yalnızca gerçek property
-/// adlarında görülen karakterler.
+/// `GetProp` runs as root, so the key must not be able to turn into command
+/// injection. Allowlist approach: only characters that appear in genuine
+/// property names.
 pub fn valid_prop_key(key: &str) -> bool {
     !key.is_empty()
         && key.len() <= 64
@@ -74,7 +76,7 @@ mod tests {
     fn accepts_real_property_names() {
         for k in ["sys.boot_completed", "ro.product.cpu.abilist",
                   "ro.dalvik.vm.native.bridge", "debug.hwui.renderer"] {
-            assert!(valid_prop_key(k), "reddedildi: {k}");
+            assert!(valid_prop_key(k), "rejected: {k}");
         }
     }
 
@@ -82,7 +84,7 @@ mod tests {
     fn rejects_injection_attempts() {
         for k in ["a; rm -rf /", "a`id`", "a$(id)", "a b", "a|b", "a\nb",
                   "a&b", "a>b", "'a'", "\"a\"", ""] {
-            assert!(!valid_prop_key(k), "kabul edildi: {k:?}");
+            assert!(!valid_prop_key(k), "accepted: {k:?}");
         }
     }
 

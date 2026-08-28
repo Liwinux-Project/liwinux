@@ -1,47 +1,47 @@
-//! Waydroid'in dokunuş borusuna DOĞRUDAN yazan arka uç.
+//! Backend that writes DIRECTLY to Waydroid's touch pipe.
 //!
-//! # Neden bu yol
+//! # Why this path
 //!
-//! Waydroid, Android'in `EventHub`'ını yamalar ve konteyner içinde üç
-//! isimlendirilmiş boru dinler
+//! Waydroid patches Android's `EventHub` and listens on three named pipes
+//! inside the container
 //! (`anbox-patches/frameworks/native/0006-EventHub-Add-wayland-inputs-support.patch`):
 //!
 //! ```text
-//! /dev/input/wl_touch_events     → EventHub cihazı "wayland_touch"
+//! /dev/input/wl_touch_events     -> EventHub device "wayland_touch"
 //! /dev/input/wl_pointer_events   → "wayland_pointer"
 //! /dev/input/wl_keyboard_events  → "wayland_keyboard"
 //! ```
 //!
-//! Normalde bu boruya **hwcomposer** yazar: compositor'dan `wl_touch` alır,
-//! `input_event` kayıtlarına çevirir. Yani bizim uinput arka ucumuzun uzun
+//! Normally **hwcomposer** writes to this pipe: it receives `wl_touch` from
+//! the compositor and converts it into `input_event` records. In other words
 //! yolu (uinput → libinput → KWin → wl_touch → hwcomposer → boru) sonunda
-//! zaten buraya varıyordu. Doğrudan yazmak dört halkayı birden atar.
+//! already ended up here. Writing directly skips four links at once.
 //!
-//! # Asıl kazanç: kırpma yok
+//! # The real win: no clamping
 //!
-//! Boru yolunda koordinatı ekrana sıkıştıran hiçbir katman yok:
+//! Nothing on the pipe path squeezes coordinates into the screen:
 //!
-//! * **Çekirdek yok.** Boru bir FIFO'dur; evdev sürücü katmanı devrede
-//!   değil, `ABS` aralık kırpması çalışmaz.
-//! * **`TouchInputMapper::cookPointerData()` kırpmaz.** Yalnızca afin
-//!   dönüşüm + ölçekleme uygular; yüzey sınırı testi yoktur.
-//! * **`InputDispatcher` MOVE'da pencere aramaz.** Hedef yalnızca
-//!   `ACTION_DOWN`/`ACTION_POINTER_DOWN` anında seçilir; sonrası
-//!   mandallanmış duruma gider.
+//! * **No kernel.** The pipe is a FIFO; the evdev driver layer is not
+//!   involved, so `ABS` range clamping never runs.
+//! * **`TouchInputMapper::cookPointerData()` does not clamp.** It only applies
+//!   an affine transform plus scaling; there is no surface bounds test.
+//! * **`InputDispatcher` does not re-pick a window on MOVE.** The target is
+//!   chosen only at `ACTION_DOWN`/`ACTION_POINTER_DOWN`; afterwards it goes
+//!   to latched state.
 //!
-//! Dolayısıyla oyun penceresi içinde inen bir parmak, sonraki hareketleri
-//! ekranın dışına taşsa bile aynı pencereye ulaşmaya devam eder. FPS
-//! nişanında "kenara gelince kaldır ve ortala" zorunluluğu bu sayede
-//! **ortadan kalkar** — üç belirtinin (hiç algılamama, saniyelerce ölü
-//! bölge, aim kayması) ortak kaynağı buydu. Ayrıntı: `docs/fare-nisan.md`.
+//! So a finger that goes down inside the game window keeps reaching that same
+//! window even when later moves leave the screen. For FPS aim this **removes**
+//! the need to "lift and recenter at the edge" — the common source of all
+//! three symptoms (no detection at all, a dead zone lasting seconds, aim
+//! drift). Details: `docs/mouse-aim.md`.
 //!
-//! # Ayrıcalık
+//! # Privilege
 //!
 //! Boruyu hwcomposer `mkfifo(..., 0660)` + `chown(..., 1000, 1000)` ile
-//! kurar; sahibi Android'in `system` kullanıcısıdır. Host'tan yazmak için
-//! root gerekir. Bu yüzden arka uç dosyayı KENDİSİ AÇMAZ: açık bir
-//! tanıtıcı alır. `liwd-helper` boruyu açıp fd'yi D-Bus üzerinden verir,
-//! böylece 200 Hz'lik yazma trafiği IPC'den geçmez.
+//! it, owned by Android's `system` user. Writing from the host needs root.
+//! That is why this backend does NOT open the file itself: it receives an
+//! already-open handle. `liwd-helper` opens the pipe and passes the fd over
+//! D-Bus, so the 200 Hz write traffic never goes through IPC.
 
 use super::backend::{BackendError, TouchBackend};
 use super::touch::{TouchAction, MAX_POINTERS};
@@ -49,15 +49,15 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 
-/// Konteyner içindeki dokunuş borusunun yolu.
+/// Path of the touch pipe inside the container.
 pub const TOUCH_PIPE: &str = "dev/input/wl_touch_events";
 
-/// hwcomposer'ın her dokunuşa yazdığı basınç. Aynısını kullanıyoruz:
-/// farklı bir değer bazı oyunların basınca duyarlı davranışını değiştirir.
+/// The pressure hwcomposer writes for every touch. We use the same value: a
+/// different one changes pressure-sensitive behaviour in some games.
 const PRESSURE: i32 = 50;
 
-// evdev sabitleri. `evdev` kütüphanesi bunları tip olarak sunuyor ama
-// buradaki tel formatı ham sayıdır; dönüştürmek yerine doğrudan yazıyoruz.
+// evdev constants. The `evdev` crate exposes these as types, but the wire
+// format here is a raw number; we write it directly rather than converting.
 const EV_SYN: u16 = 0x00;
 const EV_ABS: u16 = 0x03;
 const SYN_REPORT: u16 = 0;
@@ -67,61 +67,61 @@ const ABS_MT_POSITION_Y: u16 = 0x36;
 const ABS_MT_TRACKING_ID: u16 = 0x39;
 const ABS_MT_PRESSURE: u16 = 0x3a;
 
-/// `struct input_event`in tel üzerindeki boyutu (x86_64/aarch64).
+/// On-the-wire size of `struct input_event` (x86_64/aarch64).
 /// `timeval` (2 × i64) + type + code + value.
 const EVENT_SIZE: usize = 24;
 
-/// POSIX yalnızca bu boyuta kadarki yazmaların bölünmezliğini garanti eder.
+/// POSIX only guarantees atomicity for writes up to this size.
 ///
-/// Şart: aynı boruya hwcomposer da yazıyor. Bir kareyi ikiye bölersek
-/// araya onun kaydı girer ve EventHub bozuk `input_event` okur.
+/// Mandatory: hwcomposer writes to the same pipe. Splitting a frame in two
+/// lets its record slip in between and EventHub reads a corrupt `input_event`.
 const PIPE_BUF: usize = 4096;
 
-/// Waydroid konteynerinin dokunuş borusu.
+/// Waydroid container's touch pipe.
 #[derive(Debug)]
 pub struct WlTouchBackend {
     pipe: File,
-    /// Android ekran çözünürlüğü (`waydroid.display_width`/`height`).
-    /// Koordinat uzayı budur; EventHub eksen bilgisini bu property'lerden
-    /// üretir, cihazdan sormaz.
+    /// Android display resolution (`waydroid.display_width`/`height`).
+    /// This is the coordinate space; EventHub derives axis information from
+    /// those properties rather than asking the device.
     w: u32,
     h: u32,
-    /// Hangi slot kullanımda. Kalkışta `release_all` için gerekli.
+    /// Which slots are in use. Needed by `release_all` on shutdown.
     slots: [bool; MAX_POINTERS],
-    /// Boru dolduğu için düşen kare sayısı (teşhis).
+    /// Frames dropped because the pipe was full (diagnostics).
     dropped: u64,
 }
 
 impl WlTouchBackend {
-    /// Açılmış bir boru tanıtıcısından kurar.
+    /// Builds from an already-open pipe handle.
     ///
-    /// Tanıtıcının `O_WRONLY | O_NONBLOCK` açılmış olması beklenir:
-    /// bloklamak girdi döngüsünü kilitler ve fare tamamen durur. Boru
-    /// dolarsa kareyi düşürmek doğrudur — Android geride kalmıştır ve
-    /// eski konumu göndermenin değeri yoktur.
+    /// The handle is expected to be opened `O_WRONLY | O_NONBLOCK`: blocking
+    /// would lock the input loop and stop the mouse entirely. Dropping a frame
+    /// when the pipe is full is the right call — Android is behind and sending
+    /// a stale position is worthless.
     pub fn from_pipe(pipe: File, w: u32, h: u32) -> Result<Self, BackendError> {
         if w == 0 || h == 0 {
             return Err(BackendError::Init(
-                "ekran boyutu 0 — waydroid.display_width/height okunamadı".into()));
+                "display size is 0 — could not read waydroid.display_width/height".into()));
         }
         Ok(Self { pipe, w, h, slots: [false; MAX_POINTERS], dropped: 0 })
     }
 
-    /// Konteynerin dokunuş borusunun host'tan görünen yolu.
+    /// Host-visible path of the container's touch pipe.
     ///
-    /// `nsenter` gerekmiyor: root, `/proc/<pid>/root/...` üzerinden başka
-    /// bir mount namespace'indeki dosyayı doğrudan açabilir.
+    /// `nsenter` is not needed: as root, `/proc/<pid>/root/...` opens a file in
+    /// another mount namespace directly.
     pub fn pipe_path(container_pid: u32) -> PathBuf {
         PathBuf::from(format!("/proc/{container_pid}/root/{TOUCH_PIPE}"))
     }
 
-    /// Düşen kare sayısı (teşhis).
+    /// Number of dropped frames (diagnostics).
     pub fn dropped(&self) -> u64 { self.dropped }
 
-    /// Normalize koordinatı Android ekran pikseline çevirir.
+    /// Converts a normalized coordinate to an Android screen pixel.
     ///
-    /// **Kırpma YOK.** Sınırsız nişanın tüm dayanağı bu; `Norm::unclamped`
-    /// ile gelen ekran dışı değerler olduğu gibi geçmelidir.
+    /// **NO clamping.** This is the whole basis of unbounded aim; off-screen
+    /// values arriving via `Norm::unclamped` must pass through untouched.
     fn to_px(&self, at: super::touch::Norm) -> (i32, i32) {
         at.to_px(self.w, self.h)
     }
@@ -129,18 +129,18 @@ impl WlTouchBackend {
 
 /// CLOCK_MONOTONIC saniye/mikrosaniye.
 ///
-/// Duvar saati DEĞİL: Android girdi hattı olay zaman damgasını yeniden
-/// örnekleme ve hız takibi için kullanır. Yanlış saat, teknik olarak
-/// "çalışan" ama titreyen bir fare demektir.
+/// NOT wall clock: the Android input pipeline uses the event timestamp for
+/// resampling and velocity tracking. A wrong clock means a mouse that
+/// technically "works" but stutters.
 fn monotonic() -> (i64, i64) {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-    // SAFETY: geçerli bir timespec'e yazıyoruz; clock_gettime başka bir
-    // yan etki üretmez.
+    // SAFETY: writing into a valid timespec; clock_gettime has no other side
+    // effects.
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
     (ts.tv_sec as i64, (ts.tv_nsec / 1000) as i64)
 }
 
-/// Tek bir `input_event` kaydını tel formatına yazar.
+/// Writes a single `input_event` record in wire format.
 fn push_event(buf: &mut Vec<u8>, sec: i64, usec: i64, kind: u16, code: u16, value: i32) {
     buf.extend_from_slice(&sec.to_ne_bytes());
     buf.extend_from_slice(&usec.to_ne_bytes());
@@ -161,13 +161,13 @@ impl TouchBackend for WlTouchBackend {
                     let slot = id as usize;
                     if slot >= MAX_POINTERS {
                         return Err(BackendError::Dispatch(
-                            format!("geçersiz işaretçi kimliği {id}")));
+                            format!("invalid pointer id {id}")));
                     }
                     self.slots[slot] = true;
                     let (x, y) = self.to_px(at);
-                    // hwcomposer'ın birebir sırası. İniş ve hareket aynı
-                    // dizidir: protokol B'de yeni tracking_id inişi,
-                    // aynısının tekrarı hareketi belirtir.
+                    // hwcomposer's exact ordering. Press and move are the same
+                    // sequence: in protocol B a new tracking_id means a press,
+                    // repeating the same one means a move.
                     push_event(&mut buf, sec, usec, EV_ABS, ABS_MT_SLOT, slot as i32);
                     push_event(&mut buf, sec, usec, EV_ABS, ABS_MT_TRACKING_ID, slot as i32);
                     push_event(&mut buf, sec, usec, EV_ABS, ABS_MT_POSITION_X, x);
@@ -183,29 +183,29 @@ impl TouchBackend for WlTouchBackend {
                 }
             }
         }
-        // Tek SYN_REPORT: bu çağrıdaki eylemler aynı kareye ait.
+        // One SYN_REPORT: the actions in this call belong to the same frame.
         push_event(&mut buf, sec, usec, EV_SYN, SYN_REPORT, 0);
 
         if buf.len() > PIPE_BUF {
-            // Bölünmezliği kaybetmektense kareyi reddetmek iyidir: bozuk
-            // kayıt Android'in girdi okuyucusunu hizadan çıkarır ve
-            // sonrasında HİÇBİR dokunuş çalışmaz.
+            // Rejecting the frame beats losing atomicity: a corrupt record
+            // knocks Android's input reader out of alignment and afterwards
+            // NO touch works at all.
             return Err(BackendError::Dispatch(format!(
-                "kare {} bayt — PIPE_BUF ({PIPE_BUF}) aşıldı, bölünmezlik kaybolurdu",
+                "frame is {} bytes — exceeds PIPE_BUF ({PIPE_BUF}), atomicity would be lost",
                 buf.len())));
         }
 
         match self.pipe.write(&buf) {
             Ok(n) if n == buf.len() => Ok(()),
             Ok(n) => Err(BackendError::Dispatch(format!(
-                "kısmi yazma: {n}/{} bayt — boru hizası bozuldu", buf.len()))),
+                "partial write: {n}/{} bytes — pipe alignment broken", buf.len()))),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // Android geride kalmış. Beklemek girdi döngüsünü kilitler;
-                // düşürmek yalnızca bir kare kaybettirir.
+                // Android is behind. Waiting would lock the input loop;
+                // dropping only costs one frame.
                 self.dropped += 1;
                 Ok(())
             }
-            Err(e) => Err(BackendError::Dispatch(format!("boruya yazılamadı: {e}"))),
+            Err(e) => Err(BackendError::Dispatch(format!("could not write to pipe: {e}"))),
         }
     }
 
@@ -226,15 +226,15 @@ mod tests {
     use super::*;
     use crate::input::touch::Norm;
 
-    /// Tel formatı 24 bayt olmalı; Android bunu `sizeof(input_event)` ile
-    /// bölerek okuyor. Yanlış boyut sessiz ve tam bozulma demek.
+    /// The wire format must be 24 bytes; Android reads it by dividing with
+    /// `sizeof(input_event)`. A wrong size means silent, total corruption.
     #[test]
     fn event_record_is_24_bytes() {
         let mut b = Vec::new();
         push_event(&mut b, 1, 2, EV_ABS, ABS_MT_SLOT, 3);
         assert_eq!(b.len(), EVENT_SIZE);
         assert_eq!(std::mem::size_of::<libc::timeval>() + 8, EVENT_SIZE,
-                   "timeval + type/code/value tel boyutuyla uyuşmalı");
+                   "must match the wire size of timeval + type/code/value");
     }
 
     #[test]
@@ -243,7 +243,7 @@ mod tests {
                    PathBuf::from("/proc/1234/root/dev/input/wl_touch_events"));
     }
 
-    /// Ekran dışı koordinat KIRPILMAMALI — sınırsız nişanın tek dayanağı.
+    /// Off-screen coordinates must NOT be clamped — the sole basis of unbounded aim.
     #[test]
     fn offscreen_coordinates_survive_conversion() {
         let (_p, f) = tempfile("offscreen");
@@ -258,7 +258,7 @@ mod tests {
         assert!(e.to_string().contains("display_width"), "{e}");
     }
 
-    /// Bir kare TEK yazma olmalı ve `SYN_REPORT` ile bitmeli.
+    /// One frame must be ONE write and must end with `SYN_REPORT`.
     #[test]
     fn a_frame_ends_with_one_syn_report() {
         let (p, f) = tempfile("frame");
@@ -268,7 +268,7 @@ mod tests {
             TouchAction::Move { id: 1, at: Norm::new(0.2, 0.3) },
         ]).unwrap();
         let raw = std::fs::read(&p).unwrap();
-        assert_eq!(raw.len() % EVENT_SIZE, 0, "kayıt hizası bozulmamalı");
+        assert_eq!(raw.len() % EVENT_SIZE, 0, "record alignment must hold");
         let n = raw.len() / EVENT_SIZE;
         assert_eq!(n, 11, "2 eylem × 5 olay + 1 SYN");
         let last = &raw[(n - 1) * EVENT_SIZE..];
@@ -276,8 +276,8 @@ mod tests {
         assert_eq!(u16::from_ne_bytes([last[18], last[19]]), SYN_REPORT);
     }
 
-    /// Kalkış `tracking_id = -1` yazmalı; başka her değer parmağı ekranda
-    /// bırakır.
+    /// A lift must write `tracking_id = -1`; any other value strands the finger
+    /// on screen.
     #[test]
     fn up_writes_tracking_id_minus_one() {
         let (p, f) = tempfile("up");
@@ -291,11 +291,11 @@ mod tests {
         assert_eq!(i32::from_ne_bytes([tid[20], tid[21], tid[22], tid[23]]), -1);
     }
 
-    /// `release_all` yalnızca GERÇEKTEN inen parmakları kaldırmalı.
+    /// `release_all` must lift only fingers that are ACTUALLY down.
     ///
-    /// İkinci çağrının sessiz kalması önemli: temiz çıkışta ve profil
-    /// değişiminde art arda çağrılıyor, her seferinde parmak kaldırmak
-    /// oyuna sahte dokunuş sonları gönderirdi.
+    /// The second call staying silent matters: it is invoked repeatedly on
+    /// clean shutdown and profile switches, and lifting a finger each time
+    /// would send the game bogus touch endings.
     #[test]
     fn release_all_lifts_only_active_slots() {
         let (p, f) = tempfile("release");
@@ -310,13 +310,13 @@ mod tests {
 
         b.release_all().unwrap();
         assert_eq!(std::fs::metadata(&p).unwrap().len() as usize, after_release,
-                   "ikinci çağrı yeni olay üretmemeli");
+                   "the second call must produce no new events");
     }
 
-    // --- test yardımcıları ---
-    // Gerçek FIFO yerine düz dosya: yazılan tel formatını okuyabiliyoruz.
-    // Ad teste özgü: testler aynı süreçte PARALEL koşuyor, ortak dosya
-    // kullanmak birbirlerinin çıktısını okumalarına yol açar.
+    // --- test helpers ---
+    // A plain file instead of a real FIFO: we can read back the wire format.
+    // The name is test-specific: tests run in PARALLEL in the same process, so
+    // a shared file would let them read each other's output.
     fn tempfile(tag: &str) -> (std::path::PathBuf, File) {
         let p = std::env::temp_dir()
             .join(format!("liw-wl-touch-{}-{tag}.bin", std::process::id()));

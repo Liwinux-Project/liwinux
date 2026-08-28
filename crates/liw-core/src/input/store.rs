@@ -1,29 +1,29 @@
-//! Profil deposu: profilleri bulur, yükler ve pakete göre eşler.
+//! Profile store: discovers profiles, loads them and matches them to packages.
 //!
-//! # Öncelik
+//! # Precedence
 //!
-//! Kullanıcı profilleri sistem profillerini **gölgeler**. Böylece kullanıcı
-//! dağıtımla gelen bir profili düzenlemek için onu kopyalar; güncelleme
-//! geldiğinde kendi değişikliği kaybolmaz.
+//! User profiles **shadow** system profiles. To edit a distributed profile the
+//! user copies it; when an update arrives their change is not lost.
+//!
 //!
 //! ```text
-//! $XDG_CONFIG_HOME/liwinux/profiles/   (kullanıcı — kazanır)
+//! $XDG_CONFIG_HOME/liwinux/profiles/   (user — wins)
 //! /usr/share/liwinux/profiles/         (sistem)
-//! ./profiles/                          (geliştirme)
+//! ./profiles/                          (development)
 //! ```
 
 use super::profile::{Profile, ProfileError};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Bir profilin nereden geldiği. Kullanıcıya "hangi dosya çalışıyor"
-/// sorusunu cevaplayabilmek için taşınır.
+/// Where a profile came from. Carried so we can answer "which file is
+/// actually running".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Origin {
-    /// En yüksek öncelik.
+    /// Highest precedence.
     User,
     System,
-    /// Depo içinden; yalnızca geliştirme sırasında.
+    /// From inside the repository; development only.
     Bundled,
 }
 
@@ -34,9 +34,9 @@ pub struct Entry {
     pub origin: Origin,
 }
 
-/// Yüklenemeyen profil. Sessizce yutmuyoruz: bozuk bir dosya
-/// kullanıcıya bildirilmeli, yoksa "profilim neden çalışmıyor" sorusu
-/// cevapsız kalır.
+/// A profile that failed to load. Not swallowed silently: a broken file must
+/// be reported, otherwise "why is my profile not working" goes unanswered.
+///
 #[derive(Debug)]
 pub struct BadProfile {
     pub path: PathBuf,
@@ -45,13 +45,13 @@ pub struct BadProfile {
 
 #[derive(Debug, Default)]
 pub struct Store {
-    /// paket adı -> en yüksek öncelikli girdi
+    /// package name -> highest-precedence entry
     by_package: BTreeMap<String, Entry>,
     pub problems: Vec<BadProfile>,
 }
 
 impl Store {
-    /// Varsayılan dizinleri tarar.
+    /// Scans the default directories.
     pub fn discover() -> Self {
         Self::from_dirs(&default_dirs())
     }
@@ -77,12 +77,12 @@ impl Store {
                     let entry = Entry { profile, path: path.clone(), origin };
                     let pkg = entry.profile.package.clone();
                     match self.by_package.get(&pkg) {
-                        // Daha yüksek öncelikli (küçük Origin) kazanır.
+                        // Higher precedence (smaller Origin) wins.
                         Some(prev) if prev.origin < entry.origin => {}
-                        // AYNI öncelikte iki profil aynı paketi iddia ediyor.
-                        // Sessizce birini seçmek belirlenimsiz davranış üretir:
-                        // hangisinin yükleneceği dizin okuma sırasına kalır ve
-                        // kullanıcı "bazen eski profilim çalışıyor" der.
+                        // Two profiles at the SAME precedence claim one package.
+                        // Picking one silently produces non-deterministic
+                        // behaviour: which one loads depends on directory read
+                        // order and the user says "sometimes my old profile runs".
                         Some(prev) if prev.origin == entry.origin => {
                             let (keep, drop) = if prev.path <= entry.path {
                                 (prev.path.clone(), path.clone())
@@ -95,7 +95,7 @@ impl Store {
                                 path: drop.clone(),
                                 error: format!(
                                     "'{pkg}' paketini iki profil birden iddia ediyor; \
-                                     '{}' kullanılıyor. Birini silin veya paket adını değiştirin.",
+                                     using '{}'. Delete one or rename the package.",
                                     keep.display()),
                             });
                         }
@@ -121,19 +121,19 @@ impl Store {
     pub fn is_empty(&self) -> bool { self.by_package.is_empty() }
 }
 
-/// Aranacak dizinler, öncelik sırasıyla.
+/// Directories to search, in precedence order.
 ///
-/// ÇALIŞMA DİZİNİNE BAKILMAZ. Bakılırsa aynı komut farklı dizinlerden
-/// farklı davranır ve kullanıcı "profilim bazen bulunuyor" der — teşhisi
-/// zor, açıklaması utandırıcı bir hata sınıfı.
+/// THE WORKING DIRECTORY IS NOT CONSULTED. If it were, the same command would
+/// behave differently from different directories and the user would say "my
+/// profile is sometimes found" — a hard-to-diagnose, embarrassing class of bug.
 pub fn default_dirs() -> Vec<(PathBuf, Origin)> {
     let mut dirs: Vec<(PathBuf, Origin)> = Vec::new();
     if let Some(cfg) = user_profile_dir() {
         dirs.push((cfg, Origin::User));
     }
     dirs.push((PathBuf::from("/usr/share/liwinux/profiles"), Origin::System));
-    // Geliştirme kolaylığı: çalıştırılabilir dosyanın yanındaki depo.
-    // Çalışma dizini DEĞİL, binary'nin konumu esas alınır.
+    // Development convenience: the repository next to the executable.
+    // Based on the binary's location, NOT the working directory.
     if let Some(d) = bundled_dir() {
         dirs.push((d, Origin::Bundled));
     }
@@ -143,11 +143,11 @@ pub fn default_dirs() -> Vec<(PathBuf, Origin)> {
     dirs
 }
 
-/// `target/{debug,release}/liw` -> depo kökündeki `profiles/`.
+/// `target/{debug,release}/liw` -> `profiles/` at the repository root.
 fn bundled_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let mut dir = exe.parent()?;
-    // En fazla dört seviye yukarı bak; daha fazlası alakasız dizinlere sapar.
+    // Look at most four levels up; more would wander into unrelated directories.
     for _ in 0..4 {
         let cand = dir.join("profiles");
         if cand.is_dir() { return Some(cand); }
@@ -196,7 +196,7 @@ at = {{ x = 0.5, y = 0.5 }}
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Kullanıcı profili sistem profilini gölgelemeli.
+    /// A user profile must shadow a system profile.
     #[test]
     fn user_profile_shadows_system() {
         let sys = tmp("sys");
@@ -213,7 +213,7 @@ at = {{ x = 0.5, y = 0.5 }}
         let _ = std::fs::remove_dir_all(&usr);
     }
 
-    /// Tarama sırası öncelikten bağımsız olmalı.
+    /// Scan order must not affect precedence.
     #[test]
     fn precedence_independent_of_scan_order() {
         let sys = tmp("sys2");
@@ -229,20 +229,20 @@ at = {{ x = 0.5, y = 0.5 }}
         let _ = std::fs::remove_dir_all(&usr);
     }
 
-    /// Bozuk profil DİĞERLERİNİ gizlememeli ve sessizce yutulmamalı.
+    /// A broken profile must not hide the others, nor be swallowed silently.
     #[test]
     fn broken_profile_is_reported_and_others_still_load() {
         let d = tmp("bad");
-        write(&d, "iyi.toml", "com.example.iyi", 17);
-        std::fs::write(d.join("bozuk.toml"), "bu geçerli toml değil [[[").unwrap();
+        write(&d, "good.toml", "com.example.good", 17);
+        std::fs::write(d.join("broken.toml"), "this is not valid toml [[[").unwrap();
         let s = Store::from_dirs(&[(d.clone(), Origin::System)]);
-        assert!(s.for_package("com.example.iyi").is_some(), "iyi profil yüklenmeli");
-        assert_eq!(s.problems.len(), 1, "bozuk profil raporlanmalı");
-        assert!(s.problems[0].path.ends_with("bozuk.toml"));
+        assert!(s.for_package("com.example.good").is_some(), "the good profile must load");
+        assert_eq!(s.problems.len(), 1, "the broken profile must be reported");
+        assert!(s.problems[0].path.ends_with("broken.toml"));
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Doğrulamadan geçemeyen profil de sorun olarak bildirilmeli.
+    /// A profile failing validation must also be reported as a problem.
     #[test]
     fn invalid_profile_is_a_reported_problem() {
         let d = tmp("dup");
@@ -261,12 +261,12 @@ at = { x = 0.6, y = 0.6 }
         let s = Store::from_dirs(&[(d.clone(), Origin::System)]);
         assert!(s.is_empty());
         assert_eq!(s.problems.len(), 1);
-        assert!(s.problems[0].error.contains("aynı tetikleyici"));
+        assert!(s.problems[0].error.contains("duplicate trigger"));
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Aynı öncelikte iki profil aynı paketi iddia ederse: belirlenimli
-    /// seçim + açık uyarı. Sessizce birini seçmek kabul edilemez.
+    /// Two profiles at the same precedence claiming one package: deterministic
+    /// choice plus an explicit warning. Choosing silently is unacceptable.
     #[test]
     fn same_package_collision_is_reported_deterministically() {
         let d = tmp("coll");
@@ -275,11 +275,11 @@ at = { x = 0.6, y = 0.6 }
         let s1 = Store::from_dirs(&[(d.clone(), Origin::System)]);
         let s2 = Store::from_dirs(&[(d.clone(), Origin::System)]);
         assert_eq!(s1.len(), 1);
-        assert_eq!(s1.problems.len(), 1, "çakışma bildirilmeli");
+        assert_eq!(s1.problems.len(), 1, "the collision must be reported");
         assert_eq!(
             s1.for_package("com.example.game").unwrap().path,
             s2.for_package("com.example.game").unwrap().path,
-            "seçim tekrarlanabilir olmalı"
+            "the choice must be reproducible"
         );
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -288,21 +288,21 @@ at = { x = 0.6, y = 0.6 }
     fn non_toml_files_are_ignored() {
         let d = tmp("ext");
         write(&d, "g.toml", "com.example.g", 17);
-        std::fs::write(d.join("notlar.txt"), "bu profil değil").unwrap();
+        std::fs::write(d.join("notes.txt"), "not a profile").unwrap();
         let s = Store::from_dirs(&[(d.clone(), Origin::System)]);
         assert_eq!(s.len(), 1);
         assert!(s.problems.is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Varsayılan arama yolları çalışma dizinine BAĞLI OLMAMALI.
+    /// Default search paths must NOT depend on the working directory.
     #[test]
     fn default_dirs_never_depend_on_cwd() {
         let dirs = default_dirs();
         let cwd = std::env::current_dir().unwrap();
         for (d, _) in &dirs {
             assert_ne!(d, &cwd.join("profiles"),
-                "arama yolu çalışma dizinine bağlı olmamalı: {}", d.display());
+                "search path must not depend on cwd: {}", d.display());
         }
     }
 
@@ -311,7 +311,7 @@ at = { x = 0.6, y = 0.6 }
         let dirs = default_dirs();
         if let Some(u) = user_profile_dir() {
             assert_eq!(dirs.first().map(|(p, _)| p.clone()), Some(u),
-                "kullanıcı dizini ilk sırada olmalı");
+                "the user directory must come first");
         }
     }
 

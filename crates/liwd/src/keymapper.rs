@@ -1,8 +1,8 @@
-//! liwd içindeki keymapper görevi.
+//! The keymapper task inside liwd.
 //!
-//! Runner'ı sarmalar ve ön plan yoklamasını sağlar. Yoklama AYRI GÖREVDE
-//! çalışır: `waydroid shell dumpsys` 100-200 ms sürüyor ve girdi döngüsünde
-//! beklenirse gecikme p99'da 212 ms'ye çıkıyor (ölçüldü).
+//! Wraps the Runner and provides foreground polling. Polling runs in a SEPARATE
+//! TASK: `waydroid shell dumpsys` takes 100-200 ms and awaiting it in the input
+//! loop pushed p99 latency to 212 ms (measured).
 
 use anyhow::{Context, Result};
 use liw_core::input::{Runner, RunnerConfig, RunnerEvent, RunnerState, ScreenMap, Store};
@@ -12,10 +12,10 @@ use tokio::sync::{mpsc, watch, Mutex};
 
 const POLL_MS: u64 = 1000;
 
-/// Waydroid penceresinin KWin'deki sınıf adı. `find-waydroid.js` ile
-/// ölçüldü: cls='waydroid'.
+/// KWin class name of the Waydroid window. Measured with `find-waydroid.js`:
+/// cls='waydroid'.
 const WAYDROID_CLASS: &str = "waydroid";
-/// KWin script'inin kayıt adı; durdururken aynı adla kaldırılır.
+/// Registration name of the KWin script; unloaded under the same name.
 const KWIN_SCRIPT: &str = "liwinux-focus";
 
 struct Running {
@@ -27,7 +27,7 @@ struct Running {
 
 pub struct Handle {
     inner: Mutex<Option<Running>>,
-    /// Pencere boyutu; keymapper başlarken motora en-boy oranı olarak verilir.
+    /// Window size; handed to the engine as an aspect ratio at startup.
     screen_px: Mutex<(u32, u32)>,
 }
 
@@ -36,46 +36,46 @@ impl Handle {
         Self { inner: Mutex::new(None), screen_px: Mutex::new((2560, 1440)) }
     }
 
-    /// Pencere geometrisi değiştikçe güncellenir.
+    /// Updated as the window geometry changes.
     pub async fn set_screen_px(&self, w: u32, h: u32) {
         if w > 0 && h > 0 { *self.screen_px.lock().await = (w, h); }
     }
 
-    /// Dokunuş borusunu alır; hazır değilse bir süre BEKLER.
+    /// Acquires the touch pipe; WAITS a while if it is not ready.
     ///
     /// Tek denemek yetmiyor. `waydroid.display_width`'i hwcomposer ancak
-    /// ilk hotplug'da yazıyor; session yeni başladıysa bu birkaç saniye
-    /// sürer. Gerçekte yaşandı: `liw session restart` sonrası keymapper
-    /// her seferinde sessizce uinput'a düştü ve nişan sınırlı kipte kaldı
-    /// — kullanıcı yalnızca "eskisi gibi oldu" gördü.
+    /// on the first hotplug; right after a session start that takes a few
+    /// seconds. This actually happened: after `liw session restart` the
+    /// keymapper silently fell back to uinput every time and aim stayed in
+    /// bounded mode — all the user saw was "it went back to how it was".
     async fn acquire_pipe(helper: &HelperClient)
         -> Option<(std::fs::File, (u32, u32))>
     {
-        /// Toplam ~15 sn. Waydroid'in tam açılışı bu civarda.
+        /// About 15 s in total. Waydroid's full startup is around there.
         const TRIES: u32 = 15;
         let mut last = String::new();
         for i in 0..TRIES {
             match helper.open_touch_pipe().await {
                 Ok((f, w, h)) => {
-                    tracing::info!(genişlik = w, yükseklik = h, deneme = i + 1,
-                        "dokunuş borusu alındı — compositor atlanıyor, \
-                         sınırsız nişan etkin");
+                    tracing::info!(width = w, height = h, attempt = i + 1,
+                        "touch pipe acquired — bypassing the compositor, \
+                         unbounded aim enabled");
                     return Some((f, (w, h)));
                 }
                 Err(e) => {
                     last = e.to_string();
                     if i == 0 {
                         tracing::info!(hata = %last,
-                            "dokunuş borusu henüz hazır değil, bekleniyor");
+                            "touch pipe not ready yet, waiting");
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
         }
         tracing::warn!(hata = %last, deneme = TRIES,
-            "dokunuş borusu alınamadı — uinput yoluna düşülüyor. \
-             Nişan SINIRLI kipte çalışacak: parmak ekran kenarında \
-             sıfırlanır ve hızlı çevirmede dönüş kaybı olur.");
+            "could not acquire the touch pipe — falling back to uinput. \
+             Aim will run in BOUNDED mode: the finger is reset at the screen \
+             edge and fast turns lose rotation.");
         None
     }
 
@@ -84,10 +84,10 @@ impl Handle {
         let guard = self.inner.lock().await;
         let Some(r) = guard.as_ref() else { return };
         let focused = class.eq_ignore_ascii_case(WAYDROID_CLASS);
-        // Yalnızca değişimde gönder: watch kanalı aynı değeri tekrar
-        // yayarsa Runner gereksiz iş yapar.
+        // Only send on change: if the watch channel re-emits the same value
+        // the Runner does pointless work.
         if *r.focus.borrow() != focused {
-            tracing::info!(pencere = class, waydroid_odakta = focused, "odak değişti");
+            tracing::info!(window = class, waydroid_focused = focused, "focus changed");
             let _ = r.focus.send(focused);
         }
     }
@@ -102,7 +102,7 @@ impl Handle {
     pub async fn start(&self, grab: bool) -> Result<()> {
         let mut guard = self.inner.lock().await;
         if guard.is_some() {
-            tracing::info!("keymapper zaten çalışıyor");
+            tracing::info!("keymapper already running");
             return Ok(());
         }
 
@@ -110,34 +110,34 @@ impl Handle {
         let devs = liw_core::input::discover();
         let device = cfg.keyboard.clone()
             .or_else(|| liw_core::input::capture::best_keyboard(&devs).map(|d| d.path.clone()))
-            .context("klavye yok — 'liw keymap detect --save' ile kalibre et")?;
+            .context("no keyboard — calibrate with 'liw keymap detect --save'")?;
 
         let store = Store::discover();
         for p in &store.problems {
-            tracing::warn!(dosya = %p.path.display(), hata = %p.error, "profil yüklenemedi");
+            tracing::warn!(file = %p.path.display(), error = %p.error, "could not load profile");
         }
         tracing::info!(
             klavye = %device.display(),
             fare = ?cfg.mouse.as_ref().map(|p| p.display().to_string()),
             profil = store.len(), grab,
-            kısayol = ?cfg.hotkey_game_mode,
-            "keymapper başlatılıyor");
+            hotkey = ?cfg.hotkey_game_mode,
+            "starting keymapper");
         if grab && cfg.hotkey_game_mode.is_none() {
             tracing::warn!(
-                "kilit açık ama oyun kipi kısayolu tanımlı değil — profil \
-                 etkinleşir etkinleşmez kilitlenecek. 'liw keymap detect \
-                 --hotkey --save' ile bir tuş belirle.");
+                "grab is on but no game-mode hotkey is set — devices will be \
+                 grabbed as soon as a profile activates. Pick a key with \
+                 'liw keymap detect --hotkey --save'.");
         }
 
-        // Ön plan tespiti ve dokunuş borusu için helper ŞART.
+        // The helper is MANDATORY for foreground detection and the touch pipe.
         let helper = HelperClient::connect().await
-            .context("liwd-helper'a bağlanılamadı — ön plan tespiti için gerekli")?;
+            .context("could not connect to liwd-helper — required for foreground detection")?;
 
-        // Dokunuş borusu: başarılıysa compositor zinciri atlanır ve
-        // koordinat kırpılmadığı için sınırsız nişan devreye girer.
-        // Başarısızsa uinput yoluna düşülür — ama SESSİZCE değil: nişanın
-        // hissi tamamen buna bağlı ve kullanıcı hangi yolda olduğunu
-        // bilmeli (`docs/fare-nisan.md`).
+        // Touch pipe: on success the compositor chain is bypassed and, because
+        // coordinates are not clamped, unbounded aim kicks in. On failure we
+        // fall back to uinput — but NOT SILENTLY: how aim feels depends
+        // entirely on this and the user must know which path is active.
+        // bilmeli (`docs/mouse-aim.md`).
         let pipe = Self::acquire_pipe(&helper).await;
 
         let mut runner = Runner::new(
@@ -146,8 +146,9 @@ impl Handle {
                 hotkey: cfg.hotkey_game_mode,
                 screen_map: ScreenMap::default(),
                 screen_px: match pipe {
-                    // Boru yolunda en-boy oranı ANDROID ekranından gelmeli:
-                    // koordinatlar oraya gidiyor, host penceresine değil.
+                    // On the pipe path the aspect ratio must come from the
+                    // ANDROID display: that is where coordinates go, not the
+                    // host window.
                     Some((_, px)) => px,
                     None => *self.screen_px.lock().await,
                 },
@@ -158,9 +159,9 @@ impl Handle {
             runner = runner.with_touch_pipe(f, px);
         }
 
-        // Boru koptuğunda (ekran hotplug'ı FIFO'yu siliyor) Runner
-        // yenisini isteyebilsin. Kanal tutan görev helper'ı sahiplenir;
-        // Runner'ın D-Bus'ı bilmemesi böyle korunuyor.
+        // So the Runner can request a new pipe when it breaks (a display
+        // hotplug deletes the FIFO). The task holding the channel owns the
+        // helper; that is how the Runner is kept ignorant of D-Bus.
         let (pipe_tx, mut pipe_rx) =
             mpsc::channel::<liw_core::input::PipeRequest>(2);
         let helper_pipe = helper.clone();
@@ -173,15 +174,16 @@ impl Handle {
 
         let state = runner.state();
 
-        // Odak başlangıçta BİLİNMİYOR; KWin script'i ilk bildirimi yapana
-        // kadar kapalı varsayıyoruz. Yanlış pozitif (kapalıyken açık sanmak)
-        // masaüstüne dokunuş enjekte etmek demek — tersi yalnızca gecikme.
+        // Focus is UNKNOWN at startup; we assume off until the KWin script
+        // makes its first report. A false positive (thinking it is on while it
+        // is off) means injecting touches into the desktop — the reverse only
+        // costs latency.
         let (focus_tx, focus_rx) = watch::channel(false);
         let (fg_tx, fg_rx) = mpsc::channel::<String>(4);
         let (ev_tx, mut ev_rx) = mpsc::channel::<RunnerEvent>(16);
         let (sd_tx, sd_rx) = watch::channel(false);
 
-        // Ön plan yoklaması — girdi yolunu ASLA bloke etmemeli.
+        // Foreground polling — must NEVER block the input path.
         let poll = tokio::spawn(async move {
             let mut t = tokio::time::interval(std::time::Duration::from_millis(POLL_MS));
             loop {
@@ -189,7 +191,7 @@ impl Handle {
                 match helper.foreground_package().await {
                     Ok(p) if !p.is_empty() => { let _ = fg_tx.try_send(p); }
                     Ok(_) => {}
-                    Err(e) => tracing::warn!(hata = %e, "ön plan sorgulanamadı"),
+                    Err(e) => tracing::warn!(error = %e, "could not query foreground"),
                 }
             }
         });
@@ -200,21 +202,21 @@ impl Handle {
                     RunnerEvent::ProfileActivated { package, profile } =>
                         tracing::info!(paket = %package, %profile, "profil etkin"),
                     RunnerEvent::ProfileCleared { package } =>
-                        tracing::info!(paket = %package, "profil yok — eşleme kapalı"),
+                        tracing::info!(package = %package, "no profile — mapping off"),
                     RunnerEvent::OverlayPaused { package } => tracing::warn!(
                         paket = %package,
-                        "sistem katmanı oyunun üstüne çıktı — eşleme duraklatıldı, \
+                        "a system layer came over the game — mapping paused, \
                          fare serbest"),
                     RunnerEvent::Grabbed => tracing::info!("cihaz kilitlendi"),
-                    RunnerEvent::Ungrabbed => tracing::info!("cihaz kilidi bırakıldı"),
+                    RunnerEvent::Ungrabbed => tracing::info!("device grab released"),
                     RunnerEvent::GameModeOn =>
-                        tracing::info!("oyun kipi AÇIK — kilit + eşleme"),
+                        tracing::info!("game mode ON — grab + mapping"),
                     RunnerEvent::GameModeOff =>
-                        tracing::info!("oyun kipi kapalı — fare serbest"),
+                        tracing::info!("game mode off — mouse free"),
                     RunnerEvent::FocusGained =>
-                        tracing::info!("Waydroid odakta — eşleme açık"),
+                        tracing::info!("Waydroid focused — mapping on"),
                     RunnerEvent::FocusLost =>
-                        tracing::info!("Waydroid odakta değil — eşleme kapalı"),
+                        tracing::info!("Waydroid not focused — mapping off"),
                     RunnerEvent::EscapeRequested =>
                         tracing::info!("ESC ×3 — keymapper durduruluyor"),
                 }
@@ -229,10 +231,10 @@ impl Handle {
         });
 
         if let Err(e) = load_kwin_script().await {
-            // Ölümcül değil ama TEHLİKELİ: odak bilgisi olmadan eşleme
-            // hiç açılmaz (focus=false başlıyor). Kullanıcıya söyle.
+            // Not fatal but DANGEROUS: without focus information mapping never
+            // turns on (it starts at focus=false). Tell the user.
             tracing::error!(hata = %e,
-                "KWin odak script'i yüklenemedi — eşleme açılmayacak");
+                "could not load the KWin focus script — mapping will not turn on");
         }
 
         *guard = Some(Running {
@@ -247,28 +249,28 @@ impl Handle {
         let Some(r) = guard.take() else { return };
         tracing::info!("keymapper durduruluyor");
         let _ = r.shutdown.send(true);
-        // Runner'ın temiz çıkıp parmakları kaldırmasına ve kilidi
-        // bırakmasına fırsat ver; ancak ondan sonra görevleri iptal et.
+        // Give the Runner a chance to exit cleanly, lift fingers and release
+        // the grab; only then cancel the tasks.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         for t in r.tasks { t.abort(); }
         if let Err(e) = unload_kwin_script().await {
-            tracing::warn!(hata = %e, "KWin script'i kaldırılamadı");
+            tracing::warn!(error = %e, "could not unload the KWin script");
         }
     }
 }
 
-/// KWin'in scripting arayüzü üzerinden odak bildirim script'ini yükler.
+/// Loads the focus-reporting script through KWin's scripting interface.
 async fn load_kwin_script() -> Result<()> {
-    let path = kwin_script_path().context("focus.js bulunamadı")?;
+    let path = kwin_script_path().context("focus.js not found")?;
     let conn = zbus::Connection::session().await?;
     let p = zbus::Proxy::new(&conn, "org.kde.KWin", "/Scripting",
                              "org.kde.kwin.Scripting").await?;
-    // Eskisi kalmışsa kaldır; iki kopya iki kat bildirim demek.
+    // Unload a leftover copy; two copies mean twice the notifications.
     let _: Result<bool, _> = p.call("unloadScript", &(KWIN_SCRIPT,)).await;
     let _id: i32 = p.call("loadScript", &(path.to_string_lossy().as_ref(), KWIN_SCRIPT))
-        .await.context("loadScript başarısız")?;
-    let _: () = p.call("start", &()).await.context("script başlatılamadı")?;
-    tracing::info!(script = %path.display(), "KWin odak script'i yüklendi");
+        .await.context("loadScript failed")?;
+    let _: () = p.call("start", &()).await.context("could not start script")?;
+    tracing::info!(script = %path.display(), "KWin focus script loaded");
     Ok(())
 }
 
@@ -280,11 +282,12 @@ async fn unload_kwin_script() -> Result<()> {
     Ok(())
 }
 
-/// focus.js'i arar: kurulu konum, sonra çalıştırılabilirin yanındaki depo.
-/// Çalışma dizinine BAKILMAZ (bkz. profil deposundaki aynı ders).
+/// Looks for focus.js: the installed location, then the repository next to the
+/// executable. The working directory is NOT consulted (same lesson as the
+/// profile store).
 fn kwin_script_path() -> Option<std::path::PathBuf> {
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-    // Kullanıcı kurulumu önce: sistem paketini gölgeleyebilsin.
+    // User installation first, so it can shadow the system package.
     if let Some(data) = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME")

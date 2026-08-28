@@ -1,21 +1,22 @@
-// Waydroid penceresini tam ekran yapar ve sonucu liwd'ye BİLDİRİR.
+// Makes the Waydroid window fullscreen and REPORTS the result to liwd.
 //
-// Bildirim şart: KWin scripting API'si script çıktısını çağırana döndürmez.
-// Geri bildirim olmadan liwd "oldu mu olmadı mı" bilemez ve sessizce
-// yanlış varsayımla devam eder.
+// Reporting is mandatory: the KWin scripting API does not return script output
+// to the caller. Without feedback liwd cannot know whether it worked, and would
+// silently carry on with a wrong assumption.
 //
-// Neden tam ekran: dokunuşlar EKRAN uzayında gidiyor. Pencere çıkışla
-// hizalı değilse profil koordinatları kayar, kenar dokunuşları dışarı düşer.
-// Yalnızca resourceClass'a bakılır.
+// Why fullscreen: touches are delivered in SCREEN space. If the window is not
+// aligned with the output, profile coordinates shift and edge touches fall
+// outside it.
+// Match on resourceClass ONLY.
 //
-// Başlığa (caption) veya resourceName'e bakmak TEHLİKELİ: kullanıcının
-// terminali "waydroid ..." komutunu çalıştırırken başlığında o kelimeyi
-// taşır ve yanlışlıkla eşleşir. Gerçekte yaşandı — teşhis aracı kullanıcının
-// konsol penceresini Waydroid penceresi sandı. Başlıkla eşleştiren bir
-// script o pencereyi tam ekran yapabilirdi.
+// Matching the caption or resourceName is DANGEROUS: the user's terminal
+// carries that word in its title while running a "waydroid ..." command and
+// would match by accident. This actually happened — a diagnostic tool mistook
+// the user's console window for the Waydroid window. A script matching on the
+// caption could have made that window fullscreen.
 //
-// Birden fazla gerçek eşleşme olursa en büyük alanlı seçilir; listedeki
-// sıra KWin'in yığın düzenine bağlı olduğu için belirlenimsizdir.
+// If several genuine matches exist, the largest by area wins; list order
+// depends on KWin's stacking order and is therefore non-deterministic.
 function liwFindWaydroid(wins) {
     var best = null, bestArea = -1;
     for (var i = 0; i < wins.length; i++) {
@@ -47,7 +48,7 @@ if (target === null) {
     liwReport(false, 0, 0, 0, 0, false);
 } else {
     if (!target.fullScreen) {
-        // Etkinleştir: KWin bazı işlemleri yalnızca etkin pencerede uygular.
+        // Activate first: KWin applies some operations only to the active window.
         try { workspace.activeWindow = target; }
         catch (e) { try { workspace.activeClient = target; } catch (e2) {} }
         try { target.setMaximize(true, true); } catch (e) {}

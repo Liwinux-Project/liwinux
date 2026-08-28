@@ -29,13 +29,13 @@ W ping -c 1 -W 2 8.8.8.8     >/dev/null 2>&1
 sleep 3
 
 echo
-echo "=== SAYAÇLAR ==="
+echo "=== COUNTERS ==="
 nft list table inet $T | grep -E "counter packets" | sed 's/^/  /'
 get() { nft list table inet $T | grep "\"$1\"" | grep -oE "packets [0-9]+" | awk '{print $2}'; }
 Q=$(get q_in); QT=$(get q_in_tcp); R=$(get r_out); WAN=$(get wan_out)
 
 echo
-echo "=== TEŞHİS ==="
+echo "=== DIAGNOSIS ==="
 echo "  Android'den cikan DNS sorgusu (udp): ${Q:-0}   (tcp: ${QT:-0})"
 echo "  dnsmasq'ten donen cevap            : ${R:-0}"
 echo "  Android'den WAN'a giden paket      : ${WAN:-0}"

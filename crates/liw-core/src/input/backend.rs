@@ -1,36 +1,37 @@
-//! Dokunuş enjeksiyon arka uçları.
+//! Touch injection backends.
 //!
-//! Motor `TouchAction` üretir; arka uç onu Android'e ulaştırır. Arka uç
-//! takılabilir çünkü hangi yolun çalışacağı ölçümle belirlenecek:
+//! The engine produces `TouchAction`s; a backend delivers them to Android.
+//! Backends are pluggable because which path actually works is decided by
+//! measurement:
 //!
-//! * `uinput`  — host'ta sanal dokunmatik ekran; libinput → KWin → wl_touch
-//!               → Waydroid. Konteyner değişikliği ve Java gerektirmez.
-//! * `debug`   — sadece yazdırır; eşlemeyi Android'e dokunmadan doğrulamak için.
-//! * (ileride) `android_socket` — app_process sunucusu + injectInputEvent().
+//! * `uinput`  — a virtual touchscreen on the host; libinput -> KWin ->
+//!               wl_touch -> Waydroid. Needs no container changes and no Java.
+//! * `debug`   — prints only; verifies mapping without touching Android.
+//! * (future) `android_socket` — app_process server + injectInputEvent().
 
 use super::touch::TouchAction;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BackendError {
-    #[error("arka uç başlatılamadı: {0}")]
+    #[error("backend init failed: {0}")]
     Init(String),
-    #[error("dokunuş gönderilemedi: {0}")]
+    #[error("touch dispatch failed: {0}")]
     Dispatch(String),
 }
 
 pub trait TouchBackend: Send {
-    /// Eylemleri sırayla uygular. Tek bir çağrıda gelen eylemler AYNI
-    /// kareye ait sayılır ve tek SYN_REPORT ile bitirilmelidir; aksi halde
-    /// çoklu dokunuş "ayrı ayrı parmaklar" gibi görünür.
+    /// Applies the actions in order. Actions arriving in a single call belong
+    /// to the SAME frame and must be terminated by one SYN_REPORT; otherwise a
+    /// multi-touch gesture looks like "separate fingers" to Android.
     fn dispatch(&mut self, actions: &[TouchAction]) -> Result<(), BackendError>;
 
-    /// Tüm parmakları kaldırır (acil durdurma, profil değişimi).
+    /// Lifts every finger (emergency stop, profile switch).
     fn release_all(&mut self) -> Result<(), BackendError>;
 
     fn name(&self) -> &'static str;
 }
 
-/// Hiçbir yere enjekte etmeyen, sadece kaydeden arka uç.
+/// A backend that injects nowhere and only records.
 #[derive(Debug, Default)]
 pub struct DebugBackend {
     pub log: Vec<TouchAction>,

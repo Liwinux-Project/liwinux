@@ -1,26 +1,25 @@
-//! `liw profile edit` — görsel profil düzenleyici.
+//! `liw profile edit` — the visual profile editor.
 //!
-//! Oyunun ekran görüntüsünü alır, yerel bir HTTP sunucusu açar ve tarayıcıda
-//! işaretçileri sürükleyerek koordinat düzenlemeyi sağlar.
+//! Takes a screenshot of the game, opens a local HTTP server and lets you edit
+//! coordinates by dragging markers in the browser.
 //!
 //! # Neden web
 //!
-//! GUI kütüphanesi bağımlılığı eklemeden gerçek görsel düzenleme veriyor.
-//! Sunucu yalnızca 127.0.0.1'e bağlanır ve tek profil düzenler.
+//! It gives real visual editing without adding a GUI library dependency. The
+//! server binds to 127.0.0.1 only and edits a single profile.
 //!
-//! # Doğruluk
+//! # Accuracy
 //!
-//! Düzenleyicinin tek işi koordinat üretmek ve bir kaç pikselik kayma
-//! oyunda düğmeyi ıskalamak demek. Bu yüzden:
+//! The editor's only job is producing coordinates, and being a few pixels off
+//! means missing the button in the game. Therefore:
 //!
-//! * Tarayıcıya ekran görüntüsünün GERÇEK piksel boyutu bildirilir; arayüz
-//!   görüntüyü sığdırmak için ölçekler ama koordinatı her zaman kaynak
-//!   piksele geri çevirir.
-//! * Yazarken 4 ondalık kullanılır: 2560 pikselde 0.0001 ≈ 0.26 piksel,
-//!   yani yuvarlama görünür bir kaymaya yol açamaz. (Eski hâli 3 ondalıktı
-//!   ve 2.5 piksele kadar kayabiliyordu.)
-//! * Kayıttan önce profil DOĞRULANIR — aynı tuşu iki bağlantıya vermek
-//!   "bazen çalışıyor" hatası üretir ve elle fark edilmesi çok zordur.
+//! * The browser is told the REAL pixel size of the screenshot; the UI scales
+//!   the image to fit but always converts coordinates back to source pixels.
+//! * Four decimals are written: at 2560 pixels 0.0001 ~ 0.26 pixel, so rounding
+//!   cannot cause a visible shift. (It used to be three decimals and could
+//!   drift by up to 2.5 pixels.)
+//! * The profile is VALIDATED before saving — giving the same key to two
+//!   bindings produces a "sometimes it works" bug that is very hard to spot.
 
 use anyhow::{bail, Context, Result};
 use liw_core::input::{Binding, Profile, Store};
@@ -31,21 +30,21 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
-/// Tarayıcının gördüğü tüm durum.
+/// All the state the browser sees.
 #[derive(serde::Serialize)]
 struct State {
     name: String,
     package: String,
-    /// Ekran görüntüsünün gerçek piksel boyutu. Arayüzün ölçekleme
-    /// matematiği tamamen buna dayanıyor.
+    /// Real pixel size of the screenshot. The UI's scaling maths rests entirely
+    /// on this.
     width: u32,
     height: u32,
-    /// Görüntü sürümü: yeniden çekildiğinde artar, tarayıcı önbelleği kırar.
+    /// Image version: incremented on recapture, busting the browser cache.
     shot: u64,
     bindings: BTreeMap<String, Binding>,
 }
 
-/// Tarayıcıdan gelen tek dokunuş isteği.
+/// A single touch request from the browser.
 #[derive(serde::Deserialize)]
 struct Poke {
     x: f32,
@@ -63,48 +62,48 @@ struct Editor {
     package: String,
     bindings: Mutex<BTreeMap<String, Binding>>,
     shot: PathBuf,
-    /// (genişlik, yükseklik, sürüm)
+    /// (width, height, version)
     shot_info: Mutex<(u32, u32, u64)>,
 }
 
-/// Waydroid penceresinin görüntüsünü alır.
+/// Captures an image of the Waydroid window.
 ///
-/// `spectacle -a` (aktif pencere) kullanılıyor. `grim` KWin'de ÇALIŞMIYOR:
-/// KWin `wlr-screencopy` protokolünü desteklemiyor.
+/// Uses `spectacle -a` (active window). `grim` DOES NOT WORK on KWin: KWin does
+/// not support the `wlr-screencopy` protocol.
 ///
-/// `window_geometry()` çağrısı pencereyi tam ekran yapıp AKTİFLEŞTİRİYOR;
-/// bu yüzden `-a` tam olarak Waydroid penceresini yakalıyor.
+/// The `window_geometry()` call makes the window fullscreen and ACTIVATES it,
+/// so `-a` captures exactly the Waydroid window.
 async fn screenshot(out: &Path) -> Result<(u32, u32)> {
     let (_x, _y, w, h) = window_geometry().await?;
-    // Pencereyi ÖNE GETİR: spectacle -a aktif pencereyi yakalar ve komut
-    // terminalden/tarayıcıdan tetiklendiği için aktif pencere o olur.
+    // RAISE the window: spectacle -a captures the active window, and the
+    // command is triggered from a terminal or browser, which would be active.
     activate_window().await?;
-    // KWin'in odağı devretmesi ve pencerenin çizilmesi için pay.
+    // Slack for KWin to hand over focus and for the window to be drawn.
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
     let _ = std::fs::remove_file(out);
     let st = tokio::process::Command::new("spectacle")
         .args(["-a", "-b", "-n", "-o", out.to_str().unwrap()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status().await.context("spectacle çalıştırılamadı (kurulu mu?)")?;
-    // spectacle arka planda yazar; dosyanın belirmesini bekle.
+        .status().await.context("could not run spectacle (is it installed?)")?;
+    // spectacle writes in the background; wait for the file to appear.
     for _ in 0..30 {
         if out.is_file() && std::fs::metadata(out).map(|m| m.len() > 0).unwrap_or(false) {
-            // PNG başlığından GERÇEK boyutu oku.
+            // Read the REAL size from the PNG header.
             //
-            // KWin'in bildirdiği geometri mantıksal piksel; ekran ölçeği
-            // 1 değilse görüntü daha büyük çıkar. Arayüzün ölçekleme
-            // matematiği görüntünün kendi boyutuna dayanmalı, yoksa her
-            // işaretçi sabit bir oranda kayar.
+            // The geometry KWin reports is in logical pixels; with a display
+            // scale other than 1 the image comes out larger. The UI's scaling
+            // maths must rest on the image's own size, or every marker shifts
+            // by a constant ratio.
             if let Some((pw, ph)) = png_size(out) { return Ok((pw, ph)); }
             return Ok((w, h));
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
-    bail!("ekran görüntüsü oluşmadı (spectacle çıkışı: {st})");
+    bail!("no screenshot appeared (spectacle exit: {st})");
 }
 
-/// PNG IHDR'den genişlik/yükseklik. Kod çözmeye gerek yok, ilk 24 bayt yeter.
+/// Width/height from the PNG IHDR. No decoding needed; the first 24 bytes do.
 fn png_size(p: &Path) -> Option<(u32, u32)> {
     let b = std::fs::read(p).ok()?;
     if b.len() < 24 || &b[..8] != b"\x89PNG\r\n\x1a\n" || &b[12..16] != b"IHDR" {
@@ -114,34 +113,35 @@ fn png_size(p: &Path) -> Option<(u32, u32)> {
     Some((rd(16), rd(20)))
 }
 
-/// Keymapper'ı yeniden başlatır (kaydedilen profili yükletmek için).
+/// Restarts the keymapper (to load the saved profile).
 ///
-/// Kayıttan sonra profilin etkili olması `liw keymap stop && start` ile
-/// yapılıyordu; düzenleyicide çalışıp terminale gitmek düzenleme-dene
-/// döngüsünü kırıyor. Burada aynı D-Bus çağrıları yapılıyor.
+/// Making a saved profile take effect used to require `liw keymap stop && start`;
+/// leaving the editor for the terminal breaks the edit-and-try loop. The same
+/// D-Bus calls are made here.
 ///
-/// Zaten çalışmıyorsa BAŞLATMIYORUZ: kullanıcı bilerek kapatmış olabilir
-/// ve düzenleyicinin kendiliğinden cihaz kilitlemesi sürpriz olurdu.
+/// If it is not running we do NOT start it: the user may have turned it off
+/// deliberately and having the editor grab devices by itself would be a
+/// surprise.
 async fn reload_keymapper() -> Result<&'static str> {
     let conn = zbus::Connection::session().await?;
     let p = zbus::Proxy::new(&conn, "id.liwinux.Manager1",
         "/id/liwinux/Manager1", "id.liwinux.Manager1").await
-        .context("liwd'ye bağlanılamadı")?;
+        .context("could not connect to liwd")?;
     let st: String = p.call("KeymapperStatus", &()).await
-        .context("keymapper durumu okunamadı")?;
+        .context("could not read the keymapper state")?;
     let running = serde_json::from_str::<serde_json::Value>(&st)
         .map(|v| v["running"].as_bool().unwrap_or(false)).unwrap_or(false);
-    if !running { return Ok("keymapper zaten kapalı — açmadım"); }
+    if !running { return Ok("the keymapper was already off — left it alone"); }
 
     let grabbed = serde_json::from_str::<serde_json::Value>(&st)
         .map(|v| v["grabbed"].as_bool().unwrap_or(false)).unwrap_or(false);
     p.call::<_, _, ()>("StopKeymapper", &()).await
-        .context("keymapper durdurulamadı")?;
+        .context("could not stop the keymapper")?;
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     p.call::<_, _, ()>("StartKeymapper", &(true,)).await
-        .context("keymapper başlatılamadı")?;
-    Ok(if grabbed { "keymapper yeniden başlatıldı" }
-       else { "keymapper yeniden başlatıldı (kilit oyun kipinde alınır)" })
+        .context("could not start the keymapper")?;
+    Ok(if grabbed { "keymapper restarted" }
+       else { "keymapper restarted (the grab is taken in game mode)" })
 }
 
 async fn activate_window() -> Result<()> {
@@ -149,7 +149,7 @@ async fn activate_window() -> Result<()> {
     let p = zbus::Proxy::new(&conn, "id.liwinux.Manager1",
         "/id/liwinux/Manager1", "id.liwinux.Manager1").await?;
     p.call::<_, _, ()>("ActivateWindow", &()).await
-        .context("pencere öne getirilemedi")?;
+        .context("could not raise the window")?;
     Ok(())
 }
 
@@ -157,14 +157,14 @@ async fn window_geometry() -> Result<(i32, i32, u32, u32)> {
     let conn = zbus::Connection::session().await?;
     let p = zbus::Proxy::new(&conn, "id.liwinux.Manager1",
         "/id/liwinux/Manager1", "id.liwinux.Manager1").await
-        .context("liwd'ye bağlanılamadı")?;
-    // Önce tam ekran isteği: geometri güncellensin.
+        .context("could not connect to liwd")?;
+    // Request fullscreen first, so the geometry is refreshed.
     let _: Result<bool, _> = p.call("Fullscreen", &()).await;
     let json: String = p.call("WindowGeometry", &()).await
-        .context("pencere geometrisi alınamadı")?;
+        .context("could not get the window geometry")?;
     let v: serde_json::Value = serde_json::from_str(&json)?;
     if !v["found"].as_bool().unwrap_or(false) {
-        bail!("Waydroid penceresi bulunamadı — oyun açık mı?");
+        bail!("Waydroid window not found — is the game open?");
     }
     Ok((v["x"].as_i64().unwrap_or(0) as i32,
         v["y"].as_i64().unwrap_or(0) as i32,
@@ -172,15 +172,15 @@ async fn window_geometry() -> Result<(i32, i32, u32, u32)> {
         v["height"].as_u64().unwrap_or(0) as u32))
 }
 
-/// Ondalıkları `f32`'nin EN KISA gösterimine indirger.
+/// Reduces decimals to the SHORTEST `f32` representation.
 ///
-/// Profil koordinatları `f32`; TOML serileştirmesi `f64` üzerinden geçiyor
-/// ve `0.148` dosyaya `0.14800000190734863` diye yazılıyordu. Değer doğru
-/// ama dosya okunamaz hâle geliyor ve her kayıtta biraz daha büyüyor.
+/// Profile coordinates are `f32`; TOML serialization goes through `f64` and
+/// `0.148` was written to the file as `0.14800000190734863`. The value is
+/// correct but the file becomes unreadable and grows a little on every save.
 ///
-/// `f32`'nin `Display`'i zaten gidiş-dönüşü koruyan en kısa ondalığı
-/// üretiyor, yani bu indirgeme HİÇBİR hassasiyet kaybetmiyor: aynı `f32`
-/// geri okunuyor. 2560 pikselde `f32` çözünürlüğü ~0.0002 piksel.
+/// The `Display` impl of `f32` already produces the shortest round-tripping
+/// decimal, so this reduction loses NO precision: the same `f32` is read back.
+/// At 2560 pixels `f32` resolution is ~0.0002 pixel.
 fn normalise_floats(item: &mut toml_edit::Item) {
     fn fix(v: &mut toml_edit::Value) {
         match v {
@@ -205,19 +205,19 @@ fn normalise_floats(item: &mut toml_edit::Item) {
     }
 }
 
-/// Düzenlenen bağlantıları TOML'a geri yazar.
+/// Writes the edited bindings back to TOML.
 ///
-/// Dosyayı baştan üretmek YERİNE `toml_edit` ile yerinde güncelleniyor:
-/// profillerdeki yorumlar bu projede belgelerin yarısı ve yeniden üretim
-/// hepsini silerdi. Yorumlar anahtarın süsünde (decor) tutulduğu için
-/// yalnızca DEĞERİ değiştirmek onları korur.
+/// Updated in place with `toml_edit` INSTEAD of regenerating the file: the
+/// comments in profiles are half the documentation in this project and
+/// regeneration would delete all of them. Because comments live in the key's
+/// decor, changing only the VALUE preserves them.
 fn write_back(path: &Path, bindings: &BTreeMap<String, Binding>,
               name: &str, package: &str) -> Result<()> {
-    // Kayıttan ÖNCE doğrula. En önemlisi aynı tetikleyicinin iki
-    // bağlantıda kullanılması: motor hangisini seçeceğini bilemez ve
-    // kullanıcı bunu "bazen çalışıyor" diye yaşar.
+    // Validate BEFORE saving. Most important is the same trigger used in two
+    // bindings: the engine cannot know which to pick and the user experiences
+    // it as "sometimes it works".
     Profile { name: name.into(), package: package.into(), bindings: bindings.clone() }
-        .validate().context("profil geçersiz")?;
+        .validate().context("invalid profile")?;
 
     let text = std::fs::read_to_string(path)?;
     let mut doc: toml_edit::DocumentMut = text.parse()?;
@@ -229,7 +229,7 @@ fn write_back(path: &Path, bindings: &BTreeMap<String, Binding>,
         }));
     }
     let tbl = doc.get_mut("bindings").and_then(|i| i.as_table_mut())
-        .context("[bindings] bir tablo değil")?;
+        .context("[bindings] is not a table")?;
 
     // Silinenler.
     for k in tbl.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>() {
@@ -238,12 +238,12 @@ fn write_back(path: &Path, bindings: &BTreeMap<String, Binding>,
 
     for (bname, b) in bindings {
         let fresh = toml_edit::ser::to_document(b)
-            .with_context(|| format!("'{bname}' TOML'a çevrilemedi"))?;
+            .with_context(|| format!("could not convert '{bname}' to TOML"))?;
         let fresh = fresh.as_table();
         match tbl.get_mut(bname).and_then(|i| i.as_table_like_mut()) {
             Some(old) => {
-                // Var olan: yalnızca DEĞERLERİ değiştir; anahtar süsünde
-                // duran yorumlar yerinde kalsın.
+                // Existing: change only the VALUES, so comments living in the
+                // key's decor stay in place.
                 for (k, v) in fresh.iter() {
                     let mut v = v.clone();
                     normalise_floats(&mut v);
@@ -251,11 +251,11 @@ fn write_back(path: &Path, bindings: &BTreeMap<String, Binding>,
                         Some(slot) => {
                             // SATIR SONU yorumunu koru.
                             //
-                            // `up = { Key = 17 }   # W` satırındaki "# W",
-                            // değerin son-süsünde (suffix decor) duruyor;
-                            // değeri düz değiştirmek onu siliyordu. O
-                            // yorumlar tuş kodunun hangi harf olduğunu
-                            // söyleyen TEK yer — kaybı sessiz ve kalıcı.
+                            // The "# W" in `up = { Key = 17 }   # W` lives in
+                            // the value's suffix decor; replacing the value
+                            // outright deleted it. Those comments are the ONLY
+                            // place saying which letter a key code is — losing
+                            // them is silent and permanent.
                             let keep = slot.as_value().map(|x| x.decor().clone());
                             *slot = v;
                             if let (Some(d), Some(nv)) = (keep, slot.as_value_mut()) {
@@ -265,7 +265,7 @@ fn write_back(path: &Path, bindings: &BTreeMap<String, Binding>,
                         None => { old.insert(k, v); }
                     }
                 }
-                // Tür değiştiyse eski türe ait anahtarlar kalmamalı.
+                // If the type changed, keys of the old type must not remain.
                 for k in old.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>() {
                     if fresh.get(&k).is_none() { old.remove(&k); }
                 }
@@ -285,10 +285,10 @@ fn write_back(path: &Path, bindings: &BTreeMap<String, Binding>,
 pub async fn run(package: &str, port: u16) -> Result<()> {
     let store = Store::discover();
     let entry = store.for_package(package)
-        .with_context(|| format!("'{package}' için profil yok"))?;
+        .with_context(|| format!("no profile for '{package}'"))?;
 
     let shot = std::env::temp_dir().join(format!("liw-edit-{}.png", std::process::id()));
-    println!("Ekran görüntüsü alınıyor...");
+    println!("Taking a screenshot...");
     let (w, h) = screenshot(&shot).await?;
     println!("  {w}x{h} -> {}", shot.display());
 
@@ -302,24 +302,24 @@ pub async fn run(package: &str, port: u16) -> Result<()> {
     });
 
     let listener = TcpListener::bind(("127.0.0.1", port)).await
-        .with_context(|| format!("port {port} açılamadı"))?;
+        .with_context(|| format!("could not open port {port}"))?;
     let url = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
     println!();
-    println!("Düzenleyici: {url}");
-    println!("Tarayıcı açılıyor — bitince bu terminalde Ctrl+C ile çık.");
+    println!("Editor: {url}");
+    println!("Opening the browser — press Ctrl+C in this terminal when done.");
     let _ = tokio::process::Command::new("xdg-open").arg(&url)
         .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
         .status().await;
 
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => { println!(); println!("kapatıldı"); break; }
+            _ = tokio::signal::ctrl_c() => { println!(); println!("closed"); break; }
             acc = listener.accept() => {
                 let (mut sock, _) = acc?;
                 let ed = ed.clone();
                 tokio::spawn(async move {
                     if let Err(e) = serve(&mut sock, ed).await {
-                        tracing_line(&format!("istek hatası: {e}"));
+                        tracing_line(&format!("request error: {e}"));
                     }
                 });
             }
@@ -331,20 +331,20 @@ pub async fn run(package: &str, port: u16) -> Result<()> {
 
 fn tracing_line(s: &str) { eprintln!("  {s}"); }
 
-/// İstek gövdesinin tamamını okur.
+/// Reads the entire request body.
 ///
-/// Tek `read` YETMİYOR: kaydetme gövdesi birkaç kilobayt olabiliyor ve TCP
-/// onu bölebiliyor. Bölünürse JSON yarım gelir, kayıt "400" ile reddedilir
-/// ve kullanıcı düzenlemesini kaybeder — sessiz veri kaybı.
+/// A single `read` is NOT ENOUGH: the save body can be several kilobytes and
+/// TCP may split it. Split, the JSON arrives half-formed, the save is rejected
+/// with 400 and the user loses their edit — silent data loss.
 async fn read_request(sock: &mut tokio::net::TcpStream) -> Result<(String, String)> {
     let mut buf = Vec::with_capacity(16 * 1024);
     let mut chunk = [0u8; 16 * 1024];
     let head_end = loop {
         let n = sock.read(&mut chunk).await?;
-        if n == 0 { bail!("bağlantı kapandı"); }
+        if n == 0 { bail!("connection closed"); }
         buf.extend_from_slice(&chunk[..n]);
         if let Some(p) = find(&buf, b"\r\n\r\n") { break p + 4; }
-        if buf.len() > 1 << 20 { bail!("başlık çok büyük"); }
+        if buf.len() > 1 << 20 { bail!("headers too large"); }
     };
     let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
     let want: usize = head.lines()
@@ -401,9 +401,9 @@ async fn serve(sock: &mut tokio::net::TcpStream, ed: Arc<Editor>) -> Result<()> 
                         *ed.bindings.lock().await = m;
                         ("200 OK", "text/plain", b"ok".to_vec())
                     }
-                    // Doğrulama hatasının TAM metni tarayıcıya gitmeli:
-                    // "geçersiz" demek kullanıcıya hangi tuşun çakıştığını
-                    // söylemez ve elle bulması çok zordur.
+                    // The FULL text of the validation error must reach the
+                    // browser: saying "invalid" does not tell the user which
+                    // key collides, and finding it by hand is very hard.
                     Err(e) => ("400 Bad Request", "text/plain",
                                format!("{e:#}").into_bytes()),
                 },
@@ -418,9 +418,9 @@ async fn serve(sock: &mut tokio::net::TcpStream, ed: Arc<Editor>) -> Result<()> 
         } else if line.starts_with("POST /poke") {
             match serde_json::from_str::<Poke>(&body) {
                 Ok(p) => {
-                    // Gecikme YOK: dokunuş artık compositor'ı atlayıp
-                    // doğrudan Android'e gidiyor, yani oyun penceresinin
-                    // önde olması gerekmiyor. Kullanıcı tarayıcıda kalabilir.
+                    // NO delay: the touch now bypasses the compositor and goes
+                    // straight to Android, so the game window does not need to
+                    // be in front. The user can stay in the browser.
                     tokio::spawn(async move {
                         let _ = crate::keymap::poke(
                             p.x, p.y, p.hold_ms, p.to.map(|t| (t[0], t[1])),
@@ -458,17 +458,17 @@ mod tests {
     const BASE: &str = r#"name = "T"
 package = "p"
 
-# --- ateş düğmesi ---
+# --- fire button ---
 # Bu yorum KORUNMALI.
 [bindings.ates]
 type = "tap"
 trigger = "MouseLeft"
-# koordinat ekran görüntüsünden ölçüldü
+# coordinate measured from the screenshot
 at = { x = 0.9, y = 0.2 }
 "#;
 
-    /// Yorumlar profillerde belgelerin yarısı; yeniden yazmak onları
-    /// silerdi ve o bilgi hiçbir yerde yedeklenmiyor.
+    /// Comments are half the documentation in profiles; rewriting the file
+    /// would delete them and that information is backed up nowhere.
     #[test]
     fn saving_preserves_comments() {
         let p = tmp("comments", BASE);
@@ -477,13 +477,13 @@ at = { x = 0.9, y = 0.2 }
             trigger: Trigger::MouseLeft, at: Norm::new(0.5, 0.5) });
         write_back(&p, &b, "T", "p").unwrap();
         let out = std::fs::read_to_string(&p).unwrap();
-        assert!(out.contains("# --- ateş düğmesi ---"), "{out}");
+        assert!(out.contains("# --- fire button ---"), "{out}");
         assert!(out.contains("# Bu yorum KORUNMALI."), "{out}");
-        assert!(out.contains("# koordinat ekran görüntüsünden ölçüldü"), "{out}");
-        assert!(out.contains("0.5"), "yeni koordinat yazılmalı: {out}");
+        assert!(out.contains("# coordinate measured from the screenshot"), "{out}");
+        assert!(out.contains("0.5"), "the new coordinate must be written: {out}");
     }
 
-    /// Yeni bağlantı EKLENEBİLMELİ — düzenleyicinin asıl yeni yeteneği bu.
+    /// Adding a NEW binding must work — the editor's main new capability.
     #[test]
     fn saving_adds_and_removes_bindings() {
         let p = tmp("addremove", BASE);
@@ -499,8 +499,8 @@ at = { x = 0.9, y = 0.2 }
         assert_eq!(re.bindings.len(), 1);
     }
 
-    /// Tür değişince ESKİ türün alanları kalmamalı; kalırsa profil
-    /// ayrıştırılamaz hale gelir ve kullanıcı profilini kaybeder.
+    /// After a type change the old type's fields must not remain; if they do
+    /// the profile stops parsing and the user loses it.
     #[test]
     fn changing_type_drops_stale_fields() {
         let p = tmp("retype", r#"name = "T"
@@ -519,16 +519,16 @@ radius = 0.1
             trigger: Trigger::Key(17), at: Norm::new(0.3, 0.4) });
         write_back(&p, &b, "T", "p").unwrap();
         let out = std::fs::read_to_string(&p).unwrap();
-        assert!(!out.contains("radius"), "eski alan kaldı: {out}");
-        assert!(!out.contains("center"), "eski alan kaldı: {out}");
-        Profile::from_toml(&out).expect("yeniden ayrıştırılabilmeli");
+        assert!(!out.contains("radius"), "an old field remained: {out}");
+        assert!(!out.contains("center"), "an old field remained: {out}");
+        Profile::from_toml(&out).expect("must parse again");
     }
 
-    /// Aynı tuşu iki bağlantıya vermek KAYDEDİLMEMELİ.
+    /// Giving the same key to two bindings MUST NOT be saved.
     ///
-    /// Motor hangisini seçeceğini bilemez; kullanıcı bunu "bazen
-    /// çalışıyor" diye yaşar ve teşhisi çok zordur. Dosyaya hiç
-    /// dokunulmadığı da doğrulanıyor — yarım yazma daha kötü olurdu.
+    /// The engine cannot know which to pick; the user experiences it as
+    /// "sometimes it works" and it is very hard to diagnose. We also verify the
+    /// file is not touched at all — a half write would be worse.
     #[test]
     fn duplicate_trigger_is_rejected_without_touching_the_file() {
         let p = tmp("dup", BASE);
@@ -539,13 +539,13 @@ radius = 0.1
         b.insert("b".into(), Binding::Tap {
             trigger: Trigger::Key(17), at: Norm::new(0.2, 0.2) });
         let e = write_back(&p, &b, "T", "p").unwrap_err();
-        assert!(format!("{e:#}").contains("aynı tetikleyici"), "{e:#}");
+        assert!(format!("{e:#}").contains("duplicate trigger"), "{e:#}");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), before,
-                   "reddedilen kayıt dosyaya dokunmamalı");
+                   "a rejected save must not touch the file");
     }
 
-    /// SATIR SONU yorumu korunmalı: `# W` gibi notlar tuş kodunun hangi
-    /// harf olduğunu söyleyen tek yer ve kaybı sessiz.
+    /// A TRAILING comment must survive: notes like `# W` are the only place
+    /// saying which letter a key code is, and losing them is silent.
     #[test]
     fn saving_preserves_trailing_comments() {
         let p = tmp("trailing", r#"name = "T"
@@ -567,16 +567,16 @@ radius = 0.085
         write_back(&p, &b, "T", "p").unwrap();
         let out = std::fs::read_to_string(&p).unwrap();
         for c in ["# W", "# S", "# A", "# D"] {
-            assert!(out.contains(c), "satır sonu yorumu '{c}' kayboldu:\n{out}");
+            assert!(out.contains(c), "trailing comment '{c}' was lost:\n{out}");
         }
-        assert!(out.contains("0.2"), "yeni koordinat yazılmalı: {out}");
+        assert!(out.contains("0.2"), "the new coordinate must be written: {out}");
     }
 
-    /// `f32` gürültüsü dosyaya sızmamalı.
+    /// `f32` noise must not leak into the file.
     ///
-    /// Serileştirme `f64` üzerinden geçtiği için `0.148` dosyaya
-    /// `0.14800000190734863` diye yazılıyordu: değer doğru ama dosya
-    /// okunamaz hâle geliyor ve her kayıtta biraz daha bozuluyordu.
+    /// Because serialization goes through `f64`, `0.148` was written as
+    /// `0.14800000190734863`: the value is right but the file becomes
+    /// unreadable and degrades a little on every save.
     #[test]
     fn floats_are_written_in_short_form() {
         let p = tmp("floats", BASE);
@@ -587,8 +587,8 @@ radius = 0.085
         let out = std::fs::read_to_string(&p).unwrap();
         assert!(out.contains("0.148"), "{out}");
         assert!(out.contains("0.738"), "{out}");
-        assert!(!out.contains("0.14800000"), "f32 gürültüsü sızdı:\n{out}");
-        // Ve değer AYNI f32 olarak geri okunmalı — kısaltma kayıpsız.
+        assert!(!out.contains("0.14800000"), "f32 noise leaked:\n{out}");
+        // And it must read back as the SAME f32 — the shortening is lossless.
         let re = Profile::from_toml(&out).unwrap();
         match re.bindings.get("ates").unwrap() {
             Binding::Tap { at, .. } => {
@@ -599,8 +599,8 @@ radius = 0.085
         }
     }
 
-    /// PNG boyutu başlıktan okunmalı: arayüzün ölçekleme matematiği
-    /// görüntünün GERÇEK boyutuna dayanıyor.
+    /// The PNG size must be read from the header: the UI's scaling maths rests
+    /// on the image's REAL size.
     #[test]
     fn png_header_gives_real_size() {
         let mut b = Vec::new();
@@ -618,7 +618,7 @@ radius = 0.085
 
     #[test]
     fn non_png_is_rejected_not_guessed() {
-        let p = tmp("notpng", "bu bir png değil");
+        let p = tmp("notpng", "this is not a png");
         assert_eq!(png_size(&p), None);
     }
 }
