@@ -45,6 +45,8 @@ pub enum Kind {
     Slow,
     /// Bir süreç çöktü / yığın dökümü alındı.
     Crash,
+    /// Reklam aracılık yığını çalışıyor (IronSource/Unity/Pangle/AdMob).
+    AdStack,
     /// Oyun DURAKLATILDI: başka bir etkinlik öne geçti.
     ///
     /// Reklam, sistem diyaloğu, izin isteği... Oyun duraklatılınca kare
@@ -77,6 +79,7 @@ impl Kind {
             Kind::Slow => "yavaş işlem",
             Kind::Crash => "çökme / yığın dökümü",
             Kind::Paused => "oyun duraklatıldı (başka etkinlik öne geçti)",
+            Kind::AdStack => "reklam aracılık yığını",
             Kind::Input => "GİRDİ YOLU",
         }
     }
@@ -91,10 +94,17 @@ impl Kind {
             // görünmeli, çünkü tek düzeltebileceğimiz şey o.
             Kind::Input => 95,
             Kind::Crash => 92,
-            // Yüksek öncelik: bir donmanın sebebi buysa DİĞER her şeyden
-            // önce söylenmeli, yoksa kullanıcı olmayan bir arıza kovalar.
-            Kind::Paused => 97,
             Kind::Network => 90,
+            // Duraklamanın hemen üstünde: duraklamanın NEDENİNİ söyler.
+            Kind::AdStack => 89,
+            // Gerçek arızaların ALTINDA.
+            //
+            // Duraklama bir kare boşluğunu AÇIKLAR ama kendisi arıza
+            // değildir; üstelik gerçek bir arızayla BİRLİKTE olabilir.
+            // Ölçüldü: menüde açılan reklam etkinliği hem duraklama hem
+            // ANR üretti. Duraklamayı öne koymak ANR'yi gizlerdi —
+            // kullanıcı "sorun yok" duyup gerçek hatayı kaçırırdı.
+            Kind::Paused => 88,
             Kind::ArmBridge => 70,
             Kind::Lock => 60,
             Kind::Binder => 50,
@@ -141,6 +151,17 @@ pub fn classify(tag: &str, msg: &str) -> Option<Kind> {
         && (m.contains("AdActivity") || m.contains("ads."))
     {
         return Some(Kind::Paused);
+    }
+    // Reklam aracılık yığını: menüde takılmanın en sık sebebi.
+    //
+    // Ölçüldü: IronSource + UnityAds + Pangle + Google Ads sırayla
+    // deneniyor, video reklam YAZILIMDA çözülüyor (OMX.google.vp9 /
+    // SoftAAC2 — Waydroid'de donanım video çözücü yok) ve oyunun ana iş
+    // parçacığı bloklanıp ANR üretiyor.
+    if matches!(tag, "UnityAds" | "Ads" | "ironSourceSDK")
+        || tag.ends_with("MediationAdapter")
+    {
+        return Some(Kind::AdStack);
     }
     if tag == "tombstoned" && m.contains("crash request") { return Some(Kind::Crash); }
     if m.contains("Fatal signal") || m.contains("Collecting stacks for native pid") {
@@ -442,12 +463,19 @@ pub fn host_verdict(f: &HostFacts) -> Option<Verdict> {
 
 fn explain(k: Kind) -> &'static str {
     match k {
+        Kind::AdStack =>
+            "Reklam aracılık yığını çalışıyor: SDK sırayla birden çok \
+             reklam ağını deniyor ve video reklamı YAZILIMDA çözüyor — \
+             Waydroid'de donanım video çözücü yok. Bu, oyunun ana iş \
+             parçacığını saniyelerce bloklayıp ANR'ye kadar gidebiliyor. \
+             Uygulamanın kendi davranışı; bizim katmanımızdan bağımsız.",
         Kind::Paused =>
             "Oyun DURAKLATILDI: başka bir etkinlik öne geçti (reklam, \
              sistem diyaloğu, izin isteği). Duraklamış uygulama kare \
-             üretmez, dolayısıyla bu bir arıza DEĞİL — sistemde \
-             aranacak bir şey yok. Menüye girince oluyorsa oyunun kendi \
-             reklam SDK'sıdır.",
+             üretmez, yani kare boşluğunun açıklaması budur. \
+             DİKKAT: bu tek başına 'sorun yok' demek değildir — \
+             yukarıda ANR ya da çökme de listelendiyse asıl mesele \
+             odur, duraklama yalnızca onun görünen yüzüdür.",
         Kind::Network =>
             "Oyun ağ isteği yapıp zaman aşımına uğruyor. Menü açılışında \
              dakikalarca beklemenin en sık nedeni budur: reklam/analitik \
@@ -492,6 +520,51 @@ fn explain(k: Kind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    /// GERÇEK GÜNLÜK: menüdeki takılmanın kaynağı reklam aracılık yığını.
+    #[test]
+    fn ad_mediation_tags_are_recognised() {
+        for (tag, msg) in [
+            ("UnityAds", "Unity Ads was not able to get current network type"),
+            ("IronSourceMediationAdapter", "Loading IronSource interstitial ad"),
+            ("UnityMediationAdapter", "Unity Ads is initialized for game ID"),
+            ("PangleMediationAdapter", "{"),
+            ("ironSourceSDK", "API: f a - Interstitial The requested instance does not exist"),
+            ("Ads", "canOpenAppGmsgHandler disabled."),
+        ] {
+            assert_eq!(super::classify(tag, msg), Some(super::Kind::AdStack),
+                "{tag} tanınmalı");
+        }
+    }
+
+    /// Reklam yığını duraklamayı AÇIKLAR, ama ANR'yi gizlememeli.
+    #[test]
+    fn ad_stack_ranks_between_pause_and_real_faults() {
+        assert!(super::Kind::AdStack.weight() > super::Kind::Paused.weight());
+        assert!(super::Kind::Anr.weight() > super::Kind::AdStack.weight());
+    }
+
+    /// Duraklama gerçek arızaları GİZLEMEMELİ.
+    ///
+    /// Ölçüldü: menüdeki reklam etkinliği hem duraklama hem ANR üretti.
+    /// Duraklamayı öne koymak kullanıcıya "sorun yok" dedirtirdi.
+    #[test]
+    fn real_faults_outrank_a_pause() {
+        for worse in [super::Kind::Anr, super::Kind::Crash,
+                      super::Kind::Input, super::Kind::Network] {
+            assert!(worse.weight() > super::Kind::Paused.weight(),
+                "{worse:?} duraklamadan önce gelmeli");
+        }
+    }
+
+    /// Ama duraklama gürültünün üstünde kalmalı: tek kanıt oysa söylensin.
+    #[test]
+    fn pause_still_outranks_noise() {
+        for lesser in [super::Kind::Composer, super::Kind::Gc,
+                       super::Kind::Slow, super::Kind::MainThread] {
+            assert!(super::Kind::Paused.weight() > lesser.weight());
+        }
+    }
+
     /// GERÇEK GÜNLÜK: menüye girince 8 saniyelik "donma" görünüyordu.
     /// Sebep oyunun kendi reklamıydı; sistemde hiçbir sorun yoktu.
     #[test]
@@ -504,14 +577,6 @@ mod tests {
             "Not sending touch event to 1328819 com.ForgeGames.SpecialForcesGroup2/\
              com.epicgames.ue4.GameActivity because it is paused"),
             Some(super::Kind::Paused));
-    }
-
-    /// Duraklama, gerçek arızalardan DAHA yüksek öncelikli olmalı:
-    /// sebebi buysa kullanıcı olmayan bir arızayı kovalamamalı.
-    #[test]
-    fn pause_outranks_other_causes() {
-        assert!(super::Kind::Paused.weight() > super::Kind::Crash.weight());
-        assert!(super::Kind::Paused.weight() > super::Kind::Composer.weight());
     }
 
     /// Sıradan etkinlik başlatma duraklama SAYILMAMALI.
