@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Waydroid pencere geometrisini KWin'den oku ve liw --region degerini hesapla.
 set -u
-R=/home/wintone01/Projects/liwinux
+R="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "liwinux-geom" >/dev/null 2>&1
 qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript \
   "$R/scripts/kwin/geometry.js" "liwinux-geom" >/dev/null 2>&1

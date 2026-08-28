@@ -2,7 +2,7 @@
 # liwinux PoC 2 asama B — microG + Aurora Store kurulumu
 # Kullanim: sudo bash poc2-microg.sh
 set -u
-WS=/home/wintone01/Projects/liwinux/tools/waydroid_script
+WS="${WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tools/waydroid_script}"
 BK=$(cat /var/lib/waydroid-backup/LATEST 2>/dev/null || echo "YOK")
 S() { echo; echo "=== $* ==="; }
 

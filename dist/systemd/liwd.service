@@ -1,6 +1,6 @@
 [Unit]
 Description=liwinux session daemon
-Documentation=https://github.com/wintone01/liwinux
+Documentation=https://github.com/Liwinux-Project/liwinux
 # A user service: the Waydroid session must reach the Wayland display, so it
 # runs in the user context rather than as root.
 After=graphical-session.target

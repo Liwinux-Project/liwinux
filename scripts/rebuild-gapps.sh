@@ -13,7 +13,7 @@ Once yedek alir. Onaylamak icin:  sudo bash $0 --yes
 MSG
 exit 1; }
 
-WS=/home/wintone01/Projects/liwinux/tools/waydroid_script
+WS="${WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tools/waydroid_script}"
 U=wintone01; UH=/home/$U
 TS=$(date +%Y%m%d-%H%M%S); BK=/var/lib/waydroid-backup/pre-gapps-$TS
 S() { echo; echo "=== $* ==="; }

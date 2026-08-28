@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 1) GetProp neden bos?  2) NetRepair gercekten yetki istedi mi?
 set -u
-R=/home/wintone01/Projects/liwinux
+R="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 S() { echo; echo "=== $* ==="; }
 
 S "1. polkit KAYDI: net-repair icin kimlik dogrulamasi yapildi mi?"

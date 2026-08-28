@@ -13,7 +13,7 @@ waydroid status 2>&1 | head -3
 
 S "2. Boyutlar"
 du -sh /var/lib/waydroid/overlay /var/lib/waydroid/images 2>/dev/null
-du -sh /home/wintone01/.local/share/waydroid 2>/dev/null
+du -sh "$HOME/.local/share/waydroid" 2>/dev/null
 df -h / | tail -1
 
 S "3. Yedekleniyor -> $DST"
@@ -22,7 +22,7 @@ cp -a /var/lib/waydroid/overlay              "$DST/overlay"
 cp -a /var/lib/waydroid/waydroid.cfg         "$DST/waydroid.cfg"
 cp -a /var/lib/waydroid/waydroid_base.prop   "$DST/waydroid_base.prop"
 [ -d /var/lib/waydroid/overlay_rw ] && cp -a /var/lib/waydroid/overlay_rw "$DST/overlay_rw" || true
-cp -a /home/wintone01/.local/share/waydroid  "$DST/userdata"
+cp -a "$HOME/.local/share/waydroid"  "$DST/userdata"
 echo "  kopyalama bitti"
 
 S "4. YEDEK DOGRULAMA (gecmezse microG kurulmayacak)"
@@ -52,7 +52,7 @@ cat <<NOTE
     sudo cp -a $DST/overlay /var/lib/waydroid/overlay
     sudo cp -a $DST/waydroid.cfg /var/lib/waydroid/waydroid.cfg
     sudo cp -a $DST/waydroid_base.prop /var/lib/waydroid/waydroid_base.prop
-    rm -rf /home/wintone01/.local/share/waydroid
-    cp -a $DST/userdata /home/wintone01/.local/share/waydroid
+    rm -rf "$HOME/.local/share/waydroid"
+    cp -a $DST/userdata "$HOME/.local/share/waydroid"
     sudo systemctl start waydroid-container
 NOTE

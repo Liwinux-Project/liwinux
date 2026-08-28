@@ -4,7 +4,7 @@ set -u
 S() { echo; echo "=== $* ==="; }
 
 S "1. Sanal cihaz olusturuluyor (5sn ayakta kalacak)"
-timeout 6 liw keymap test /home/wintone01/Projects/liwinux/profiles/subway-surfers.toml --inject &
+timeout 6 liw keymap test "$R"/profiles/subway-surfers.toml --inject &
 LIW=$!
 sleep 3
 

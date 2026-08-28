@@ -2,7 +2,7 @@
 # liwinux PoC 1 — ARM64 ceviri katmani (libhoudini, Intel CPU icin)
 # Kullanim: sudo bash poc1-arm.sh
 set -u
-WS=/home/wintone01/Projects/liwinux/tools/waydroid_script
+WS="${WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tools/waydroid_script}"
 S() { echo; echo "=== $* ==="; }
 
 S "0. Onceki durum (referans)"

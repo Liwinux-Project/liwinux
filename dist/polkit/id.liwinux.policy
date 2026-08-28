@@ -4,7 +4,7 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
   <vendor>liwinux</vendor>
-  <vendor_url>https://github.com/wintone01/liwinux</vendor_url>
+  <vendor_url>https://github.com/Liwinux-Project/liwinux</vendor_url>
 
   <!-- Read-only. Allowed for the user in the active session; it changes
        nothing and asking for a password would make diagnosis needlessly

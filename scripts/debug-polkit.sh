@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-R=/home/wintone01/Projects/liwinux
+R="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # polkit reddi mi, polkit'e ulasamama mi? Kesin ayrim.
 set -u
 [ "$(id -u)" = 0 ] && echo "UYARI: root olarak calistirma!" 

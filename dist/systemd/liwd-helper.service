@@ -1,6 +1,6 @@
 [Unit]
 Description=liwinux privileged helper
-Documentation=https://github.com/wintone01/liwinux
+Documentation=https://github.com/Liwinux-Project/liwinux
 After=dbus.service polkit.service
 Wants=polkit.service
 
