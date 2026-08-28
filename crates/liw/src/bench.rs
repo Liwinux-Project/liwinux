@@ -97,6 +97,12 @@ pub async fn run(pkg: String, duration_s: u64) -> Result<()> {
             fd.mean_ms(), 1000.0 / fd.mean_ms().max(0.001));
         println!("  refresh        : {:7.2} ms   -> {:6.1} Hz",
             fd.refresh_ms(), 1000.0 / fd.refresh_ms().max(0.001));
+        if fd.is_below_refresh() {
+            println!("  NOT: oyun {:.0} FPS'e kilitli, ekran {:.0} Hz.",
+                fd.target_fps(), 1000.0 / fd.refresh_ms().max(0.001));
+            println!("       Takılma ölçütü OYUNUN periyodu ({:.2} ms) — ekranınki değil.",
+                fd.target_period_ms());
+        }
         println!("  jank >1.5x     : {:5}  (%{:.2})", fd.jank_count(1.5), fd.jank_pct(1.5));
         println!("  jank >2x       : {:5}  (%{:.2})", fd.jank_count(2.0), fd.jank_pct(2.0));
         let cov = fd.coverage_pct();

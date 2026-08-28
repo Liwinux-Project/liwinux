@@ -244,6 +244,11 @@ fn report(fd: &FrameData, host: &[(f64, HostSample)], sink: &LogSink,
 
     println!("KARE   {} aralık, {} tekil kare, kapsam %{:.0}",
         fd.interval_count(), fd.frame_count(), fd.coverage_pct());
+    if fd.is_below_refresh() {
+        println!("       oyun {:.0} FPS'e kilitli (ekran {:.0} Hz) — takılma ölçütü \
+                  oyunun periyodu",
+            fd.target_fps(), 1000.0 / fd.refresh_ms().max(0.001));
+    }
     println!("  p50 {:.2} ms ({:.0} FPS)   p99 {:.2} ms   en kötü {:.2} ms   \
               jank>1.5x %{:.2}",
         fd.percentile(50.0), 1000.0 / fd.percentile(50.0).max(0.001),

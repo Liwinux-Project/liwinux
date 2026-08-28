@@ -127,9 +127,14 @@ impl FrameData {
         let first = *self.frames.iter().next().unwrap();
         let last = *self.frames.iter().next_back().unwrap();
         let span_ns = (last - first) as f64;
-        let expected = span_ns / self.refresh_ns as f64;
+        // Beklenen kare sayısı OYUNUN kadansına göre. Tazelemeye göre
+        // hesaplamak, 180 Hz ekranda 60 FPS çizen bir oyunda kapsamı
+        // tavanda %33'e sıkıştırıyordu — hiçbir kare kaçırılmasa bile.
+        let period_ns = self.target_period_ms() * 1e6;
+        if period_ns <= 0.0 { return 0.0; }
+        let expected = span_ns / period_ns;
         if expected <= 0.0 { return 0.0; }
-        100.0 * self.frames.len() as f64 / expected
+        (100.0 * self.frames.len() as f64 / expected).min(100.0)
     }
 
     /// Sıralı aralıklar (yüzdelik hesabı için).
@@ -137,6 +142,36 @@ impl FrameData {
         let mut v: Vec<f64> = self.intervals.values().copied().collect();
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
         v
+    }
+
+    /// Oyunun GERÇEK kare periyodu (ms) — ekranın tazeleme periyodu DEĞİL.
+    ///
+    /// Oyunlar ekranın tazeleme hızında çizmek zorunda değil. SFG2 180 Hz
+    /// ekranda 60 FPS'e kilitli: her kare tam 3 vsync sürüyor. Jank'i
+    /// tazeleme periyoduna göre ölçmek bu oyunun HER karesini "takılma"
+    /// saydı — %99.8 jank raporlandı, oysa oyun kusursuz düzenli çiziyordu.
+    ///
+    /// Medyan kullanılıyor: oyunun kendi hedefine göre ölçmek, "bu kare
+    /// tipik kareden ne kadar uzun sürdü" sorusunu sorar ki jank'in
+    /// anlamı zaten budur.
+    pub fn target_period_ms(&self) -> f64 {
+        let p50 = self.percentile(50.0);
+        if p50 > 0.0 { p50 } else { self.refresh_ms() }
+    }
+
+    /// Oyunun kilitli göründüğü FPS.
+    pub fn target_fps(&self) -> f64 {
+        let t = self.target_period_ms();
+        if t > 0.0 { 1000.0 / t } else { 0.0 }
+    }
+
+    /// Oyun ekranın tazeleme hızının altında mı çiziyor.
+    ///
+    /// Öyleyse tazeleme tabanlı kapsam ve jank ölçümleri yanıltıcı olur;
+    /// bunu rapor etmek şart.
+    pub fn is_below_refresh(&self) -> bool {
+        let r = self.refresh_ms();
+        r > 0.0 && self.target_period_ms() > r * 1.5
     }
 
     pub fn percentile(&self, p: f64) -> f64 {
@@ -152,8 +187,9 @@ impl FrameData {
     }
 
     /// Refresh'in `mult` katından uzun aralıklar (jank).
+    /// Takılma sayısı: OYUNUN kendi kare periyoduna göre.
     pub fn jank_count(&self, mult: f64) -> usize {
-        let t = self.refresh_ms() * mult;
+        let t = self.target_period_ms() * mult;
         if t <= 0.0 { return 0; }
         self.intervals.values().filter(|&&x| x > t).count()
     }
@@ -226,6 +262,56 @@ mod stall_tests {
 
 #[cfg(test)]
 mod tests {
+    /// GERÇEK ÖLÇÜM: SFG2 180 Hz ekranda 60 FPS'e kilitli çiziyor.
+    ///
+    /// Jank'i tazeleme periyoduna göre ölçmek her kareyi takılma saydı ve
+    /// %99.8 raporladı. Oyun kusursuz düzenliyken.
+    #[test]
+    fn game_locked_below_refresh_is_not_all_jank() {
+        let refresh = 5_555_555u64;          // 180 Hz
+        let period = refresh as i64 * 3;     // oyun 60 FPS
+        let mut fd = FrameData::new();
+        fd.add(&Snapshot {
+            refresh_ns: refresh,
+            presents: (0..200).map(|i| i * period).collect(),
+        });
+        assert!((fd.target_period_ms() - 16.667).abs() < 0.01,
+            "hedef periyot: {}", fd.target_period_ms());
+        assert!((fd.target_fps() - 60.0).abs() < 0.1);
+        assert!(fd.is_below_refresh(), "oyun tazelemenin altında çiziyor");
+        assert_eq!(fd.jank_pct(1.5), 0.0,
+            "düzenli 60 FPS takılma DEĞİLDİR");
+        assert!(fd.coverage_pct() > 99.0,
+            "hiçbir kare kaçmadı, kapsam tam olmalı: {}", fd.coverage_pct());
+    }
+
+    /// Gerçek takılma yine yakalanmalı: 60 FPS akışında atlanan kare.
+    #[test]
+    fn dropped_frame_at_60fps_is_still_jank() {
+        let refresh = 5_555_555u64;
+        let period = refresh as i64 * 3;
+        let mut presents: Vec<i64> = (0..100).map(|i| i * period).collect();
+        // 50. karede bir kare atla -> iki kat uzun aralık.
+        presents.remove(50);
+        let mut fd = FrameData::new();
+        fd.add(&Snapshot { refresh_ns: refresh, presents });
+        assert_eq!(fd.jank_count(1.5), 1, "atlanan kare takılma sayılmalı");
+    }
+
+    /// Tazeleme hızında çizen oyun da doğru ölçülmeli (gerileme koruması).
+    #[test]
+    fn game_at_full_refresh_still_measured_correctly() {
+        let refresh = 5_555_555u64;
+        let mut fd = FrameData::new();
+        fd.add(&Snapshot {
+            refresh_ns: refresh,
+            presents: (0..200).map(|i| i * refresh as i64).collect(),
+        });
+        assert!(!fd.is_below_refresh());
+        assert!((fd.target_fps() - 180.0).abs() < 1.0);
+        assert_eq!(fd.jank_pct(1.5), 0.0);
+    }
+
     /// Üst üste binen anlık görüntüler aynı aralığı ÇOK KEZ saymamalı.
     ///
     /// dumpsys 128 karelik tampon döndürüyor ama her örnekte ~57 yeni kare
