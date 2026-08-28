@@ -9,7 +9,7 @@
 //! * `debug`   — prints only; verifies mapping without touching Android.
 //! * (future) `android_socket` — app_process server + injectInputEvent().
 
-use super::touch::TouchAction;
+use crate::touch::TouchAction;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BackendError {
@@ -49,7 +49,7 @@ impl TouchBackend for DebugBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::touch::Norm;
+    use crate::touch::Norm;
 
     #[test]
     fn debug_backend_records_in_order() {

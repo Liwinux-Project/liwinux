@@ -1,4 +1,9 @@
-//! Input engine: translates host keyboard/mouse into Android touches.
+//! liw-input — the input engine: translates host keyboard/mouse into Android
+//! touches.
+//!
+//! Deliberately free of any Waydroid, D-Bus or polkit knowledge: it takes input
+//! events and produces touch actions. That keeps the whole state machine
+//! testable without a container, and lets the engine be developed on its own.
 
 pub mod backend;
 pub mod capture;

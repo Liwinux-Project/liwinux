@@ -43,8 +43,8 @@
 //! already-open handle. `liwd-helper` opens the pipe and passes the fd over
 //! D-Bus, so the 200 Hz write traffic never goes through IPC.
 
-use super::backend::{BackendError, TouchBackend};
-use super::touch::{TouchAction, MAX_POINTERS};
+use crate::backend::{BackendError, TouchBackend};
+use crate::touch::{TouchAction, MAX_POINTERS};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -122,7 +122,7 @@ impl WlTouchBackend {
     ///
     /// **NO clamping.** This is the whole basis of unbounded aim; off-screen
     /// values arriving via `Norm::unclamped` must pass through untouched.
-    fn to_px(&self, at: super::touch::Norm) -> (i32, i32) {
+    fn to_px(&self, at: crate::touch::Norm) -> (i32, i32) {
         at.to_px(self.w, self.h)
     }
 }
@@ -224,7 +224,7 @@ impl TouchBackend for WlTouchBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::touch::Norm;
+    use crate::touch::Norm;
 
     /// The wire format must be 24 bytes; Android reads it by dividing with
     /// `sizeof(input_event)`. A wrong size means silent, total corruption.

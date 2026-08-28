@@ -9,7 +9,9 @@ pub mod perf;
 pub mod config;
 pub mod hostsample;
 pub mod helper;
-pub mod input;
+/// The input engine lives in its own crate so it can be developed
+/// independently; re-exported here so existing paths keep working.
+pub use liw_input as input;
 pub mod polkit;
 pub mod session;
 pub mod trace;

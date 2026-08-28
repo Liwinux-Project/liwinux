@@ -24,8 +24,8 @@
 //! If Waydroid is not fullscreen, touches land in the wrong place. This is a
 //! known limit of the backend and is compensated for by `ScreenMap`.
 
-use super::backend::{BackendError, TouchBackend};
-use super::touch::{TouchAction, MAX_POINTERS};
+use crate::backend::{BackendError, TouchBackend};
+use crate::touch::{TouchAction, MAX_POINTERS};
 use evdev::{
     uinput::VirtualDevice,
     AbsInfo, AbsoluteAxisCode, AttributeSet, EventType, InputEvent, KeyCode, PropType,

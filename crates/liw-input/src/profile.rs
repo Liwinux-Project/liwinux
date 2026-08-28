@@ -4,7 +4,7 @@
 //! resolution and window size. Using a profile on another machine needs no
 //! editing.
 
-use super::touch::Norm;
+use crate::touch::Norm;
 use serde::{Deserialize, Serialize};
 
 /// A trigger on the keyboard or mouse.

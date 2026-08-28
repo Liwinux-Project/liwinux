@@ -9,13 +9,13 @@
 //! polkit — it only consumes "package X is in the foreground now". How the
 //! caller finds that out is the caller's problem.
 
-use super::backend::TouchBackend;
-use super::capture::{translate, GrabbedDevice};
-use super::engine::{Engine, InputEvent, TriggerKind};
-use super::latency::LatencyStats;
-use super::store::Store;
-use super::uinput::{ScreenMap, UinputBackend};
-use super::wl_touch::WlTouchBackend;
+use crate::backend::TouchBackend;
+use crate::capture::{translate, GrabbedDevice};
+use crate::engine::{Engine, InputEvent, TriggerKind};
+use crate::latency::LatencyStats;
+use crate::store::Store;
+use crate::uinput::{ScreenMap, UinputBackend};
+use crate::wl_touch::WlTouchBackend;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -29,7 +29,7 @@ const ESC_STREAK: u8 = 3;
 #[derive(Debug, thiserror::Error)]
 pub enum RunnerError {
     #[error("could not open device: {0}")]
-    Device(#[from] super::capture::CaptureError),
+    Device(#[from] crate::capture::CaptureError),
     #[error("could not set up the touch backend: {0}")]
     Backend(#[from] super::backend::BackendError),
     #[error("event stream broke: {0}")]
@@ -228,9 +228,9 @@ impl Runner {
         // working — all the user saw was "the keymapper does not work".
         {
             let probe = evdev::Device::open(&self.cfg.device)
-                .map_err(|e| super::capture::CaptureError::Open {
+                .map_err(|e| crate::capture::CaptureError::Open {
                     path: self.cfg.device.clone(), source: e })?;
-            super::capture::verify_kind(&probe, false)?;
+            crate::capture::verify_kind(&probe, false)?;
         }
         let dev = GrabbedDevice::open(&self.cfg.device, false)?;
         let mut stream = dev.into_stream()?;
@@ -239,9 +239,9 @@ impl Runner {
         // stream; we must listen to both or Aim and mouse buttons never fire.
         let mut mouse_stream = match &self.cfg.mouse {
             Some(p) => match evdev::Device::open(p)
-                .map_err(|e| super::capture::CaptureError::Open {
+                .map_err(|e| crate::capture::CaptureError::Open {
                     path: p.clone(), source: e })
-                .and_then(|d| super::capture::verify_kind(&d, true))
+                .and_then(|d| crate::capture::verify_kind(&d, true))
                 .and_then(|()| GrabbedDevice::open(p, false))
             {
                 Ok(d) => match d.into_stream() {
@@ -257,7 +257,7 @@ impl Runner {
         // Etkin profil, motordan AYRI tutulur: odak kaybolunca motoru
         // tear the engine down on focus loss but must not forget the profile,
         // so it can be rebuilt when focus returns.
-        let mut profile: Option<super::profile::Profile> = None;
+        let mut profile: Option<crate::profile::Profile> = None;
         let mut focused = *host_focused.borrow();
         // With a hotkey set, game mode starts OFF and the user turns it on when
         // ready. Without one, the old behaviour: on whenever a profile is active.
@@ -648,7 +648,7 @@ mod tests {
     /// (measured on a display hotplug).
     #[test]
     fn only_a_real_break_counts_as_dead() {
-        use super::super::backend::BackendError;
+        use crate::backend::BackendError;
         let dead = BackendError::Dispatch(
             "could not write to pipe: Broken pipe (os error 32)".into());
         assert!(pipe_is_dead(&dead));

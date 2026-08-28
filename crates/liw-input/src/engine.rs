@@ -5,8 +5,8 @@
 //! bugs in a keymapper hide in the state machine and
 //! elle denemekle yakalanamaz.
 
-use super::profile::{Binding, Easing, Profile, Trigger};
-use super::touch::{Norm, PointerPool, TouchAction, MAX_POINTERS};
+use crate::profile::{Binding, Easing, Profile, Trigger};
+use crate::touch::{Norm, PointerPool, TouchAction, MAX_POINTERS};
 use std::collections::HashSet;
 
 /// A raw input event arriving at the engine.
@@ -911,7 +911,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::profile::Binding;
+    use crate::profile::Binding;
     use std::collections::BTreeMap;
 
     const W: u16 = 17; const A: u16 = 30; const S: u16 = 31; const D: u16 = 32;
@@ -1499,7 +1499,7 @@ mod tests {
     /// the gesture must still REACH its target and lift the finger.
     #[test]
     fn tiny_tail_steps_are_dropped_but_target_is_reached() {
-        use crate::input::profile::Easing;
+        use crate::profile::Easing;
         let mut b = BTreeMap::new();
         b.insert("sol".into(), Binding::Swipe {
             trigger: Trigger::Key(A),

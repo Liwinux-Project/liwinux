@@ -17,7 +17,7 @@
 use evdev::{Device, EventSummary, KeyCode, RelativeAxisCode};
 use std::path::{Path, PathBuf};
 
-use super::engine::{InputEvent, TriggerKind};
+use crate::engine::{InputEvent, TriggerKind};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CaptureError {

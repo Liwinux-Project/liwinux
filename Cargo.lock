@@ -426,6 +426,7 @@ version = "0.1.0"
 dependencies = [
  "evdev",
  "libc",
+ "liw-input",
  "serde",
  "serde_json",
  "thiserror",
@@ -433,6 +434,20 @@ dependencies = [
  "toml",
  "tracing",
  "zbus",
+]
+
+[[package]]
+name = "liw-input"
+version = "0.1.0"
+dependencies = [
+ "evdev",
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

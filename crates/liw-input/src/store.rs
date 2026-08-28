@@ -12,7 +12,7 @@
 //! ./profiles/                          (development)
 //! ```
 
-use super::profile::{Profile, ProfileError};
+use crate::profile::{Profile, ProfileError};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
