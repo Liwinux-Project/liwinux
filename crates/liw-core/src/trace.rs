@@ -45,6 +45,16 @@ pub enum Kind {
     Slow,
     /// Bir süreç çöktü / yığın dökümü alındı.
     Crash,
+    /// Oyun DURAKLATILDI: başka bir etkinlik öne geçti.
+    ///
+    /// Reklam, sistem diyaloğu, izin isteği... Oyun duraklatılınca kare
+    /// üretmeyi bırakır. Araç bunu "donma" sanıyordu ve üstüne "sebep
+    /// konteynerin dışında" diye YANLIŞ hüküm veriyordu.
+    ///
+    /// Gerçekte yaşandı: menüye girince 8 saniyelik "donma" göründü;
+    /// sebebi oyunun kendi reklam etkinliğiydi (`gms.ads.AdActivity`).
+    /// Sistemde hiçbir sorun yoktu.
+    Paused,
     /// GİRDİ YOLU: Android girdi cihazını kaybetti/yeniden buldu.
     ///
     /// Kullanıcının doğrudan sorduğu şey: "bu takılma fare sisteminden mi
@@ -66,6 +76,7 @@ impl Kind {
             Kind::Composer => "ekran birleştirici",
             Kind::Slow => "yavaş işlem",
             Kind::Crash => "çökme / yığın dökümü",
+            Kind::Paused => "oyun duraklatıldı (başka etkinlik öne geçti)",
             Kind::Input => "GİRDİ YOLU",
         }
     }
@@ -80,6 +91,9 @@ impl Kind {
             // görünmeli, çünkü tek düzeltebileceğimiz şey o.
             Kind::Input => 95,
             Kind::Crash => 92,
+            // Yüksek öncelik: bir donmanın sebebi buysa DİĞER her şeyden
+            // önce söylenmeli, yoksa kullanıcı olmayan bir arıza kovalar.
+            Kind::Paused => 97,
             Kind::Network => 90,
             Kind::ArmBridge => 70,
             Kind::Lock => 60,
@@ -119,6 +133,15 @@ pub fn classify(tag: &str, msg: &str) -> Option<Kind> {
     if tag == "EventHub" && (m.contains("wl_touch_events")
         || m.contains("wl_pointer_events") || m.contains("wayland_touch"))
     { return Some(Kind::Input); }
+    // Oyun duraklatıldı: kare gelmemesi ARIZA DEĞİL.
+    if tag == "InputDispatcher" && m.contains("because it is paused") {
+        return Some(Kind::Paused);
+    }
+    if tag == "ActivityTaskManager" && m.contains("START u")
+        && (m.contains("AdActivity") || m.contains("ads."))
+    {
+        return Some(Kind::Paused);
+    }
     if tag == "tombstoned" && m.contains("crash request") { return Some(Kind::Crash); }
     if m.contains("Fatal signal") || m.contains("Collecting stacks for native pid") {
         return Some(Kind::Crash);
@@ -419,6 +442,12 @@ pub fn host_verdict(f: &HostFacts) -> Option<Verdict> {
 
 fn explain(k: Kind) -> &'static str {
     match k {
+        Kind::Paused =>
+            "Oyun DURAKLATILDI: başka bir etkinlik öne geçti (reklam, \
+             sistem diyaloğu, izin isteği). Duraklamış uygulama kare \
+             üretmez, dolayısıyla bu bir arıza DEĞİL — sistemde \
+             aranacak bir şey yok. Menüye girince oluyorsa oyunun kendi \
+             reklam SDK'sıdır.",
         Kind::Network =>
             "Oyun ağ isteği yapıp zaman aşımına uğruyor. Menü açılışında \
              dakikalarca beklemenin en sık nedeni budur: reklam/analitik \
@@ -463,6 +492,36 @@ fn explain(k: Kind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    /// GERÇEK GÜNLÜK: menüye girince 8 saniyelik "donma" görünüyordu.
+    /// Sebep oyunun kendi reklamıydı; sistemde hiçbir sorun yoktu.
+    #[test]
+    fn ad_activity_is_recognised_as_pause_not_fault() {
+        assert_eq!(super::classify("ActivityTaskManager",
+            "START u0 {cmp=com.ForgeGames.SpecialForcesGroup2/\
+             com.google.android.gms.ads.AdActivity (has extras)} from uid 10148"),
+            Some(super::Kind::Paused));
+        assert_eq!(super::classify("InputDispatcher",
+            "Not sending touch event to 1328819 com.ForgeGames.SpecialForcesGroup2/\
+             com.epicgames.ue4.GameActivity because it is paused"),
+            Some(super::Kind::Paused));
+    }
+
+    /// Duraklama, gerçek arızalardan DAHA yüksek öncelikli olmalı:
+    /// sebebi buysa kullanıcı olmayan bir arızayı kovalamamalı.
+    #[test]
+    fn pause_outranks_other_causes() {
+        assert!(super::Kind::Paused.weight() > super::Kind::Crash.weight());
+        assert!(super::Kind::Paused.weight() > super::Kind::Composer.weight());
+    }
+
+    /// Sıradan etkinlik başlatma duraklama SAYILMAMALI.
+    #[test]
+    fn ordinary_activity_start_is_not_a_pause() {
+        assert_ne!(super::classify("ActivityTaskManager",
+            "START u0 {cmp=com.kiloo.subwaysurf/.MainActivity} from uid 10148"),
+            Some(super::Kind::Paused));
+    }
+
     use super::*;
 
     #[test]
