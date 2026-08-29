@@ -530,34 +530,73 @@ pub fn probe(loops: u32) -> Result<()> {
 /// Reads the live codec list from a running Android, for comparison.
 ///
 /// The image says what is DECLARED. Only a running Android says what was
-/// actually registered, and the two differ exactly when something is broken.
+/// actually registered, and the two differ exactly when something is wrong.
 pub async fn verify() -> Result<()> {
     let h = liw_core::helper::HelperClient::connect().await
         .context("could not reach liwd-helper")?;
     let live = h.media_codecs().await
-        .context("could not read the live codec list — is the session up?")?;
+        .context("could not read the live codec list - is the session up?")?;
 
-    let mut names: Vec<&str> = live
+    let mut names: Vec<String> = live
         .split(|c: char| !(c.is_alphanumeric() || c == '.' || c == '_'))
         .filter(|w| w.starts_with("c2.") || w.starts_with("OMX."))
+        .map(str::to_string)
         .collect();
-    names.sort_unstable();
+    names.sort();
     names.dedup();
 
+    // The switch that decides whether Codec2 components exist at all.
+    let ccodec = h.get_prop("debug.stagefright.ccodec").await.ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     let (declared, _) = guest_codecs();
-    println!("\n  Registered vs declared\n  {}", "─".repeat(64));
+    let bar = "─".repeat(66);
+    println!("\n  Registered vs declared\n  {bar}");
     println!("  registered by a running Android : {}", names.len());
     println!("  declared in the image           : {}", declared.len());
 
-    let mut ghosts = 0;
-    for d in &declared {
-        if !names.iter().any(|n| *n == d.name) {
-            println!("  ✗ declared but NOT registered: {}", d.name);
-            ghosts += 1;
+    let live_video: Vec<&Codec> = declared.iter()
+        .filter(|c| !c.encoder && names.iter().any(|n| *n == c.name))
+        .collect();
+    println!("  video decoders actually live    : {}", live_video.len());
+    for c in &live_video {
+        println!("      {:<28} {}", c.name, video::mime_label(&c.mime));
+    }
+
+    match video::explain_shortfall(&declared, &names, ccodec.as_deref()) {
+        None => println!("\n  Every declared component was registered."),
+        Some(video::Shortfall::Codec2Disabled) => {
+            println!("\n  ✗ Codec2 is switched OFF: debug.stagefright.ccodec=0");
+            println!();
+            for l in wrap(
+                "Every c2.android.* component the image declares is absent, and \
+                 this one setting accounts for all of them. Waydroid sets it \
+                 itself when it finds no HAL gralloc: Codec2's software \
+                 components allocate graphic buffers through gralloc, and on \
+                 the fallback path that allocation fails. The switch trades \
+                 newer decoders for ones that work.", 64) {
+                println!("      {l}");
+            }
+        }
+        Some(video::Shortfall::Unexplained(missing)) => {
+            println!("\n  ✗ {} declared components did not register, and nothing \
+                      here explains why:", missing.len());
+            for m in missing.iter().take(20) { println!("      {m}"); }
         }
     }
-    if ghosts == 0 {
-        println!("\n  Every declared component was registered.");
+
+    let dead = video::unplayable(&declared, &names);
+    if !dead.is_empty() {
+        println!("\n  ✗ No decoder at all for: {}",
+                 dead.iter().map(|m| video::mime_label(m))
+                     .collect::<Vec<_>>().join(", "));
+        for l in wrap(
+            "This is not a slow path, it is an absent one. Content in these \
+             formats does not play. The image declares a component for each \
+             of them, which is why reading the image alone does not show it.", 64) {
+            println!("      {l}");
+        }
     }
     println!();
     Ok(())

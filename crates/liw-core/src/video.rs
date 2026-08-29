@@ -498,9 +498,135 @@ pub fn summarise(f: &[Finding]) -> (usize, usize, usize, usize, usize) {
      c(Severity::NoLever), c(Severity::Undetermined))
 }
 
+// ---------------------------------------------------------------------------
+// Declared vs registered
+// ---------------------------------------------------------------------------
+
+/// Why a component the image declares never appears at runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Shortfall {
+    /// Codec2 is switched off, so only the legacy OMX components register.
+    ///
+    /// Waydroid sets `debug.stagefright.ccodec=0` when it finds no HAL
+    /// gralloc (lxc.py). Codec2's software components allocate graphic
+    /// buffers through gralloc, and on the fallback path that allocation
+    /// fails — so the switch trades newer decoders for working ones.
+    Codec2Disabled,
+    /// Something else. Named as unexplained rather than guessed at.
+    Unexplained(Vec<String>),
+}
+
+/// Compares what the image declares against what Android registered.
+///
+/// The comparison is only worth making with the CAUSE attached. Listing
+/// fourteen "declared but not registered" components with no explanation
+/// reads as fourteen faults; it is one setting.
+pub fn explain_shortfall(
+    declared: &[Codec],
+    registered: &[String],
+    ccodec: Option<&str>,
+) -> Option<Shortfall> {
+    let missing: Vec<&Codec> = declared.iter()
+        .filter(|d| !registered.iter().any(|r| r == &d.name))
+        .collect();
+    if missing.is_empty() { return None; }
+
+    // Every missing component being a Codec2 one, with the switch off, is
+    // not a coincidence — it is the switch.
+    let all_c2 = missing.iter().all(|c| c.name.starts_with("c2."));
+    if all_c2 && ccodec == Some("0") {
+        return Some(Shortfall::Codec2Disabled);
+    }
+    Some(Shortfall::Unexplained(
+        missing.iter().map(|c| c.name.clone()).collect()))
+}
+
+/// Video formats that have no decoder at runtime at all.
+///
+/// This is the part that bites a user rather than a benchmark: a format with
+/// no component does not play slowly, it does not play.
+pub fn unplayable(declared: &[Codec], registered: &[String]) -> Vec<String> {
+    let live: Vec<&Codec> = declared.iter()
+        .filter(|c| !c.encoder && registered.iter().any(|r| r == &c.name))
+        .collect();
+    let mut out = Vec::new();
+    for c in declared.iter().filter(|c| !c.encoder && c.mime.starts_with("video/")) {
+        if live.iter().any(|l| l.mime == c.mime) { continue; }
+        if !out.contains(&c.mime) { out.push(c.mime.clone()); }
+    }
+    out.sort_by(|a, b| mime_weight(b).cmp(&mime_weight(a)).then(a.cmp(b)));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- declared vs registered -------------------------------------------
+
+    fn c2(name: &str, mime: &str) -> Codec {
+        Codec { name: name.into(), mime: mime.into(),
+                kind: CodecKind::Software, encoder: false }
+    }
+
+    /// The real case: every c2.* is absent and the switch is off. That is one
+    /// finding, not fourteen.
+    #[test]
+    fn codec2_switch_explains_every_missing_c2_component() {
+        let declared = vec![c2("c2.android.avc.decoder", "video/avc"),
+                            c2("c2.android.av1.decoder", "video/av01"),
+                            c2("OMX.google.h264.decoder", "video/avc")];
+        let reg = vec!["OMX.google.h264.decoder".to_string()];
+        assert_eq!(explain_shortfall(&declared, &reg, Some("0")),
+                   Some(Shortfall::Codec2Disabled));
+    }
+
+    /// With the switch ON, the same absence is NOT explained by it, and
+    /// saying it was would be inventing a cause.
+    #[test]
+    fn the_switch_only_explains_it_when_it_is_actually_off() {
+        let declared = vec![c2("c2.android.avc.decoder", "video/avc")];
+        let reg: Vec<String> = vec![];
+        assert!(matches!(explain_shortfall(&declared, &reg, Some("1")),
+                         Some(Shortfall::Unexplained(_))));
+        assert!(matches!(explain_shortfall(&declared, &reg, None),
+                         Some(Shortfall::Unexplained(_))));
+    }
+
+    /// A missing OMX component has nothing to do with the Codec2 switch.
+    #[test]
+    fn a_missing_omx_component_is_not_blamed_on_codec2() {
+        let declared = vec![c2("OMX.google.vp9.decoder", "video/x-vnd.on2.vp9")];
+        let reg: Vec<String> = vec![];
+        assert!(matches!(explain_shortfall(&declared, &reg, Some("0")),
+                         Some(Shortfall::Unexplained(_))));
+    }
+
+    #[test]
+    fn nothing_missing_is_no_finding() {
+        let declared = vec![c2("OMX.google.h264.decoder", "video/avc")];
+        let reg = vec!["OMX.google.h264.decoder".to_string()];
+        assert_eq!(explain_shortfall(&declared, &reg, Some("0")), None);
+    }
+
+    /// A format whose ONLY component fails to register cannot play at all.
+    /// This is the consequence a user actually meets.
+    #[test]
+    fn a_format_with_no_live_component_is_unplayable() {
+        let declared = vec![c2("c2.android.av1.decoder", "video/av01"),
+                            c2("c2.android.avc.decoder", "video/avc"),
+                            c2("OMX.google.h264.decoder", "video/avc")];
+        let reg = vec!["OMX.google.h264.decoder".to_string()];
+        let u = unplayable(&declared, &reg);
+        assert_eq!(u, vec!["video/av01"], "H.264 still has a live component");
+    }
+
+    #[test]
+    fn nothing_is_unplayable_when_everything_registered() {
+        let declared = vec![c2("OMX.google.h264.decoder", "video/avc")];
+        let reg = vec!["OMX.google.h264.decoder".to_string()];
+        assert!(unplayable(&declared, &reg).is_empty());
+    }
 
     // --- component classification -----------------------------------------
 
