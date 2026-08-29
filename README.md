@@ -297,6 +297,20 @@ the community's:
 
 GPL-3.0-or-later.
 
+## Desktop front end
+
+`liw-ui` is a gpui application: one Rust binary, no web runtime. It is a
+**viewport onto `liwd`** — every fact it draws is a daemon property with a
+change signal, so it redraws when something happens rather than on a timer.
+
+It is also disposable. All state lives in the daemon, so closing the window
+changes nothing about a running session.
+
+**It never sits on top of the game.** KWin can hand a fullscreen window
+straight to the display; an always-on-top overlay closes that path and forces
+full composition, which costs frames exactly where they matter. A GameLoop
+style sidebar over the game is the one thing this deliberately does not do.
+
 ## Control plane
 
 `liwd` owns the session and exposes it on the session bus as

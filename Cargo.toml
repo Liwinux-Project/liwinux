@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/liw-input", "crates/liw-core", "crates/liwd", "crates/liw", "crates/liwd-helper"]
+members = ["crates/liw-input", "crates/liw-ui", "crates/liw-core", "crates/liwd", "crates/liw", "crates/liwd-helper"]
 
 [workspace.package]
 version = "0.1.0"

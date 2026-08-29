@@ -11,6 +11,7 @@ pub mod config;
 pub mod error;
 pub mod hostsample;
 pub mod helper;
+pub mod manager;
 pub mod host;
 /// The input engine lives in its own crate so it can be developed
 /// independently; re-exported here so existing paths keep working.
@@ -24,6 +25,7 @@ pub mod waydroid;
 pub use config::Config;
 pub use error::{Error, Result as LiwResult};
 pub use helper::{HelperClient, HelperError};
+pub use manager::{Manager, ManagerError, Snapshot};
 pub use polkit::{check as polkit_check, valid_prop_key, PolkitError};
 pub use session::{Health, SessionState, Supervisor, SupervisorConfig};
 pub use waydroid::{Status, Waydroid, WaydroidError};
