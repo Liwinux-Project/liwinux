@@ -138,7 +138,7 @@ pub async fn fullscreen_with_retry(
         if g.found && g.fullscreen {
             tracing::info!(
                 width = g.width, height = g.height,
-                "Waydroid penceresi tam ekran");
+                "Waydroid window set to fullscreen");
             return true;
         }
     }

@@ -1,17 +1,19 @@
 [workspace]
 resolver = "3"
-members = ["crates/liw-input", "crates/liw-ui", "crates/liw-core", "crates/liwd", "crates/liw", "crates/liwd-helper"]
+members = ["crates/liw-input", "crates/liw-ui", "crates/liw-core", "crates/liwd", "crates/liw", "crates/liwd-helper", "crates/liw-compositor"]
 
-# A bare `cargo build` skips the UI.
+# A bare `cargo build` skips the UI and the compositor.
 #
 # liw-ui pulls gpui from a Zed fork — 80-odd crates including blade and wgpu,
-# and a first build measured in minutes. Nobody working on the daemon, the
-# input engine or the CLI needs any of it: `cargo build -p liwd` already
-# pulls zero gpui artifacts, so the only thing paying that cost was building
-# the workspace root out of habit.
+# and a first build measured in minutes. liw-compositor pulls smithay and the
+# wayland stack. Nobody working on the daemon, the input engine or the CLI
+# needs any of it: `cargo build -p liwd` already pulls zero gpui artifacts, so
+# the only thing paying that cost was building the workspace root out of
+# habit.
 #
-# The trade is that a bare build no longer notices a broken UI, so anything
-# that verifies the tree must say `--workspace` explicitly. CI does.
+# The trade is that a bare build no longer notices a broken UI or compositor,
+# so anything that verifies the tree must say `--workspace` explicitly. CI
+# does.
 default-members = [
     "crates/liw-core",
     "crates/liw-input",

@@ -77,3 +77,55 @@ answer is chrome, embedding is the right way to get it.
 Whatever is built, measure it with `liw trace` before and after, and keep the
 frame-time delta where the numbers say it should be — not where the design
 document hoped.
+
+## First run of `liw-compositor` (2026-08-29)
+
+Step 1 exists and Waydroid talks to it. What the run established:
+
+* **The redirection is real.** With `WAYLAND_DISPLAY=wayland-liw`, the
+  generated `config_session` bound *our* socket into the container:
+
+  ```
+  lxc.mount.entry = /run/user/1000/wayland-liw run/xdg/wayland-0 ...
+  ```
+
+  No patching, exactly as the mechanism section predicted.
+
+* **The client connects and takes a configure.** A toplevel was created and
+  accepted the 1280x720 fullscreen configure we sent it.
+
+* **The advertised dmabuf format was wrong, and the client said so.** The
+  first attempt offered ARGB8888/XRGB8888 — the guess a Linux compositor
+  makes — and got:
+
+  ```
+  zwp_linux_buffer_params_v1: Format DrmFourcc(AB24)/34324241 is not supported.
+  ```
+
+  AB24 is ABGR8888: Android's `HAL_PIXEL_FORMAT_RGBA_8888`. Offering both
+  channel orders removed the protocol error. Worth keeping as a lesson —
+  the client will name the format it wants if you let it fail.
+
+### What blocks the next run
+
+`liwd` restarts the session out from under the experiment. Its supervisor
+sees "Android boot did not complete" while the guest is still coming up
+against the nested compositor, restarts it, and the restart uses liwd's own
+environment — so the container goes back to `wayland-0` and the test is over
+before a frame arrives:
+
+```
+WARN  liwd: session unhealthy strike=1 failures=["Android boot did not complete"]
+INFO  liw_core::session: starting session (detached)
+```
+
+So testing the embedded path needs liwd stopped, or taught to start the
+session with the compositor's socket. That is the next thing to fix, and it
+is a liwd change rather than a compositor one.
+
+### Still unproven
+
+No real frame has arrived yet: the buffer seen so far is not a dmabuf, and
+the client disconnects before presenting. Whether that is the same liwd
+restart or something else is not yet known, and guessing which would waste
+the next run.
