@@ -11,6 +11,9 @@ use gpui::{App, AppContext as _, Context, Entity, Task};
 use gpui_tokio::Tokio;
 use liw_core::apps::App as AndroidApp;
 use liw_core::manager::{Manager, ProfileList, Snapshot};
+use std::collections::HashMap;
+
+use crate::tint::{self, Tint};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nav {
@@ -50,6 +53,16 @@ pub struct AppState {
     pub snapshot: Snapshot,
     pub apps: Vec<AndroidApp>,
     pub profiles: ProfileList,
+    /// Accent colour per package, read from the app's own icon.
+    ///
+    /// Computed once at load: decoding a 54x54 PNG is trivial, but doing it
+    /// inside `render` would repeat it every frame for every card.
+    pub tints: HashMap<String, Tint>,
+    /// The app the hero shows. Follows the foreground package while a game
+    /// is running, otherwise the last one the user launched.
+    pub featured: Option<String>,
+    /// Free-text filter from the search box.
+    pub search: String,
     /// Show system apps in the library. Off by default: half the list is
     /// Settings and Calculator.
     pub show_system: bool,
@@ -68,6 +81,9 @@ impl AppState {
             snapshot: Snapshot::default(),
             apps: Vec::new(),
             profiles: ProfileList::default(),
+            tints: HashMap::new(),
+            featured: None,
+            search: String::new(),
             show_system: false,
             error: None,
             busy: None,
@@ -77,8 +93,36 @@ impl AppState {
         s
     }
 
+    /// Apps the library grid shows: user apps, minus the search filter.
     pub fn visible_apps(&self) -> impl Iterator<Item = &AndroidApp> {
-        self.apps.iter().filter(move |a| self.show_system || !a.system)
+        let q = self.search.trim().to_lowercase();
+        self.apps.iter()
+            .filter(move |a| self.show_system || !a.system)
+            .filter(move |a| q.is_empty()
+                || a.name.to_lowercase().contains(&q)
+                || a.package.to_lowercase().contains(&q))
+    }
+
+    pub fn tint(&self, package: &str) -> Tint {
+        self.tints.get(package).copied().unwrap_or(Tint::NEUTRAL)
+    }
+
+    /// The app the hero should show.
+    ///
+    /// Prefers whatever Android currently has in the foreground: while a game
+    /// is running that is the one thing the user cares about. Falls back to
+    /// the last launched, then to the first app with a key mapping — an
+    /// empty hero on first run would look broken.
+    pub fn hero(&self) -> Option<&AndroidApp> {
+        let pick = self.snapshot.foreground.as_deref()
+            .filter(|p| self.apps.iter().any(|a| a.package == *p))
+            .or(self.featured.as_deref())
+            .map(str::to_string);
+        if let Some(p) = pick {
+            if let Some(a) = self.apps.iter().find(|a| a.package == p) { return Some(a); }
+        }
+        self.apps.iter().find(|a| !a.system && self.has_profile(&a.package))
+            .or_else(|| self.apps.iter().find(|a| !a.system))
     }
 
     pub fn has_profile(&self, package: &str) -> bool {
@@ -94,7 +138,16 @@ impl AppState {
             let apps = m.apps().await.unwrap_or_default();
             let profiles = m.profiles().await.unwrap_or_default();
             let snap = m.snapshot().await.map_err(|e| e.to_string())?;
-            Ok::<_, String>((apps, profiles, snap))
+            // Icon colours are read here, off the UI thread: `render` runs
+            // per frame and must never touch the disk.
+            let tints: HashMap<String, Tint> = apps.iter()
+                .filter_map(|a| {
+                    let p = a.icon.as_ref()?;
+                    let bytes = std::fs::read(p).ok()?;
+                    Some((a.package.clone(), tint::from_bytes(&bytes)))
+                })
+                .collect();
+            Ok::<_, String>((apps, profiles, snap, tints))
         });
 
         cx.spawn(async move |this, cx| {
@@ -105,10 +158,11 @@ impl AppState {
             };
             let _ = this.update(cx, |s, cx| {
                 match outcome {
-                    Ok((apps, profiles, snap)) => {
+                    Ok((apps, profiles, snap, tints)) => {
                         s.apps = apps;
                         s.profiles = profiles;
                         s.snapshot = snap;
+                        s.tints = tints;
                         s.link = Link::Up;
                         s.start_watching(cx);
                     }
@@ -171,6 +225,7 @@ impl AppState {
     }
 
     pub fn launch(&mut self, package: String, cx: &mut Context<Self>) {
+        self.featured = Some(package.clone());
         self.error = None;
         self.busy = Some("launch");
         cx.notify();

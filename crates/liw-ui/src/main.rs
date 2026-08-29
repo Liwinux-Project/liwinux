@@ -12,6 +12,7 @@
 //! viewport onto it.
 
 mod library;
+mod tint;
 mod shell;
 mod state;
 mod theme;
@@ -33,9 +34,13 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(880.), px(560.))),
+                // The nav strip IS the titlebar: transparent so the system
+                // does not draw a second one above ours. Under CSD we draw
+                // our own caption buttons (see `shell::caption`); under SSD
+                // the compositor still draws real ones.
                 titlebar: Some(TitlebarOptions {
                     title: Some("liwinux".into()),
-                    appears_transparent: false,
+                    appears_transparent: true,
                     traffic_light_position: None,
                 }),
                 ..Default::default()

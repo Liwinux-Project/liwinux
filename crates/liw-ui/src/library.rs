@@ -1,136 +1,326 @@
-//! The library screen: installed apps as cards.
+//! The library: a hero for what you are playing, then your games, then the rest.
 //!
-//! # Designed around a 54px icon
+//! # Working without cover art
 //!
-//! Waydroid caches app icons at 54x54. There is no cover art to be had, so a
-//! GameLoop-style poster grid is not on the table — enlarging a 54px PNG to
-//! fill a tile looks worse than not trying. The card leans on typography and
-//! a tinted icon well instead, and stays small enough that the icon is near
-//! its native size.
+//! Waydroid caches icons at 54x54, so the poster grid a store front normally
+//! leans on is not available. Instead each surface is washed in the colour of
+//! the app's own icon (`tint`), which gives the page the same variety and
+//! richness without pretending to artwork we do not have. The icon itself is
+//! always drawn near its native size — scaled up it looks like a mistake.
 
 use gpui::{Context, ElementId, IntoElement, SharedString, div, img, prelude::*, px};
 use liw_core::apps::App as AndroidApp;
 
 use crate::state::AppState;
-use crate::theme::{Theme, RADIUS, S1, S2, S3, S4};
+use crate::theme::{Theme, RADIUS, S1, S2, S3, S4, S6};
+use crate::tint::Tint;
 
-const CARD_W: f32 = 168.0;
-const ICON_WELL: f32 = 64.0;
-const ICON: f32 = 44.0;
+const CARD_W: f32 = 156.0;
+const CARD_ICON: f32 = 52.0;
+const HERO_H: f32 = 188.0;
+const HERO_ICON: f32 = 54.0;
 
-pub fn render(state: &AppState, t: &Theme, cx: &mut Context<AppState>) -> impl IntoElement {
-    let apps: Vec<AndroidApp> = state.visible_apps().cloned().collect();
-    let hidden = state.apps.len() - apps.len();
-    // Built with a loop rather than `.map()`: the closure would have to
-    // capture `cx` mutably and gpui's `children` takes an iterator that
-    // outlives the borrow.
-    let head = header(state, t, hidden, cx);
-    let mut cards = Vec::with_capacity(apps.len());
-    for a in apps.iter().cloned() {
-        cards.push(card(a, state, t, cx));
+pub fn render(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyElement {
+    let hero_el = s.hero().cloned().map(|a| hero(a, s, t, cx));
+
+    let games: Vec<AndroidApp> = s.visible_apps().filter(|a| !a.system).cloned().collect();
+    let mut cards = Vec::with_capacity(games.len());
+    for a in games.iter().cloned() {
+        cards.push(card(a, s, t, cx));
     }
 
+    let system: Vec<AndroidApp> = s.visible_apps().filter(|a| a.system).cloned().collect();
+    let mut rows = Vec::with_capacity(system.len());
+    for a in system.iter().cloned() {
+        rows.push(row(a, s, t, cx));
+    }
+    let hidden = s.apps.iter().filter(|a| a.system).count();
+    let toggle = system_toggle(s, t, hidden, cx);
+
     div()
+        .id("library")
         .flex()
         .flex_col()
         .size_full()
-        .gap(px(S4))
-        .child(head)
-        .child(if apps.is_empty() {
-            empty(t).into_any_element()
-        } else {
-            div()
-                .id("library-grid")
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .gap(px(S3))
-                .overflow_y_scroll()
-                .children(cards)
-                .into_any_element()
-        })
-}
-
-/// Returns `AnyElement`, not `impl IntoElement`: under Rust 2024 the opaque
-/// type captures `cx`'s lifetime, so the borrow would still be live when the
-/// caller needs `cx` again.
-fn header(
-    state: &AppState, t: &Theme, hidden: usize, cx: &mut Context<AppState>,
-) -> gpui::AnyElement {
-    let show = state.show_system;
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
+        .gap(px(S6))
+        .overflow_y_scroll()
+        .when_some(hero_el, |el, h| el.child(h))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .child(div().text_size(px(18.0)).text_color(t.text).child("Library"))
-                .child(
+                .gap(px(S3))
+                .child(section(t, "Your games", cards.len()))
+                .child(if cards.is_empty() {
+                    empty(t, s).into_any_element()
+                } else {
                     div()
-                        .text_size(px(12.0))
-                        .text_color(t.text_faint)
-                        // The list works with Android stopped, because it comes
-                        // from Waydroid's .desktop files rather than from the
-                        // running system. Worth saying: an empty library with a
-                        // stopped session would otherwise look like a bug.
-                        .child("From Waydroid's desktop entries — available even \
-                                while Android is stopped"),
-                ),
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap(px(S3))
+                        .children(cards)
+                        .into_any_element()
+                }),
         )
-        .when(hidden > 0 || show, |el| {
+        .when(!rows.is_empty() || hidden > 0, |el| {
             el.child(
                 div()
-                    .id("toggle-system")
-                    .px(px(S3))
-                    .py(px(S1 + 2.0))
-                    .rounded(px(RADIUS))
-                    .bg(if show { t.raised } else { t.surface })
-                    .border_1()
-                    .border_color(t.border)
-                    .text_size(px(12.0))
-                    .text_color(if show { t.text } else { t.text_muted })
-                    .cursor_pointer()
-                    .child(if show {
-                        SharedString::from("Hide system apps")
-                    } else {
-                        SharedString::from(format!("Show {hidden} system apps"))
-                    })
-                    .on_click(cx.listener(|s, _, _, cx| {
-                        s.show_system = !s.show_system;
-                        cx.notify();
-                    })),
+                    .flex()
+                    .flex_col()
+                    .gap(px(S2))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            // Show the HIDDEN count when they are hidden:
+                            // "System apps 0" next to a "Show 12" button
+                            // contradicts itself.
+                            .child(section(t, "System apps",
+                                if s.show_system { rows.len() } else { hidden }))
+                            .child(toggle),
+                    )
+                    .children(rows),
             )
         })
         .into_any_element()
 }
 
-fn empty(t: &Theme) -> impl IntoElement {
+fn section(t: &Theme, title: &str, n: usize) -> gpui::AnyElement {
     div()
         .flex()
-        .flex_col()
+        .flex_row()
+        .items_center()
+        .gap(px(S2))
+        .child(
+            div()
+                .text_size(px(15.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(t.text)
+                .child(SharedString::from(title.to_string())),
+        )
+        .child(
+            div()
+                .text_size(px(12.0))
+                .text_color(t.text_faint)
+                .child(SharedString::from(n.to_string())),
+        )
+        .into_any_element()
+}
+
+/// The hero. Big, tinted, one primary action.
+///
+/// Follows the foreground app while Android is running, so during a session
+/// the page is about the game you are in rather than a static banner.
+fn hero(
+    a: AndroidApp, s: &AppState, t: &Theme, cx: &mut Context<AppState>,
+) -> gpui::AnyElement {
+    let side = hero_side(&a, s, t, cx);
+    let tint = s.tint(&a.package);
+    let mapped = s.has_profile(&a.package);
+    let running = s.snapshot.foreground.as_deref() == Some(a.package.as_str());
+    let busy = s.busy.is_some();
+    let package = a.package.clone();
+
+    div()
+        .h(px(HERO_H))
+        .flex_none()
+        .flex()
+        .flex_row()
+        .items_end()
+        .justify_between()
+        .p(px(S6))
+        .rounded(px(RADIUS + 6.0))
+        // The wash is the whole trick: the panel takes the game's own colour,
+        // fading out to the right so the secondary list stays readable.
+        .bg(tint.gradient(110.0))
+        .border_1()
+        .border_color(tint.accent().opacity(0.22))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(S3))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(S3))
+                        .child(icon_well(&a, HERO_ICON, HERO_ICON + 20.0, t, tint))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(S1))
+                                .child(
+                                    div()
+                                        .text_size(px(24.0))
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .text_color(t.text)
+                                        .child(SharedString::from(a.name.clone())),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(t.text_muted)
+                                        .child(SharedString::from(if running {
+                                            "Running now".to_string()
+                                        } else if mapped {
+                                            "Key mapping ready".to_string()
+                                        } else {
+                                            a.package.clone()
+                                        })),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap(px(S2))
+                        .child(primary(t, if running { "Bring to front" } else { "Play" },
+                                       busy, "hero-play", cx, package))
+                        .when(!mapped, |el| {
+                            el.child(ghost(t, "No key mapping yet"))
+                        }),
+                ),
+        )
+        .when_some(side, |el, sd| el.child(sd))
+        .into_any_element()
+}
+
+/// The other games, listed down the right of the hero.
+///
+/// Mirrors what a store front does with its featured rail: it fills the panel
+/// and gives the hero somewhere to go. Clicking one makes it the hero rather
+/// than launching it — a launch is a big action and belongs behind the button.
+fn hero_side(
+    current: &AndroidApp, s: &AppState, t: &Theme, cx: &mut Context<AppState>,
+) -> Option<gpui::AnyElement> {
+    let others: Vec<AndroidApp> = s.apps.iter()
+        .filter(|a| !a.system && a.package != current.package)
+        .take(5)
+        .cloned()
+        .collect();
+    if others.is_empty() { return None; }
+
+    let mut rows = Vec::with_capacity(others.len());
+    for a in others {
+        let pkg = a.package.clone();
+        let id: ElementId = SharedString::from(format!("hero-side-{}", a.package)).into();
+        rows.push(
+            div()
+                .id(id)
+                .px(px(S2))
+                .py(px(S1))
+                .rounded(px(RADIUS - 2.0))
+                .text_size(px(13.0))
+                .text_color(t.text_muted)
+                .text_right()
+                .cursor_pointer()
+                .hover(|x| x.text_color(t.text))
+                .child(SharedString::from(a.name.clone()))
+                .on_click(cx.listener(move |st, _, _, cx| {
+                    st.featured = Some(pkg.clone());
+                    cx.notify();
+                }))
+                .into_any_element(),
+        );
+    }
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap(px(S1))
+            .child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(t.text_faint)
+                    .pb(px(S1))
+                    .child("ALSO INSTALLED"),
+            )
+            .children(rows)
+            .into_any_element(),
+    )
+}
+
+/// Filled accent button — the one call to action on the page.
+fn primary(
+    t: &Theme, label: &str, busy: bool, id: &'static str,
+    cx: &mut Context<AppState>, package: String,
+) -> gpui::AnyElement {
+    div()
+        .id(id)
+        .px(px(S6))
+        .py(px(S2 + 2.0))
+        .rounded(px(RADIUS))
+        .bg(if busy { t.raised } else { t.accent })
+        .text_size(px(13.0))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        // Dark ink on the accent fill: white on this blue is unreadable.
+        .text_color(if busy { t.text_faint } else { t.bg })
+        .when(!busy, |e| {
+            e.cursor_pointer()
+                .hover(|x| x.bg(t.accent.opacity(0.85)))
+                .on_click(cx.listener(move |st, _, _, cx| st.launch(package.clone(), cx)))
+        })
+        .child(SharedString::from(if busy { "working…" } else { label }))
+        .into_any_element()
+}
+
+fn ghost(t: &Theme, label: &str) -> gpui::AnyElement {
+    div()
+        .px(px(S4))
+        .py(px(S2 + 2.0))
+        .rounded(px(RADIUS))
+        .border_1()
+        .border_color(t.border)
+        .text_size(px(12.0))
+        .text_color(t.text_muted)
+        .child(SharedString::from(label.to_string()))
+        .into_any_element()
+}
+
+fn icon_well(
+    a: &AndroidApp, icon: f32, well: f32, t: &Theme, tint: Tint,
+) -> gpui::AnyElement {
+    div()
+        .w(px(well))
+        .h(px(well))
+        .flex()
+        .flex_none()
         .items_center()
         .justify_center()
-        .size_full()
-        .gap(px(S2))
-        .child(div().text_size(px(15.0)).text_color(t.text_muted).child("No apps yet"))
-        .child(
-            div().text_size(px(12.0)).text_color(t.text_faint).child(
-                "Install something from the Play Store inside Android; it shows \
-                 up here once Waydroid writes its desktop entry.",
-            ),
-        )
+        .rounded(px(RADIUS + 4.0))
+        .bg(tint.wash(0.5))
+        .child(match &a.icon {
+            Some(p) => img(gpui::ImageSource::Resource(gpui::Resource::Path(
+                std::sync::Arc::from(p.as_path()),
+            )))
+            .w(px(icon))
+            .h(px(icon))
+            .into_any_element(),
+            None => div()
+                .text_size(px(icon * 0.42))
+                .text_color(t.text_muted)
+                .child(initial(&a.name))
+                .into_any_element(),
+        })
+        .into_any_element()
 }
 
 fn card(
-    a: AndroidApp, state: &AppState, t: &Theme, cx: &mut Context<AppState>,
+    a: AndroidApp, s: &AppState, t: &Theme, cx: &mut Context<AppState>,
 ) -> gpui::AnyElement {
+    let tint = s.tint(&a.package);
+    let mapped = s.has_profile(&a.package);
+    let busy = s.busy.is_some();
     let package = a.package.clone();
-    let mapped = state.has_profile(&a.package);
-    let busy = state.busy.is_some();
-    let id: ElementId = SharedString::from(a.package.clone()).into();
+    let id: ElementId = SharedString::from(format!("card-{}", a.package)).into();
 
     div()
         .id(id)
@@ -139,42 +329,21 @@ fn card(
         .flex_col()
         .items_center()
         .gap(px(S2))
-        .p(px(S3))
-        .rounded(px(RADIUS + 2.0))
-        .bg(t.surface)
+        .pt(px(S4))
+        .pb(px(S3))
+        .px(px(S3))
+        .rounded(px(RADIUS + 4.0))
+        .bg(tint.gradient(180.0))
         .border_1()
         .border_color(t.border)
         .cursor_pointer()
-        .hover(|s| s.bg(t.raised).border_color(t.accent.opacity(0.5)))
-        .child(
-            div()
-                .w(px(ICON_WELL))
-                .h(px(ICON_WELL))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(RADIUS + 4.0))
-                .bg(t.raised)
-                .child(match &a.icon {
-                    // Drawn near its native 54px. Scaling it up to fill a
-                    // poster tile looks worse than leaving it small.
-                    Some(p) => img(gpui::ImageSource::Resource(gpui::Resource::Path(
-                        std::sync::Arc::from(p.as_path()),
-                    )))
-                    .w(px(ICON))
-                    .h(px(ICON))
-                    .into_any_element(),
-                    None => div()
-                        .text_size(px(20.0))
-                        .text_color(t.text_faint)
-                        .child(initial(&a.name))
-                        .into_any_element(),
-                }),
-        )
+        .hover(|x| x.bg(tint.wash(0.5)).border_color(tint.accent().opacity(0.55)))
+        .child(icon_well(&a, CARD_ICON, CARD_ICON + 20.0, t, tint))
         .child(
             div()
                 .w_full()
                 .text_size(px(13.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(t.text)
                 .text_center()
                 .truncate()
@@ -182,24 +351,110 @@ fn card(
         )
         .child(
             div()
-                .h(px(16.0))
+                .h(px(14.0))
                 .text_size(px(10.0))
-                .text_color(if mapped { t.accent } else { t.text_faint })
-                .child(if mapped {
-                    SharedString::from("key mapping")
-                } else {
-                    SharedString::from("no mapping")
-                }),
+                .text_color(if mapped { tint.accent() } else { t.text_faint })
+                .child(SharedString::from(if mapped { "key mapping" } else { "—" })),
         )
         .when(!busy, |el| {
-            el.on_click(cx.listener(move |s, _, _, cx| {
-                s.launch(package.clone(), cx);
-            }))
+            el.on_click(cx.listener(move |st, _, _, cx| st.launch(package.clone(), cx)))
         })
         .into_any_element()
 }
 
-/// First character of the name, for apps with no cached icon.
+/// Compact row for the long tail — system apps that need a line, not a tile.
+fn row(
+    a: AndroidApp, s: &AppState, t: &Theme, cx: &mut Context<AppState>,
+) -> gpui::AnyElement {
+    let tint = s.tint(&a.package);
+    let busy = s.busy.is_some();
+    let package = a.package.clone();
+    let id: ElementId = SharedString::from(format!("row-{}", a.package)).into();
+
+    div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(S3))
+        .p(px(S2))
+        .rounded(px(RADIUS))
+        .hover(|x| x.bg(t.surface))
+        .cursor_pointer()
+        .child(icon_well(&a, 26.0, 38.0, t, tint))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(px(13.0))
+                .text_color(t.text)
+                .truncate()
+                .child(SharedString::from(a.name.clone())),
+        )
+        .child(
+            div()
+                .text_size(px(11.0))
+                .text_color(t.text_faint)
+                .child(SharedString::from(a.package.clone())),
+        )
+        .when(!busy, |el| {
+            el.on_click(cx.listener(move |st, _, _, cx| st.launch(package.clone(), cx)))
+        })
+        .into_any_element()
+}
+
+fn system_toggle(
+    s: &AppState, t: &Theme, hidden: usize, cx: &mut Context<AppState>,
+) -> gpui::AnyElement {
+    let show = s.show_system;
+    div()
+        .id("toggle-system")
+        .px(px(S3))
+        .py(px(S1 + 2.0))
+        .rounded(px(RADIUS))
+        .border_1()
+        .border_color(t.border)
+        .text_size(px(12.0))
+        .text_color(t.text_muted)
+        .cursor_pointer()
+        .hover(|x| x.bg(t.surface).text_color(t.text))
+        .child(SharedString::from(if show {
+            "Hide".to_string()
+        } else {
+            format!("Show {hidden}")
+        }))
+        .on_click(cx.listener(|st, _, _, cx| {
+            st.show_system = !st.show_system;
+            cx.notify();
+        }))
+        .into_any_element()
+}
+
+fn empty(t: &Theme, s: &AppState) -> gpui::AnyElement {
+    let searching = !s.search.trim().is_empty();
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(S1))
+        .p(px(S6))
+        .rounded(px(RADIUS))
+        .bg(t.surface)
+        .child(
+            div().text_size(px(13.0)).text_color(t.text_muted).child(if searching {
+                SharedString::from("Nothing matches that")
+            } else {
+                SharedString::from("No games yet")
+            }),
+        )
+        .when(!searching, |el| {
+            el.child(div().text_size(px(12.0)).text_color(t.text_faint).child(
+                "Install something from the Play Store inside Android; it \
+                 appears here once Waydroid writes its desktop entry.",
+            ))
+        })
+        .into_any_element()
+}
+
 fn initial(name: &str) -> SharedString {
     name.chars().next().map(|c| c.to_uppercase().to_string())
         .unwrap_or_else(|| "?".into())

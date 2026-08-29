@@ -63,4 +63,4 @@ pub const S6: f32 = 24.0;
 
 pub const RADIUS: f32 = 10.0;
 pub const SIDEBAR_W: f32 = 196.0;
-pub const HEADER_H: f32 = 48.0;
+pub const HEADER_H: f32 = 52.0;
