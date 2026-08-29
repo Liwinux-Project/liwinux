@@ -14,6 +14,7 @@
 mod library;
 mod tint;
 mod shell;
+mod diagnostics;
 mod keymap;
 mod state;
 mod theme;
