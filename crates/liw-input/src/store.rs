@@ -192,7 +192,7 @@ at = {{ x = 0.5, y = 0.5 }}
         write(&d, "x.toml", "com.example.game", 17);
         let s = Store::from_dirs(&[(d.clone(), Origin::System)]);
         assert!(s.for_package("com.example.game").is_some());
-        assert!(s.for_package("com.yok").is_none());
+        assert!(s.for_package("com.absent").is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
 

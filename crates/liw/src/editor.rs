@@ -431,7 +431,7 @@ async fn serve(sock: &mut tokio::net::TcpStream, ed: Arc<Editor>) -> Result<()> 
                 Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
             }
         } else {
-            ("404 Not Found", "text/plain", b"yok".to_vec())
+            ("404 Not Found", "text/plain", b"not found".to_vec())
         };
 
     let head = format!(

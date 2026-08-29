@@ -23,7 +23,7 @@ pub enum Impact {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Status {
-    /// Zaten hedefte.
+    /// Already on target.
     Optimal,
     /// Not on target; can be improved.
     Improvable,
@@ -45,7 +45,7 @@ pub struct Finding {
 
 impl Finding {
     fn unavailable(id: &'static str, title: &'static str, why: &str) -> Self {
-        Self { id, title, current: "yok".into(), target: "-".into(),
+        Self { id, title, current: "none".into(), target: "-".into(),
             status: Status::Unavailable, impact: Impact::Unknown, note: why.into() }
     }
 }
@@ -68,8 +68,8 @@ pub fn governor(current: &str, available: &str, driver: &str) -> Finding {
         "on intel_pstate, 'powersave' still reaches the top frequency; the \
          difference is usually small. No gain is promised without measuring."
     } else {
-        "demand-based governors raise the frequency late, which can produce \
-         gecikmesi yaratabilir."
+        "demand-based governors raise the frequency late, which can add \
+         latency to the first frames after input."
     };
     Finding {
         id: "cpu.governor", title: "CPU governor",
@@ -86,11 +86,11 @@ pub fn governor(current: &str, available: &str, driver: &str) -> Finding {
 pub fn epp(current: &str) -> Finding {
     let cur = current.trim();
     if cur.is_empty() {
-        return Finding::unavailable("cpu.epp", "Enerji/performans tercihi",
+        return Finding::unavailable("cpu.epp", "Energy/performance preference",
             "HWP EPP is not enabled on this CPU");
     }
     Finding {
-        id: "cpu.epp", title: "Enerji/performans tercihi",
+        id: "cpu.epp", title: "Energy/performance preference",
         current: cur.to_string(), target: "performance".into(),
         status: if cur == "performance" { Status::Optimal } else { Status::Improvable },
         impact: Impact::Unknown,

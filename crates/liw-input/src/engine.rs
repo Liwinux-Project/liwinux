@@ -653,10 +653,10 @@ impl Engine {
         if handoff {
             // --- Handoff path: NEVER lift while moving ---
             //
-            // The second finger goes down at the centre before the first
-            // ikisi birlikte hareket eder. Birincisi ancak kenara
-            // released when it leans on the edge; by then the second is
-            // hâlindedir ve oyunun takibi kesilmez.
+            // The second finger goes down at the centre before the first is
+            // lifted, so for a moment both are down and moving together. The
+            // first is only released once it leans on the edge; by then the
+            // second is already tracking, so the game never loses the aim.
             const PREPARE: f32 = 0.62;
 
             let far = ((pos.x - origin.x).powi(2)
@@ -1183,7 +1183,7 @@ mod tests {
     }
 
     /// The first movement puts the finger down AND moves it in the same call:
-    /// bir kare beklemek gereksiz gecikme olurdu.
+    /// waiting a frame would be needless latency.
     #[test]
     fn aim_without_toggle_activates_on_first_motion() {
         let mut e = always_on_aim();
@@ -1391,7 +1391,7 @@ mod tests {
         match w[..] {
             [TouchAction::Up { id }, TouchAction::Down { .. }] =>
                 assert_eq!(id, first_id, "the cancelled finger must be the first one"),
-            _ => panic!("Up sonra Down bekleniyordu: {w:?}"),
+            _ => panic!("expected Up then Down: {w:?}"),
         }
         assert_eq!(e.swipe_count(), 1, "only the new gesture may remain");
     }
@@ -1521,7 +1521,7 @@ mod tests {
             }
         }
         assert!(lifted, "the finger must lift");
-        let last = moves.last().expect("hareket yok");
+        let last = moves.last().expect("no movement");
         assert!((last.x - 0.2).abs() < 1e-4, "it must reach the target: {last:?}");
 
         // No meaningless distance may remain between consecutive steps (except the last).

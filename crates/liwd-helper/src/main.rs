@@ -59,7 +59,8 @@ impl Helper {
     /// NOT the host window size: the touch pipe's coordinate space is the
     /// Android display.
     ///
-    /// `waydroid prop get` KULLANILAMAZ: o komut `DBusSessionService` ile
+    /// `waydroid prop get` CANNOT BE USED: that command goes through
+    /// `DBusSessionService` and
     /// connects to the session bus (`tools/actions/prop.py`). This service runs
     /// as root with no session bus — the command silently produced empty output
     /// and wrote "WayDroid session is stopped" to stderr. This actually
@@ -447,7 +448,7 @@ impl Helper {
             done.push(format!(
                 "WARNING: {} foreign rules hijack DNS; they were NOT TOUCHED. \
                  We do not silently change another tool's configuration. \
-                 Tablolar: {}",
+                 Tables: {}",
                 d.hijack_rules.len(),
                 d.hijack_rules.iter().map(|h| h.table.as_str())
                     .collect::<Vec<_>>().join(", ")));
@@ -457,15 +458,11 @@ impl Helper {
     }
 }
 
-/// Runs `waydroid shell -- <argv>` and returns cleaned stdout.
-///
-/// The "--" separator is MANDATORY: waydroid shell uses argparse and swallows
-/// aksi halde yutar.
 /// Validates a logcat buffer name against a fixed list.
 ///
 /// Accepting free text would mean the argument reaches the command line. The
-/// string RETURNED from the fixed list is used; the input itself never is.
-/// komuta gitmez.
+/// string RETURNED from the fixed list is used; the caller-supplied input
+/// itself never reaches a command.
 fn valid_log_buffer(b: &str) -> Option<&'static str> {
     match b {
         "main" => Some("main"),

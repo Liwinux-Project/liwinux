@@ -30,7 +30,7 @@ pub(crate) async fn pick_layer(h: &HelperClient, pkg: &str) -> Result<String> {
 
     for c in &cands {
         let n = probe(h, c).await;
-        println!("  aday: {:<60} -> {n} kare", &c[..c.len().min(60)]);
+        println!("  candidate: {:<60} -> {n} frames", &c[..c.len().min(60)]);
         if n > 5 { return Ok((*c).to_string()); }
     }
     anyhow::bail!(

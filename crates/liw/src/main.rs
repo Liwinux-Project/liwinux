@@ -16,7 +16,7 @@ const BUS_NAME: &str = "id.liwinux.Manager1";
 const OBJ_PATH: &str = "/id/liwinux/Manager1";
 
 #[derive(Parser)]
-#[command(name = "liw", version, about = "liwinux — Linux'ta Android oyun platformu")]
+#[command(name = "liw", version, about = "liwinux — an Android gaming layer for Linux")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -148,7 +148,7 @@ enum KeymapAction {
     },
     /// Coordinate sweep: measure which points reach the window
     Sweep {
-        /// Eksen: x veya y
+        /// Axis: x or y
         #[arg(default_value = "x")]
         axis: char,
         /// Number of points

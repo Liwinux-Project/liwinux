@@ -288,7 +288,7 @@ fn report(fd: &FrameData, host: &[(f64, HostSample)], sink: &LogSink,
         }
         for (t, d) in &fd_stalls {
             if stalls.iter().any(|s| (s.start_ms - t).abs() < 2000.0) { continue; }
-            println!("  {:.1} sn (kare verisinden)", d / 1000.0);
+            println!("  {:.1} s (from frame data)", d / 1000.0);
             let ev: Vec<&LogEvent> = sink.events.iter()
                 .filter(|e| e.t_ms >= t - 500.0 && e.t_ms <= t + d + 500.0)
                 .collect();

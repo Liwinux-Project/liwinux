@@ -15,8 +15,8 @@
 
 use std::collections::BTreeSet;
 
-/// Invalid timestamp bound. SurfaceFlinger writes a huge sentinel for frames
-/// 0 veya INT64_MAX yazar.
+/// Invalid timestamp bound. SurfaceFlinger writes 0 or INT64_MAX for frames
+/// it has not presented yet.
 const INVALID_MAX: i64 = i64::MAX / 2;
 
 /// A single `--latency` snapshot.
@@ -368,7 +368,7 @@ mod tests {
     fn rejects_invalid_timestamps() {
         let raw = format!("5555555\n0 0 0\n1 {} 1\n100 200 300\n", i64::MAX);
         let s = parse_latency(&raw).unwrap();
-        assert_eq!(s.presents, vec![200], "0 ve INT64_MAX elenmeli");
+        assert_eq!(s.presents, vec![200], "0 and INT64_MAX must be filtered out");
     }
 
     #[test]

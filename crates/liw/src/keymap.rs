@@ -330,7 +330,7 @@ pub async fn watch(device: Option<PathBuf>) -> Result<()> {
             .collect(),
     };
     if targets.is_empty() {
-        println!("Dinlenecek cihaz yok.");
+        println!("No device to listen to.");
         return Ok(());
     }
 
@@ -408,7 +408,7 @@ pub async fn detect(save: bool, mouse_mode: bool, hotkey_mode: bool) -> Result<(
     if mouse_mode {
         println!("Listening to {} candidates. MOVE YOUR MOUSE NOW...", cands.len());
     } else if hotkey_mode {
-        println!("{} aday dinleniyor.", cands.len());
+        println!("listening on {} candidates.", cands.len());
         println!("PRESS THE KEY YOU WANT AS THE GAME-MODE HOTKEY NOW...");
         println!("(pick a key you do not use in the game)");
     } else {
@@ -548,7 +548,7 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
     let cfg = liw_core::Config::load();
     let device = cfg.keyboard.clone()
         .or_else(|| capture::best_keyboard(&devs).map(|d| d.path.clone()))
-        .context("klavye yok — 'liw keymap detect --save' ile kalibre et")?;
+        .context("no keyboard — calibrate it with 'liw keymap detect --save'")?;
     let dev_name = devs.iter().find(|d| d.path == device)
         .map(|d| d.name.clone()).unwrap_or_default();
 
@@ -702,7 +702,7 @@ pub async fn daemon_status() -> Result<()> {
 
     println!("Running      : {}", if st.running { "yes" } else { "no" });
     println!("Foreground   : {}", st.foreground.as_deref().unwrap_or("-"));
-    println!("Etkin profil : {}", st.active_profile.as_deref().unwrap_or("yok"));
+    println!("Active profile : {}", st.active_profile.as_deref().unwrap_or("none"));
     println!("Game mode    : {}", if st.game_mode { "ON" } else { "off (mouse free)" });
     println!("Host focus   : {}", if st.host_focused { "Waydroid" } else { "another window" });
     println!("Grab         : {}", if st.grabbed { "on" } else { "off" });

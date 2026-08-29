@@ -632,7 +632,7 @@ mod tests {
             "  10.5  1  1 I ActivityManager: Start proc 123",
             "",
         ] {
-            assert!(parse_line(l, 0.0, 0.0).is_none(), "elenmeliydi: {l}");
+            assert!(parse_line(l, 0.0, 0.0).is_none(), "should have been filtered out: {l}");
         }
     }
 

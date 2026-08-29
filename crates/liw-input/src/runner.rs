@@ -38,7 +38,7 @@ pub enum RunnerError {
 
 #[derive(Debug, Clone)]
 pub struct RunnerConfig {
-    /// Dinlenecek klavye.
+    /// Keyboard to listen on.
     pub device: PathBuf,
     /// Mouse to listen on. Without it mouse mapping (Aim, buttons) does not work.
     pub mouse: Option<PathBuf>,
@@ -254,7 +254,7 @@ impl Runner {
         };
 
         let mut engine: Option<Engine> = None;
-        // Etkin profil, motordan AYRI tutulur: odak kaybolunca motoru
+        // The active profile is kept SEPARATE from the engine: we
         // tear the engine down on focus loss but must not forget the profile,
         // so it can be rebuilt when focus returns.
         let mut profile: Option<crate::profile::Profile> = None;

@@ -43,7 +43,8 @@ impl Handle {
 
     /// Acquires the touch pipe; WAITS a while if it is not ready.
     ///
-    /// Tek denemek yetmiyor. `waydroid.display_width`'i hwcomposer ancak
+    /// One attempt is not enough. hwcomposer only publishes
+    /// `waydroid.display_width`
     /// on the first hotplug; right after a session start that takes a few
     /// seconds. This actually happened: after `liw session restart` the
     /// keymapper silently fell back to uinput every time and aim stayed in

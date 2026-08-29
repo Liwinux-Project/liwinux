@@ -89,7 +89,7 @@ fn report(findings: &[Finding]) {
     println!("\n  Performance diagnosis\n  {}", "─".repeat(60));
     for f in findings {
         let (mark, label) = match f.status {
-            Status::Optimal => ("✓", "hedefte"),
+            Status::Optimal => ("✓", "on target"),
             Status::Improvable => ("!", "improvable"),
             Status::Unavailable => ("·", "not available here"),
         };

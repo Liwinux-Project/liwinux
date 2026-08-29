@@ -192,7 +192,7 @@ async fn main() -> Result<()> {
         } else if c.keyboard.is_none() {
             tracing::warn!(
                 "keymapper not started: no keyboard configured \
-                 — `liw keymap detect --save` ile kalibre et");
+                 — calibrate it with `liw keymap detect --save`");
         } else if let Err(e) = km.start(true).await {
             tracing::error!(error = %e, "could not autostart the keymapper");
         }
