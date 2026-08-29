@@ -7,6 +7,7 @@
 pub mod bench;
 pub mod perf;
 pub mod config;
+pub mod error;
 pub mod hostsample;
 pub mod helper;
 pub mod host;
@@ -20,6 +21,7 @@ pub mod video;
 pub mod waydroid;
 
 pub use config::Config;
+pub use error::{Error, Result as LiwResult};
 pub use helper::{HelperClient, HelperError};
 pub use polkit::{check as polkit_check, valid_prop_key, PolkitError};
 pub use session::{Health, SessionState, Supervisor, SupervisorConfig};

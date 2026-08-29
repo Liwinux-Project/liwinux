@@ -29,11 +29,22 @@ pub struct Handle {
     inner: Mutex<Option<Running>>,
     /// Window size; handed to the engine as an aspect ratio at startup.
     screen_px: Mutex<(u32, u32)>,
+    /// Where runner events are forwarded so they can leave the daemon.
+    ///
+    /// They used to end in the log only. A UI cannot poll fast enough to
+    /// see a game-mode toggle, and polling `KeymapperStatus` at that rate
+    /// would be wasteful — these events are exactly what a status bar
+    /// needs, so they must be pushed.
+    events: mpsc::Sender<RunnerEvent>,
 }
 
 impl Handle {
-    pub fn new() -> Self {
-        Self { inner: Mutex::new(None), screen_px: Mutex::new((2560, 1440)) }
+    pub fn new(events: mpsc::Sender<RunnerEvent>) -> Self {
+        Self {
+            inner: Mutex::new(None),
+            screen_px: Mutex::new((2560, 1440)),
+            events,
+        }
     }
 
     /// Updated as the window geometry changes.
@@ -197,18 +208,21 @@ impl Handle {
             }
         });
 
+        let sink = self.events.clone();
         let log = tokio::spawn(async move {
             while let Some(e) = ev_rx.recv().await {
+                let e2 = e.clone();
                 match e {
                     RunnerEvent::ProfileActivated { package, profile } =>
-                        tracing::info!(paket = %package, %profile, "profil etkin"),
+                        tracing::info!(package = %package, %profile,
+                                       "profile active"),
                     RunnerEvent::ProfileCleared { package } =>
                         tracing::info!(package = %package, "no profile — mapping off"),
                     RunnerEvent::OverlayPaused { package } => tracing::warn!(
-                        paket = %package,
+                        package = %package,
                         "a system layer came over the game — mapping paused, \
-                         fare serbest"),
-                    RunnerEvent::Grabbed => tracing::info!("cihaz kilitlendi"),
+                         mouse free"),
+                    RunnerEvent::Grabbed => tracing::info!("device grabbed"),
                     RunnerEvent::Ungrabbed => tracing::info!("device grab released"),
                     RunnerEvent::GameModeOn =>
                         tracing::info!("game mode ON — grab + mapping"),
@@ -219,7 +233,14 @@ impl Handle {
                     RunnerEvent::FocusLost =>
                         tracing::info!("Waydroid not focused — mapping off"),
                     RunnerEvent::EscapeRequested =>
-                        tracing::info!("ESC ×3 — keymapper durduruluyor"),
+                        tracing::info!("ESC ×3 — stopping the keymapper"),
+                }
+                // Forward outwards. `try_send` on purpose: a slow or absent
+                // consumer must never stall the input path, and a dropped
+                // status update is recoverable — the properties still carry
+                // the current truth.
+                if sink.try_send(e2).is_err() {
+                    tracing::debug!("event sink full or closed — dropped");
                 }
             }
         });

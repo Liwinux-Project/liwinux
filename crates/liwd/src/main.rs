@@ -8,7 +8,8 @@ mod keymapper;
 mod window;
 
 use anyhow::Result;
-use liw_core::{Health, SessionState, Supervisor, SupervisorConfig};
+use liw_core::input::RunnerEvent;
+use liw_core::{Error, Health, SessionState, Supervisor, SupervisorConfig};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use zbus::{connection, interface};
@@ -34,24 +35,29 @@ struct Manager {
     state: Arc<RwLock<SessionState>>,
     km: Arc<keymapper::Handle>,
     win: Arc<window::WindowState>,
+    /// Last health computed by the supervision loop.
+    ///
+    /// Cached on purpose. `Supervisor::health()` shells out to
+    /// `waydroid status` and asks the helper for `sys.boot_completed`
+    /// over lxc-attach; it costs hundreds of milliseconds. A UI that
+    /// polls it once a second would keep the machine busy doing nothing.
+    /// The loop already computes it every 5 s — serve that.
+    health: Arc<RwLock<Health>>,
 }
 
 #[interface(name = "id.liwinux.Manager1")]
 impl Manager {
     /// Starts the session detached. A no-op if it is already running.
-    async fn start(&self) -> zbus::fdo::Result<()> {
-        self.sup.start_detached().await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    async fn start(&self) -> Result<(), Error> {
+        self.sup.start_detached().await.map_err(|e| Error::Failed(e.to_string()))
     }
 
-    async fn stop(&self) -> zbus::fdo::Result<()> {
-        self.sup.stop().await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    async fn stop(&self) -> Result<(), Error> {
+        self.sup.stop().await.map_err(|e| Error::Failed(e.to_string()))
     }
 
-    async fn restart(&self) -> zbus::fdo::Result<()> {
-        self.sup.recover().await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    async fn restart(&self) -> Result<(), Error> {
+        self.sup.recover().await.map_err(|e| Error::Failed(e.to_string()))
     }
 
     /// The last state observed by the supervisor.
@@ -60,31 +66,97 @@ impl Manager {
         self.state.read().await.as_str().to_string()
     }
 
-    /// Detailed health as JSON. Reports each signal separately, because
-    /// "not working" alone is not enough to diagnose.
-    async fn health(&self) -> zbus::fdo::Result<String> {
+    /// Detailed health as JSON, MEASURED NOW.
+    ///
+    /// Costly (see `Manager::health`); for continuous display use the
+    /// `HealthJson` property instead, which the loop keeps fresh.
+    async fn health(&self) -> Result<String, Error> {
         let h: Health = self.sup.health().await;
-        serde_json::to_string(&h).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+        *self.health.write().await = h.clone();
+        serde_json::to_string(&h).map_err(Error::from)
     }
+
+    /// Cached health as JSON; refreshed by the supervision loop and
+    /// announced with a change signal. Free to read.
+    #[zbus(property)]
+    async fn health_json(&self) -> String {
+        serde_json::to_string(&*self.health.read().await).unwrap_or_default()
+    }
+
+    /// Is game mode on (grab + mapping active)?
+    #[zbus(property)]
+    async fn game_mode(&self) -> bool { self.km.state().await.game_mode }
+
+    /// Are the input devices grabbed right now?
+    #[zbus(property)]
+    async fn grabbed(&self) -> bool { self.km.state().await.grabbed }
+
+    /// Is the Waydroid window focused on the host?
+    #[zbus(property)]
+    async fn host_focused(&self) -> bool { self.km.state().await.host_focused }
+
+    /// Active profile name; empty when there is none.
+    ///
+    /// Empty rather than absent: D-Bus has no null, and an "absent" flag
+    /// alongside would be one more thing for a client to get wrong.
+    #[zbus(property)]
+    async fn active_profile(&self) -> String {
+        self.km.state().await.active_profile.unwrap_or_default()
+    }
+
+    /// Foreground Android package; empty when unknown.
+    #[zbus(property)]
+    async fn foreground_package(&self) -> String {
+        self.km.state().await.foreground.unwrap_or_default()
+    }
+
+    /// A transient keymapper event.
+    ///
+    /// Only for things that are NOT state: a system overlay covering the
+    /// game, an escape request. Everything durable is a property, so a
+    /// client that misses a signal can still read the truth.
+    #[zbus(signal)]
+    async fn keymapper_event(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        kind: &str, detail: &str,
+    ) -> zbus::Result<()>;
 
     /// Starts the keymapper. A no-op if it is already running.
     ///
     /// With `grab` true the device is grabbed ONLY while a profile is active;
     /// released on exit. A non-working keyboard on the desktop is unacceptable.
-    async fn start_keymapper(&self, grab: bool) -> zbus::fdo::Result<()> {
-        self.km.start(grab).await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    async fn start_keymapper(
+        &self, grab: bool,
+        #[zbus(signal_emitter)] em: zbus::object_server::SignalEmitter<'_>,
+    ) -> Result<(), Error> {
+        self.km.start(grab).await.map_err(|e| Error::Failed(e.to_string()))?;
+        // Announce HERE, not from the event forwarder.
+        //
+        // The forwarder only runs once the runner emits something, and a
+        // keymapper that started with no game in the foreground emits
+        // nothing for a while. A UI would show it as stopped until the
+        // first unrelated event happened to arrive.
+        let _ = self.keymapper_running_changed(&em).await;
+        Ok(())
     }
 
-    async fn stop_keymapper(&self) -> zbus::fdo::Result<()> {
+    async fn stop_keymapper(
+        &self,
+        #[zbus(signal_emitter)] em: zbus::object_server::SignalEmitter<'_>,
+    ) -> Result<(), Error> {
         self.km.stop().await;
+        // On stop the runner is gone, so no event will ever follow.
+        let _ = self.keymapper_running_changed(&em).await;
+        let _ = self.game_mode_changed(&em).await;
+        let _ = self.grabbed_changed(&em).await;
+        let _ = self.active_profile_changed(&em).await;
         Ok(())
     }
 
     /// Window-geometry feedback from the KWin script.
     async fn report_window_geometry(
         &self, found: bool, x: i32, y: i32, width: i32, height: i32, fullscreen: bool,
-    ) -> zbus::fdo::Result<()> {
+    ) -> Result<(), Error> {
         self.win.set(window::WindowGeometry {
             found, x, y, width, height, fullscreen,
         }).await;
@@ -96,21 +168,20 @@ impl Manager {
     }
 
     /// Tries to make the Waydroid window fullscreen.
-    async fn fullscreen(&self) -> zbus::fdo::Result<bool> {
+    async fn fullscreen(&self) -> Result<bool, Error> {
         Ok(window::fullscreen_with_retry(
             self.win.clone(), 5, std::time::Duration::from_millis(700)).await)
     }
 
     /// Raises and focuses the Waydroid window.
-    async fn activate_window(&self) -> zbus::fdo::Result<()> {
-        window::activate().await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    async fn activate_window(&self) -> Result<(), Error> {
+        window::activate().await.map_err(|e| Error::NoWindow(e.to_string()))
     }
 
     /// Window geometry (JSON).
-    async fn window_geometry(&self) -> zbus::fdo::Result<String> {
+    async fn window_geometry(&self) -> Result<String, Error> {
         let g = self.win.get().await;
-        serde_json::to_string(&g).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+        Ok(serde_json::to_string(&g)?)
     }
 
     /// Callback invoked by the KWin script: which window has focus.
@@ -118,7 +189,7 @@ impl Manager {
     /// Android does not know the window was minimised; without this the mapping
     /// keeps running with the game in the background and touches land on the
     /// desktop.
-    async fn set_active_window(&self, class: &str) -> zbus::fdo::Result<()> {
+    async fn set_active_window(&self, class: &str) -> Result<(), Error> {
         self.km.set_active_window(class).await;
 
         // Make the window fullscreen the FIRST time it activates.
@@ -144,9 +215,9 @@ impl Manager {
     }
 
     /// Keymapper state as JSON: running, foreground, active profile, latency.
-    async fn keymapper_status(&self) -> zbus::fdo::Result<String> {
+    async fn keymapper_status(&self) -> Result<String, Error> {
         let st = self.km.state().await;
-        serde_json::to_string(&st).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+        Ok(serde_json::to_string(&st)?)
     }
 
     #[zbus(property)]
@@ -154,10 +225,67 @@ impl Manager {
         self.km.state().await.running
     }
 
-    async fn status(&self) -> zbus::fdo::Result<String> {
+    async fn status(&self) -> Result<String, Error> {
         let s = self.sup.status().await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        serde_json::to_string(&s).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+            .map_err(|e| Error::NoSession(e.to_string()))?;
+        Ok(serde_json::to_string(&s)?)
+    }
+}
+
+/// Forwards keymapper events onto the bus.
+///
+/// Two shapes, on purpose. Transient things (an overlay covering the game,
+/// an escape request) go out as a SIGNAL because there is no state to read
+/// afterwards. Durable things (game mode, grab, focus, active profile) go
+/// out as PROPERTY changes, so a client that missed a signal — or that just
+/// connected — can still read the truth.
+///
+/// Only fields that actually changed are announced; zbus does not diff, and
+/// re-announcing everything on every event would make a UI redraw
+/// constantly during normal play.
+async fn emit_keymapper(
+    iface: zbus::object_server::InterfaceRef<Manager>,
+    km: Arc<keymapper::Handle>,
+    mut rx: tokio::sync::mpsc::Receiver<RunnerEvent>,
+) {
+    let mut last = km.state().await;
+    while let Some(ev) = rx.recv().await {
+        let (kind, detail) = match &ev {
+            RunnerEvent::ProfileActivated { package, profile } =>
+                ("profile-activated", format!("{package}\t{profile}")),
+            RunnerEvent::ProfileCleared { package } =>
+                ("profile-cleared", package.clone()),
+            RunnerEvent::OverlayPaused { package } =>
+                ("overlay-paused", package.clone()),
+            RunnerEvent::Grabbed => ("grabbed", String::new()),
+            RunnerEvent::Ungrabbed => ("ungrabbed", String::new()),
+            RunnerEvent::GameModeOn => ("game-mode-on", String::new()),
+            RunnerEvent::GameModeOff => ("game-mode-off", String::new()),
+            RunnerEvent::FocusGained => ("focus-gained", String::new()),
+            RunnerEvent::FocusLost => ("focus-lost", String::new()),
+            RunnerEvent::EscapeRequested => ("escape-requested", String::new()),
+        };
+        let em = iface.signal_emitter();
+        if let Err(e) = Manager::keymapper_event(em, kind, &detail).await {
+            tracing::debug!(error = %e, "could not emit keymapper event");
+        }
+
+        let now = km.state().await;
+        let m = iface.get().await;
+        if now.running != last.running { let _ = m.keymapper_running_changed(em).await; }
+        if now.game_mode != last.game_mode { let _ = m.game_mode_changed(em).await; }
+        if now.grabbed != last.grabbed { let _ = m.grabbed_changed(em).await; }
+        if now.host_focused != last.host_focused {
+            let _ = m.host_focused_changed(em).await;
+        }
+        if now.active_profile != last.active_profile {
+            let _ = m.active_profile_changed(em).await;
+        }
+        if now.foreground != last.foreground {
+            let _ = m.foreground_package_changed(em).await;
+        }
+        drop(m);
+        last = now;
     }
 }
 
@@ -170,17 +298,29 @@ async fn main() -> Result<()> {
     let cfg = SupervisorConfig::default();
     let sup = Arc::new(Supervisor::new(cfg.clone()).with_helper().await);
     let state = Arc::new(RwLock::new(SessionState::Stopped));
-    let km = Arc::new(keymapper::Handle::new());
+    // Capacity 64: bursts happen (profile change + grab + focus in one go)
+    // and the sender drops rather than blocking, so a little slack keeps
+    // status updates from being lost during normal transitions.
+    let (ev_tx, ev_rx) = tokio::sync::mpsc::channel::<RunnerEvent>(64);
+    let km = Arc::new(keymapper::Handle::new(ev_tx));
     let win = window::WindowState::new();
+    let health = Arc::new(RwLock::new(Health::default()));
 
     let conn = connection::Builder::session()?
         .name(BUS_NAME)?
         .serve_at(OBJ_PATH, Manager {
             sup: sup.clone(), state: state.clone(),
-            km: km.clone(), win: win.clone(),
+            km: km.clone(), win: win.clone(), health: health.clone(),
         })?
         .build()
         .await?;
+
+    // Push keymapper state outwards. Without this a UI has to poll
+    // `KeymapperStatus`, and a game-mode toggle would show up whenever the
+    // next poll happened to land rather than when it happened.
+    let iface = conn.object_server()
+        .interface::<_, Manager>(OBJ_PATH).await?;
+    tokio::spawn(emit_keymapper(iface.clone(), km.clone(), ev_rx));
     tracing::info!("liwd ready — {BUS_NAME} {OBJ_PATH}");
 
     // Start the keymapper automatically.
@@ -250,6 +390,18 @@ async fn main() -> Result<()> {
                 kern_tick = kern_tick.wrapping_add(1);
 
                 let h = sup.health().await;
+                // Serve the cached copy to clients and announce a change
+                // only when it actually differs; a UI bound to this must
+                // not redraw every five seconds for nothing.
+                {
+                    let mut slot = health.write().await;
+                    if *slot != h {
+                        *slot = h.clone();
+                        drop(slot);
+                        let m = iface.get().await;
+                        let _ = m.health_json_changed(iface.signal_emitter()).await;
+                    }
+                }
                 let next = if !h.session_running {
                     unhealthy = 0; attempts = 0;
                     if was_running { win.reset().await; }
@@ -300,7 +452,18 @@ async fn main() -> Result<()> {
                         failures = ?h.failures(), "session unhealthy");
                     SessionState::Degraded
                 };
-                *state.write().await = next;
+                // Announce session-state transitions. The property was
+                // already declared as emits-change but nothing ever emitted,
+                // so a client saw the first value and never an update.
+                {
+                    let mut slot = state.write().await;
+                    if *slot != next {
+                        *slot = next;
+                        drop(slot);
+                        let m = iface.get().await;
+                        let _ = m.state_changed(iface.signal_emitter()).await;
+                    }
+                }
 
                 // Threshold: do not restart on a single dip.
                 if cfg.auto_recover
@@ -309,7 +472,11 @@ async fn main() -> Result<()> {
                 {
                     attempts += 1;
                     tracing::error!(attempt = attempts, "starting recovery");
-                    *state.write().await = SessionState::Recovering;
+                    {
+                        *state.write().await = SessionState::Recovering;
+                        let m = iface.get().await;
+                        let _ = m.state_changed(iface.signal_emitter()).await;
+                    }
                     if let Err(e) = sup.recover().await {
                         tracing::error!(error = %e, "recovery failed");
                     }
