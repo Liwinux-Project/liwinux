@@ -281,6 +281,43 @@ impl AppState {
         .detach();
     }
 
+    /// Asks for an APK and installs it.
+    ///
+    /// A picker rather than a text field: the path is the one thing a person
+    /// cannot be expected to type correctly, and the daemon rejects anything
+    /// that is not a readable .apk anyway.
+    pub fn pick_and_install(&mut self, cx: &mut Context<Self>) {
+        self.error = None;
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true, directories: false, multiple: false, prompt: None,
+        });
+        cx.spawn(async move |this, cx| {
+            let picked = match paths.await {
+                Ok(Ok(Some(p))) => p.into_iter().next(),
+                _ => None,
+            };
+            let Some(path) = picked else { return };
+            let path = path.display().to_string();
+            let _ = this.update(cx, |s, cx| {
+                s.busy = Some("install");
+                cx.notify();
+            });
+            let r = match Manager::connect().await {
+                Ok(m) => m.install_apk(&path).await.err().map(|e| e.to_string()),
+                Err(e) => Some(e.to_string()),
+            };
+            let _ = this.update(cx, |s, cx| {
+                s.busy = None;
+                s.error = r;
+                cx.notify();
+            });
+            // The library is read from Waydroid's desktop entries, which it
+            // writes a moment after the install finishes.
+            let _ = this.update(cx, |s, cx| s.reload(cx));
+        })
+        .detach();
+    }
+
     pub fn session(&mut self, start: bool, cx: &mut Context<Self>) {
         self.error = None;
         self.busy = Some(if start { "session-start" } else { "session-stop" });

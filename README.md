@@ -345,6 +345,17 @@ and not something a client can reproduce.
 anything. Owning downloads, signatures and updates would mean rebuilding
 what the store already does properly.
 
+A **Where games come from** row names the real sources — Play Store,
+Aurora Store, or an APK you already have — with a file picker for the
+last one.
+
+liwinux will not grow a Play catalogue of its own. Browsing Play needs
+Play API auth, which means either the user's own Google credentials or
+somebody else's pooled anonymous accounts. Aurora Store solves that in a
+client built to ask that question, and quietly borrowing its token
+dispenser to power a different product would be leeching infrastructure
+somebody else pays for — and one outage away from a dead front page.
+
 ## Control plane
 
 `liwd` owns the session and exposes it on the session bus as

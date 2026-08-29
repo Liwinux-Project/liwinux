@@ -33,6 +33,8 @@ pub fn render(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyE
         .size_full()
         .gap(px(S4))
         .overflow_y_scroll()
+        .child(sources(s, t, cx))
+        // The heading sits with its list, not above the section before it.
         .child(
             div()
                 .flex()
@@ -40,15 +42,14 @@ pub fn render(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyE
                 .gap(px(S1))
                 .child(
                     div()
-                        .text_size(px(18.0))
+                        .text_size(px(15.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .child("Tested games"),
                 )
                 .child(
-                    div().text_size(px(12.0)).text_color(t.text_faint).child(
+                    div().text_size(px(11.0)).text_color(t.text_faint).child(
                         "Titles liwinux ships a key mapping for — someone has \
-                         actually tuned these. Installing goes through the Play \
-                         Store.",
+                         actually tuned these.",
                     ),
                 ),
         )
@@ -63,6 +64,119 @@ pub fn render(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyE
                 .into_any_element()
         } else {
             div().flex().flex_col().gap(px(S2)).children(rows).into_any_element()
+        })
+        .into_any_element()
+}
+
+/// Where games actually come from.
+///
+/// liwinux does not run a catalogue and will not: a browsable Play catalogue
+/// needs Play API auth, which means either the user's Google credentials or
+/// somebody else's pooled accounts. Aurora Store solves that properly, in a
+/// client built to ask that question — so the answer is to point at it, not
+/// to reimplement it here and quietly borrow its token dispenser.
+fn sources(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyElement {
+    let has = |p: &str| s.apps.iter().any(|a| a.package == p);
+    let play = has("com.android.vending");
+    let aurora = has("com.aurora.store");
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(S2))
+        .child(
+            div()
+                .text_size(px(15.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child("Where games come from"),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(S2))
+                .child(source_card(
+                    "src-play", "Play Store",
+                    if play { "Installed — browse and install there" }
+                    else { "Not installed on this image" },
+                    play.then(|| "com.android.vending".to_string()),
+                    t, cx,
+                ))
+                .child(source_card(
+                    "src-aurora", "Aurora Store",
+                    if aurora { "Installed — full catalogue, no Google account needed" }
+                    else { "Not installed — get the APK from auroraoss.com, then \
+                            Install APK below" },
+                    aurora.then(|| "com.aurora.store".to_string()),
+                    t, cx,
+                ))
+                .child(
+                    div()
+                        .id("src-apk")
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .gap(px(S1))
+                        .p(px(S3))
+                        .rounded(px(RADIUS + 2.0))
+                        .border_dashed()
+                        .border_1()
+                        .border_color(t.border)
+                        .cursor_pointer()
+                        .hover(|x| x.border_color(t.accent.opacity(0.6)).bg(t.surface))
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(t.text)
+                                .child("Install an APK…"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(t.text_faint)
+                                .child("Pick a file you already downloaded"),
+                        )
+                        .on_click(cx.listener(|st, _, _, cx| st.pick_and_install(cx))),
+                ),
+        )
+        .into_any_element()
+}
+
+fn source_card(
+    id: &'static str, title: &'static str, note: &str,
+    open: Option<String>, t: &Theme, cx: &mut Context<AppState>,
+) -> gpui::AnyElement {
+    let clickable = open.is_some();
+    div()
+        .id(id)
+        .flex_1()
+        .flex()
+        .flex_col()
+        .gap(px(S1))
+        .p(px(S3))
+        .rounded(px(RADIUS + 2.0))
+        .bg(t.surface)
+        .border_1()
+        .border_color(t.border)
+        .when(clickable, |e| {
+            e.cursor_pointer().hover(|x| x.border_color(t.accent.opacity(0.6)))
+        })
+        .child(
+            div()
+                .text_size(px(13.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(if clickable { t.text } else { t.text_muted })
+                .child(title),
+        )
+        .child(
+            div()
+                .text_size(px(11.0))
+                .text_color(t.text_faint)
+                .child(SharedString::from(note.to_string())),
+        )
+        .when_some(open, |el, pkg| {
+            el.on_click(cx.listener(move |st, _, _, cx| st.launch(pkg.clone(), cx)))
         })
         .into_any_element()
 }

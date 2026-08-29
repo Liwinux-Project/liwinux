@@ -144,6 +144,36 @@ impl Manager {
         Ok(())
     }
 
+    /// Installs an APK the user pointed at.
+    ///
+    /// The path comes from the caller, so it is checked here rather than
+    /// trusted: a UI file picker cannot hand us something else, but the bus
+    /// is open to anything on the session and the error should say what is
+    /// wrong instead of letting `waydroid` fail obscurely.
+    async fn install_apk(&self, path: &str) -> Result<(), Error> {
+        let p = std::path::Path::new(path);
+        if !p.is_file() {
+            return Err(Error::Invalid(format!("no such file: {path}")));
+        }
+        if !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("apk")) {
+            return Err(Error::Invalid("not an .apk".into()));
+        }
+        if !self.health.read().await.session_running {
+            return Err(Error::NoSession(
+                "the session is stopped — start it before installing".into()));
+        }
+        let out = tokio::process::Command::new("waydroid")
+            .args(["app", "install", path])
+            .stdin(std::process::Stdio::null())
+            .output().await
+            .map_err(|e| Error::Failed(e.to_string()))?;
+        if !out.status.success() {
+            return Err(Error::Failed(format!(
+                "install failed: {}", String::from_utf8_lossy(&out.stderr).trim())));
+        }
+        Ok(())
+    }
+
     /// Opens an app's Play Store page inside Android.
     ///
     /// There is no catalogue of our own to install from, and there will not
