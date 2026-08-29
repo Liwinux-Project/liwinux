@@ -66,21 +66,21 @@ impl Handle {
                 Err(e) => {
                     last = e.to_string();
                     if i == 0 {
-                        tracing::info!(hata = %last,
+                        tracing::info!(error = %last,
                             "touch pipe not ready yet, waiting");
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
         }
-        tracing::warn!(hata = %last, deneme = TRIES,
+        tracing::warn!(error = %last, attempts = TRIES,
             "could not acquire the touch pipe — falling back to uinput. \
              Aim will run in BOUNDED mode: the finger is reset at the screen \
              edge and fast turns lose rotation.");
         None
     }
 
-    /// KWin'den gelen odak bildirimi.
+    /// Focus notification coming from KWin.
     pub async fn set_active_window(&self, class: &str) {
         let guard = self.inner.lock().await;
         let Some(r) = guard.as_ref() else { return };
@@ -227,14 +227,14 @@ impl Handle {
         let main = tokio::spawn(async move {
             match runner.run(fg_rx, focus_rx, sd_rx, Some(ev_tx)).await {
                 Ok(lat) => tracing::info!("keymapper durdu — {}", lat.report("gecikme")),
-                Err(e) => tracing::error!(hata = %e, "keymapper hatayla durdu"),
+                Err(e) => tracing::error!(error = %e, "the keymapper stopped with an error"),
             }
         });
 
         if let Err(e) = load_kwin_script().await {
             // Not fatal but DANGEROUS: without focus information mapping never
             // turns on (it starts at focus=false). Tell the user.
-            tracing::error!(hata = %e,
+            tracing::error!(error = %e,
                 "could not load the KWin focus script — mapping will not turn on");
         }
 

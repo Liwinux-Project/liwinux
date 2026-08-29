@@ -449,7 +449,7 @@ pub async fn detect(save: bool, mouse_mode: bool, hotkey_mode: bool) -> Result<(
         _ = tokio::time::sleep(std::time::Duration::from_secs(20)) => {
             println!("Timed out — no key detected."); None
         }
-        _ = tokio::signal::ctrl_c() => { println!("iptal edildi"); None }
+        _ = tokio::signal::ctrl_c() => { println!("cancelled"); None }
     };
     set.abort_all();
 
@@ -644,7 +644,7 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
     });
 
     let lat = runner.run(fg_rx, focus_rx, sd_rx, Some(ev_tx)).await
-        .context("keymapper hatayla durdu")?;
+        .context("the keymapper stopped with an error")?;
     poll.abort();
     printer.abort();
 

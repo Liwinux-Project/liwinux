@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# DNS paketi hangi zincirde oluyor? ufw sayaclarini oku.
+# Which chain does the DNS packet die in? Read the ufw counters.
 set -u
 [ "$(id -u)" = 0 ] || { echo "root: sudo bash $0"; exit 1; }
 W() { waydroid --details-to-stdout shell -- "$@" 2>/dev/null | tr -d '\r'; }
 
-echo "=== 1. ufw kural listesi ==="
+echo "=== 1. ufw rule list ==="
 ufw status verbose 2>/dev/null | sed 's/^/  /'
 
 echo
@@ -15,7 +15,7 @@ W ping -c 1 -W 3 f-droid.org >/dev/null 2>&1
 sleep 2
 
 echo
-echo "=== 3. ufw-user-input (bizim 53 kuralimiz eslesti mi) ==="
+echo "=== 3. ufw-user-input (did our port 53 rule match) ==="
 iptables -L ufw-user-input -n -v --line-numbers 2>/dev/null | sed 's/^/  /'
 
 echo
@@ -34,9 +34,9 @@ echo "=== 6. INPUT zinciri genel ==="
 iptables -L INPUT -n -v 2>/dev/null | head -12 | sed 's/^/  /'
 
 echo
-echo "=== 7. nft: 53 iceren TUM kurallar (ufw disi tablolar dahil) ==="
+echo "=== 7. nft: EVERY rule mentioning 53 (including non-ufw tables) ==="
 nft list ruleset 2>/dev/null | grep -nE "dport (53|\{ ?53|.*53 ?\})" | head -20 | sed 's/^/  /'
 
 echo
-echo "=== 8. Diger tablolar hangi hooklarda? (cakisma avi) ==="
+echo "=== 8. Which hooks do the other tables sit on? (hunting for a clash) ==="
 nft list tables 2>/dev/null | sed 's/^/  /'

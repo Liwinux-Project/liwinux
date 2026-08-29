@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# liwinux PoC 1 dogrulama — GPU + ARM ceviri AYNI ANDA calisiyor mu?
+# liwinux PoC 1 verification - do GPU and ARM translation work AT THE SAME TIME?
 set -u
 W() { waydroid --details-to-stdout shell "$@" 2>/dev/null | tr -d '\r'; }
 S() { echo; echo "=== $* ==="; }
@@ -23,17 +23,17 @@ for p in ro.product.cpu.abilist ro.dalvik.vm.native.bridge ro.enable.native.brid
   printf "  %-32s = %s\n" "$p" "$(W getprop $p | tail -1)"
 done
 
-S "5. libhoudini dosyalari yerinde mi"
+S "5. Are the libhoudini files in place"
 W ls -la /system/lib64/libhoudini.so /system/lib/libhoudini.so
 W sh -c 'ls /system/lib64/arm64/ 2>/dev/null | head -5'
 
-S "6. ARM64 kodu GERCEKTEN calisiyor mu? (KRITIK-3)"
-echo "  -- houdini ile arm64 binary calistirma denemesi --"
-W sh -c '/system/bin/houdini64 --version 2>&1 || echo "houdini64 yok/calismadi"'
+S "6. Does ARM64 code ACTUALLY run? (CRITICAL-3)"
+echo "  -- trying to run an arm64 binary through houdini --"
+W sh -c '/system/bin/houdini64 --version 2>&1 || echo "houdini64 missing or did not run"'
 echo "  -- package manager ABI gorusu --"
 W sh -c 'pm get-install-location; getprop ro.product.cpu.abilist64'
 
-S "7. Hata avi (logcat)"
+S "7. Error hunt (logcat)"
 timeout 10 waydroid --details-to-stdout shell logcat -d 2>/dev/null | tr -d '\r' \
   | grep -iE "houdini|native.?bridge|venus|angle|vulkan|E ANGLE|FATAL" | tail -30
 

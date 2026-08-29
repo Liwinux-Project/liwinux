@@ -932,7 +932,7 @@ mod tests {
 
     fn aim_profile() -> Profile {
         let mut b = BTreeMap::new();
-        b.insert("nisan".into(), Binding::Aim {
+        b.insert("aim".into(), Binding::Aim {
             toggle: Some(Trigger::MouseRight),
             origin: Norm::new(0.5, 0.5),
             sensitivity: 0.001,
@@ -1424,7 +1424,7 @@ mod tests {
         let _ = e.tick(10);
         let a = e.handle(InputEvent::Press(key(A)));
         assert!(matches!(a[..], [TouchAction::Down { .. }]),
-                "grupsuz jest iptal edilmemeli: {a:?}");
+                "an ungrouped gesture must not be cancelled: {a:?}");
         assert_eq!(e.swipe_count(), 2, "both gestures must run together");
     }
 

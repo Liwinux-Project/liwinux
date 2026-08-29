@@ -3,7 +3,7 @@
 //! Takes a screenshot of the game, opens a local HTTP server and lets you edit
 //! coordinates by dragging markers in the browser.
 //!
-//! # Neden web
+//! # Why a web UI
 //!
 //! It gives real visual editing without adding a GUI library dependency. The
 //! server binds to 127.0.0.1 only and edits a single profile.

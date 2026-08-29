@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# DNS paketleri gercekten akiyor mu? nft sayaclari ile kesin test (tcpdump gerekmez)
+# Are DNS packets really flowing? A definite test using nft counters (no tcpdump needed)
 set -u
-[ "$(id -u)" = 0 ] || { echo "root gerekiyor: sudo bash $0"; exit 1; }
+[ "$(id -u)" = 0 ] || { echo "root required: sudo bash $0"; exit 1; }
 W() { waydroid --details-to-stdout shell -- "$@" 2>/dev/null | tr -d '\r'; }
 T=liwdiag
 CIP=$(waydroid status 2>/dev/null | awk -F'\t' '/IP address/{print $2}')
@@ -38,16 +38,16 @@ echo
 echo "=== DIAGNOSIS ==="
 echo "  Android'den cikan DNS sorgusu (udp): ${Q:-0}   (tcp: ${QT:-0})"
 echo "  dnsmasq'ten donen cevap            : ${R:-0}"
-echo "  Android'den WAN'a giden paket      : ${WAN:-0}"
+echo "  packets from Android towards the WAN : ${WAN:-0}"
 echo
 if [ "${Q:-0}" = 0 ] && [ "${QT:-0}" = 0 ]; then
   echo "  >> Android DNS sorgusunu HIC URETMIYOR."
   echo "     Firewall masum. Sorun Android'in resolver'inda (netd)."
-  echo "     Muhtemel: ag VALIDATED olmadigi icin uygulamalara ag atanmiyor."
+  echo "     Likely: the network is not VALIDATED, so apps are given no network."
 elif [ "${R:-0}" = 0 ]; then
   echo "  >> Sorgu cikiyor ama CEVAP DONMUYOR -> ufw INPUT veya dnsmasq."
 else
-  echo "  >> DNS akiyor. Sorun cozumlemede degil, Android validation'inda."
+  echo "  >> DNS is flowing. The problem is not resolution, it is Android validation."
 fi
 
 echo

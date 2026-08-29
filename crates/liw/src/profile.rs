@@ -149,7 +149,7 @@ pub fn install(force: bool, from: Option<std::path::PathBuf>) -> Result<()> {
             let bak = target.with_extension(format!("toml.bak-{stamp}"));
             std::fs::copy(&target, &bak)
                 .with_context(|| format!("yedeklenemedi: {}", target.display()))?;
-            println!("  yedek: {}", bak.file_name().unwrap_or_default().to_string_lossy());
+            println!("  backup: {}", bak.file_name().unwrap_or_default().to_string_lossy());
         }
         std::fs::copy(&p, &target)
             .with_context(|| format!("could not copy: {}", p.display()))?;

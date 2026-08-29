@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sanal dokunmatik ekran gercekten olusuyor ve TANINIYOR mu?
+# Does the virtual touchscreen really get created, and is it RECOGNISED?
 set -u
 S() { echo; echo "=== $* ==="; }
 
@@ -17,7 +17,7 @@ if command -v libinput >/dev/null; then
   timeout 5 sudo -n libinput list-devices 2>/dev/null | grep -B3 -A12 "liwinux" | sed 's/^/  /' \
     || echo "  (root gerekli: sudo libinput list-devices | grep -A12 liwinux)"
 else
-  echo "  libinput araci yok (paket: libinput)"
+  echo "  the libinput tool is missing (package: libinput)"
 fi
 
 S "4. KWin cihazi gordu mu"
@@ -26,5 +26,5 @@ qdbus6 org.kde.KWin /org/kde/KWin/InputDevice org.freedesktop.DBus.Properties.Ge
   || echo "  (qdbus sorgusu basarisiz)"
 
 wait $LIW 2>/dev/null
-S "5. Cihaz temizlendi mi (surec olunce kaybolmali)"
+S "5. Was the device cleaned up (it must vanish when the process dies)"
 grep -c "liwinux-virtual-touchscreen" /proc/bus/input/devices 2>/dev/null | sed 's/^/  kalan kayit: /'

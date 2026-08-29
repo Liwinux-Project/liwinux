@@ -81,7 +81,7 @@ impl Manager {
         Ok(())
     }
 
-    /// KWin script'inin pencere geometrisi geri bildirimi.
+    /// Window-geometry feedback from the KWin script.
     async fn report_window_geometry(
         &self, found: bool, x: i32, y: i32, width: i32, height: i32, fullscreen: bool,
     ) -> zbus::fdo::Result<()> {
@@ -107,7 +107,7 @@ impl Manager {
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
-    /// Pencere geometrisi (JSON).
+    /// Window geometry (JSON).
     async fn window_geometry(&self) -> zbus::fdo::Result<String> {
         let g = self.win.get().await;
         serde_json::to_string(&g).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))

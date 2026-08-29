@@ -225,7 +225,7 @@ mod tests {
         assert!(!s.note_window_gone().await, "must not reset while the window exists");
         assert!(s.fullscreen_attempted().await);
 
-        // Pencere kayboldu.
+        // The window is gone.
         s.set(WindowGeometry::default()).await;
         assert!(s.note_window_gone().await, "kapanma bildirilmeli");
         assert!(!s.fullscreen_attempted().await, "the flag must be cleared");

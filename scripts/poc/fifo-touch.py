@@ -111,7 +111,7 @@ def main():
 
     w = int(prop("waydroid.display_width", "0"))
     h = int(prop("waydroid.display_height", "0"))
-    print(f"ekran  : {w}x{h}  (waydroid.display_width/height)")
+    print(f"screen : {w}x{h}  (waydroid.display_width/height)")
     if not w or not h:
         sys.exit("could not read display_width/height.")
 

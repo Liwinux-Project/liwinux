@@ -36,14 +36,14 @@ waydroid --details-to-stdout shell sh -c 'ls /system/lib64/libndk_translation.so
 S "6. CPU ABI listesi"
 waydroid --details-to-stdout shell getprop ro.product.cpu.abilist 2>/dev/null | tr -d '\r' | tail -1
 
-S "7. Guest GPU hatalari (logcat)"
+S "7. Guest GPU errors (logcat)"
 timeout 8 waydroid --details-to-stdout shell logcat -d 2>/dev/null \
   | grep -iE "venus|angle|gralloc|vulkan|EGL|SurfaceFlinger" | tail -25
 
 S "8. Host tarafi"
 echo "  --- wd-venus son loglar ---"
 journalctl --user -u wd-venus.service -n 15 --no-pager 2>/dev/null | tail -15
-echo "  --- NVIDIA GPU kullanimi ---"
+echo "  --- NVIDIA GPU use ---"
 nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv 2>/dev/null
 nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader 2>/dev/null
 echo "  --- RAM ---"

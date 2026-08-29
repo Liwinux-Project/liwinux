@@ -289,7 +289,7 @@ mod tests {
     }
 
     /// A fullscreen window on the second monitor: on a 4480x1440 desktop
-    /// 1920x1080'lik pencere x=2560'ta.
+    /// A 1920x1080 window at x=2560.
     #[test]
     fn region_map_targets_second_monitor() {
         let m = ScreenMap::for_region(4480.0, 1440.0, 2560.0, 0.0, 1920.0, 1080.0);

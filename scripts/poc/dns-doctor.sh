@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Waydroid Android-tarafi DNS teshisi
+# Waydroid DNS diagnosis, from the Android side
 set -u
 W() { waydroid --details-to-stdout shell -- "$@" 2>&1 | tr -d '\r' | grep -vE "% lxc-info|^\[.*\] RUNNING$"; }
 S() { echo; echo "=== $* ==="; }
-[ "$(id -u)" = 0 ] || { echo "root gerekiyor: sudo bash $0"; exit 1; }
+[ "$(id -u)" = 0 ] || { echo "root required: sudo bash $0"; exit 1; }
 
 S "1. Android ag arayuzu"
 W ip addr show eth0
@@ -22,18 +22,18 @@ echo "  captive_portal_mode   = $(W settings get global captive_portal_mode | ta
 S "4. netd resolver yapilandirmasi"
 W ndc resolver getresolverinfo 2>&1 | head -20
 
-S "5. Aglarin dogrulanma durumu"
+S "5. Validation state of the networks"
 W dumpsys connectivity 2>&1 | grep -iE "NetworkAgentInfo|Validated|VALIDATED|everValidated|captive" | head -15
 
-S "6. Dogrudan DNS testi (konteyner icinden)"
-echo "  --- 192.168.240.1'e UDP/53 ---"
-W sh -c 'echo -n "" >/dev/udp/192.168.240.1/53 2>&1 && echo "UDP 53 acilabildi" || echo "UDP 53 ACILAMADI"'
-echo "  --- isim cozumleme ---"
+S "6. Direct DNS test (from inside the container)"
+echo "  --- UDP/53 to 192.168.240.1 ---"
+W sh -c 'echo -n "" >/dev/udp/192.168.240.1/53 2>&1 && echo "UDP 53 could be opened" || echo "UDP 53 COULD NOT be opened"'
+echo "  --- name resolution ---"
 W ping -c 2 -W 3 google.com 2>&1 | tail -3
-echo "  --- IP ile ---"
+echo "  --- by IP ---"
 W ping -c 2 -W 3 8.8.8.8 2>&1 | tail -3
 
 S "7. dnsmasq host tarafinda sorgu goruyor mu"
-echo "  (asagidaki testten once ve sonra sayilari karsilastir)"
+echo "  (compare the counts before and after the test below)"
 journalctl -u waydroid-container --since "5 min ago" --no-pager 2>/dev/null | grep -i dnsmasq | tail -5
 echo "  dnsmasq PID: $(pgrep -f 'dnsmasq.*waydroid0')"

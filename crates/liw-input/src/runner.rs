@@ -280,7 +280,7 @@ impl Runner {
                         Err(e) => {
                             if pipe_is_dead(&e) {
                                 pipe_dead = true;
-                                tracing::error!(hata = %e,
+                                tracing::error!(error = %e,
                                     "touch pipe broke — a new one will be requested");
                             } else {
                                 tracing::warn!(error = %e, "could not dispatch touch");
@@ -480,7 +480,7 @@ impl Runner {
                                     tracing::info!(width = w, height = h,
                                         "touch pipe renewed");
                                 }
-                                Err(e) => tracing::error!(hata = %e,
+                                Err(e) => tracing::error!(error = %e,
                                     "could not set up the new pipe"),
                             }
                         }

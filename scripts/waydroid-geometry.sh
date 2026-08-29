@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Waydroid pencere geometrisini KWin'den oku ve liw --region degerini hesapla.
+# Read the Waydroid window geometry from KWin and work out the liw --region value.
 set -u
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "liwinux-geom" >/dev/null 2>&1
@@ -33,15 +33,15 @@ import sys
 wx,wy,ww,wh = map(float, sys.argv[1].split(','))
 dw,dh = map(float, sys.argv[2].split(','))
 print()
-print(f"  pencere  : {int(wx)},{int(wy)}  {int(ww)}x{int(wh)}")
+print(f"  window   : {int(wx)},{int(wy)}  {int(ww)}x{int(wh)}")
 print(f"  desktop  : {int(dw)}x{int(dh)}")
 print()
 print("  If the touchscreen maps to the WHOLE DESKTOP:")
 print(f"    --region {wx/dw:.5f},{wy/dh:.5f},{ww/dw:.5f},{wh/dh:.5f}")
 print()
-# Pencereyi iceren ciktiyi bul
+# Find the output that contains the window
 print("  If the touchscreen maps ONLY to the output holding the window:")
-print("    (cikis boyutunu asagidan sec)")
+print("    (pick the output size from below)")
 PY
 kscreen-doctor -j 2>/dev/null | python3 -c "
 import sys,json
