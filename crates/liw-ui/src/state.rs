@@ -18,16 +18,19 @@ use crate::tint::{self, Tint};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nav {
     Library,
+    Store,
     Keymap,
     Diagnostics,
     Settings,
 }
 
 impl Nav {
-    pub const ALL: [Nav; 4] = [Nav::Library, Nav::Keymap, Nav::Diagnostics, Nav::Settings];
+    pub const ALL: [Nav; 5] =
+        [Nav::Library, Nav::Store, Nav::Keymap, Nav::Diagnostics, Nav::Settings];
     pub fn label(self) -> &'static str {
         match self {
             Nav::Library => "Library",
+            Nav::Store => "Store",
             Nav::Keymap => "Key mapping",
             Nav::Diagnostics => "Diagnostics",
             Nav::Settings => "Settings",
@@ -246,6 +249,26 @@ impl AppState {
         let t = Tokio::spawn(cx, async move {
             let m = Manager::connect().await.map_err(|e| e.to_string())?;
             m.launch(&package).await.map_err(|e| e.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let r = match t.await {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(e),
+                Err(e) => Some(e.to_string()),
+            };
+            let _ = this.update(cx, |s, cx| { s.busy = None; s.error = r; cx.notify(); });
+        })
+        .detach();
+    }
+
+    /// Opens the Play Store at a package's page.
+    pub fn open_store(&mut self, package: String, cx: &mut Context<Self>) {
+        self.error = None;
+        self.busy = Some("store");
+        cx.notify();
+        let t = Tokio::spawn(cx, async move {
+            let m = Manager::connect().await.map_err(|e| e.to_string())?;
+            m.open_store(&package).await.map_err(|e| e.to_string())
         });
         cx.spawn(async move |this, cx| {
             let r = match t.await {

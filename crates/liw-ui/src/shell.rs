@@ -19,7 +19,7 @@ use crate::theme::{Theme, HEADER_H, RADIUS, S1, S2, S3, S4, S6};
 impl Render for AppState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::dark();
-        let body = content(self, &t, cx);
+        let body = content(self, &t, window, cx);
         div()
             .flex()
             .flex_col()
@@ -295,12 +295,15 @@ fn banner(t: &Theme, msg: &str) -> gpui::AnyElement {
         .into_any_element()
 }
 
-fn content(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyElement {
+fn content(
+    s: &AppState, t: &Theme, window: &Window, cx: &mut Context<AppState>,
+) -> gpui::AnyElement {
     if let Link::Down(why) = &s.link {
         return offline(t, why);
     }
     match s.nav {
-        Nav::Library => library::render(s, t, cx),
+        Nav::Library => library::render(s, t, window, cx),
+        Nav::Store => crate::store::render(s, t, cx),
         other => placeholder(t, other),
     }
 }

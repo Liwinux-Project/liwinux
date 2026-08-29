@@ -333,6 +333,18 @@ Surfers with nothing at all — and a person chooses. Without artwork the
 hero falls back to the icon's own colour, so the layout never has a hole
 where a picture should be.
 
+### Store
+
+A **Store** tab lists the games liwinux ships a key mapping for — titles
+somebody actually sat down and tuned — and says which of them are
+installed. It is not a catalogue: GameLoop can show a wall of games
+because Tencent runs a catalogue service, which is a content operation
+and not something a client can reproduce.
+
+"Install" opens the Play Store at that page rather than installing
+anything. Owning downloads, signatures and updates would mean rebuilding
+what the store already does properly.
+
 ## Control plane
 
 `liwd` owns the session and exposes it on the session bus as

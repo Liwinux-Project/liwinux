@@ -20,13 +20,35 @@ use crate::tint::Tint;
 /// go when the library is empty.
 const STORE: &str = "com.android.vending";
 
-const CARD_W: f32 = 156.0;
-const CARD_ICON: f32 = 52.0;
-const HERO_H: f32 = 188.0;
+const CARD_W: f32 = 184.0;
+/// Art area of a card, 16:9 — the shape key art actually comes in.
+const CARD_ART_H: f32 = CARD_W * 9.0 / 16.0;
+const CARD_ICON: f32 = 46.0;
 const HERO_ICON: f32 = 54.0;
 
-pub fn render(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyElement {
-    let hero_el = s.hero().cloned().map(|a| hero(a, s, t, cx));
+/// How much of the hero's width becomes its height.
+///
+/// Key art is 16:9 and a full-width hero is far wider than that, so it is
+/// always cropped — the question is only how brutally. At a fixed 188px the
+/// 1280x720 art showed as a thin band across the middle. Deriving the height
+/// from the width keeps the crop proportional as the window resizes, and the
+/// clamp stops it from eating the page on a wide monitor.
+const HERO_RATIO: f32 = 3.1;
+const HERO_MIN: f32 = 176.0;
+const HERO_MAX: f32 = 330.0;
+
+fn hero_height(window: &gpui::Window) -> f32 {
+    let w = f32::from(window.viewport_size().width);
+    // Minus the page padding either side, so the ratio is against the panel
+    // and not the window.
+    ((w - S6 * 2.0) / HERO_RATIO).clamp(HERO_MIN, HERO_MAX)
+}
+
+pub fn render(
+    s: &AppState, t: &Theme, window: &gpui::Window, cx: &mut Context<AppState>,
+) -> gpui::AnyElement {
+    let hero_h = hero_height(window);
+    let hero_el = s.hero().cloned().map(|a| hero(a, s, t, hero_h, cx));
 
     let games: Vec<AndroidApp> = s.visible_apps()
         .filter(|a| !a.system && a.package != STORE)
@@ -127,7 +149,7 @@ fn section(t: &Theme, title: &str, n: usize) -> gpui::AnyElement {
 /// Follows the foreground app while Android is running, so during a session
 /// the page is about the game you are in rather than a static banner.
 fn hero(
-    a: AndroidApp, s: &AppState, t: &Theme, cx: &mut Context<AppState>,
+    a: AndroidApp, s: &AppState, t: &Theme, height: f32, cx: &mut Context<AppState>,
 ) -> gpui::AnyElement {
     let side = hero_side(&a, s, t, cx);
     let tint = s.tint(&a.package);
@@ -139,7 +161,7 @@ fn hero(
     let art = s.art(&a.package).map(|p| p.to_path_buf());
 
     div()
-        .h(px(HERO_H))
+        .h(px(height))
         .flex_none()
         .relative()
         .overflow_hidden()
@@ -161,15 +183,25 @@ fn hero(
                 // and shorter, so letterboxing would show the page behind it.
                 .object_fit(gpui::ObjectFit::Cover),
             )
-            // Scrim. Key art is busy and bright in places; white text on it
-            // is unreadable without one, and a flat overlay would kill the
-            // picture — so it is heavy on the left where the text is and
-            // clears toward the right.
+            // Scrim, in two passes. Key art is busy and bright and white text
+            // on it is unreadable without one, but a flat overlay kills the
+            // picture. Horizontal first, heavy where the title sits and
+            // clearing to the right...
             .child(
                 div().absolute().inset_0().bg(gpui::linear_gradient(
                     90.0,
-                    gpui::linear_color_stop(gpui::hsla(0.62, 0.10, 0.04, 0.92), 0.0),
-                    gpui::linear_color_stop(gpui::hsla(0.62, 0.10, 0.04, 0.15), 1.0),
+                    gpui::linear_color_stop(gpui::hsla(0.62, 0.10, 0.04, 0.90), 0.0),
+                    gpui::linear_color_stop(gpui::hsla(0.62, 0.10, 0.04, 0.10), 1.0),
+                )),
+            )
+            // ...then vertical, because the content sits along the bottom and
+            // a tall hero leaves the art bright exactly there. One pass could
+            // not do both without darkening the whole picture.
+            .child(
+                div().absolute().inset_0().bg(gpui::linear_gradient(
+                    180.0,
+                    gpui::linear_color_stop(gpui::hsla(0.62, 0.10, 0.04, 0.0), 0.0),
+                    gpui::linear_color_stop(gpui::hsla(0.62, 0.10, 0.04, 0.85), 1.0),
                 )),
             )
         })
@@ -370,33 +402,44 @@ fn store_card(
         .w(px(CARD_W))
         .flex()
         .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(px(S2))
-        .pt(px(S4))
-        .pb(px(S3))
-        .px(px(S3))
         .rounded(px(RADIUS + 4.0))
+        .overflow_hidden()
         // Dashed and unfilled: it reads as "add something", not as content.
         .border_dashed()
         .border_1()
         .border_color(t.border)
         .cursor_pointer()
         .hover(|x| x.border_color(t.accent.opacity(0.6)).bg(t.surface))
-        .child(icon_well(&a, CARD_ICON, CARD_ICON + 20.0, t, tint))
         .child(
             div()
-                .text_size(px(13.0))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(t.text)
-                .child("Get more games"),
+                .w_full()
+                .h(px(CARD_ART_H))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon_well(&a, CARD_ICON, CARD_ICON + 18.0, t, tint)),
         )
         .child(
             div()
-                .h(px(14.0))
-                .text_size(px(10.0))
-                .text_color(t.text_faint)
-                .child("Play Store"),
+                .flex()
+                .flex_col()
+                .gap(px(S1))
+                .px(px(S3))
+                .py(px(S2 + 2.0))
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(t.text)
+                        .child("Get more games"),
+                )
+                .child(
+                    div()
+                        .h(px(13.0))
+                        .text_size(px(10.0))
+                        .text_color(t.text_faint)
+                        .child("Play Store"),
+                ),
         )
         .when(!busy, |el| {
             el.on_click(cx.listener(move |st, _, _, cx| st.launch(package.clone(), cx)))
@@ -411,41 +454,72 @@ fn card(
     let mapped = s.has_profile(&a.package);
     let busy = s.busy.is_some();
     let package = a.package.clone();
+    let art = s.art(&a.package).map(|p| p.to_path_buf());
     let id: ElementId = SharedString::from(format!("card-{}", a.package)).into();
+
+    // Every card is the same shape whether or not it has art. Mixing a tall
+    // banner tile with a short icon tile in one row reads as a layout bug,
+    // and most packages will never have artwork.
+    let head = div()
+        .w_full()
+        .h(px(CARD_ART_H))
+        .relative()
+        .overflow_hidden()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(tint.gradient(180.0))
+        .when_some(art, |el, p| {
+            el.child(
+                img(gpui::ImageSource::Resource(gpui::Resource::Path(
+                    std::sync::Arc::from(p.as_path()),
+                )))
+                .absolute()
+                .inset_0()
+                .size_full()
+                .object_fit(gpui::ObjectFit::Cover),
+            )
+        })
+        .when(s.art(&a.package).is_none(), |el| {
+            el.child(icon_well(&a, CARD_ICON, CARD_ICON + 18.0, t, tint))
+        });
 
     div()
         .id(id)
         .w(px(CARD_W))
         .flex()
         .flex_col()
-        .items_center()
-        .gap(px(S2))
-        .pt(px(S4))
-        .pb(px(S3))
-        .px(px(S3))
         .rounded(px(RADIUS + 4.0))
-        .bg(tint.gradient(180.0))
+        .overflow_hidden()
+        .bg(t.surface)
         .border_1()
         .border_color(t.border)
         .cursor_pointer()
-        .hover(|x| x.bg(tint.wash(0.5)).border_color(tint.accent().opacity(0.55)))
-        .child(icon_well(&a, CARD_ICON, CARD_ICON + 20.0, t, tint))
+        .hover(|x| x.border_color(tint.accent().opacity(0.55)))
+        .child(head)
         .child(
             div()
-                .w_full()
-                .text_size(px(13.0))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(t.text)
-                .text_center()
-                .truncate()
-                .child(SharedString::from(a.name.clone())),
-        )
-        .child(
-            div()
-                .h(px(14.0))
-                .text_size(px(10.0))
-                .text_color(if mapped { tint.accent() } else { t.text_faint })
-                .child(SharedString::from(if mapped { "key mapping" } else { "—" })),
+                .flex()
+                .flex_col()
+                .gap(px(S1))
+                .px(px(S3))
+                .py(px(S2 + 2.0))
+                .child(
+                    div()
+                        .w_full()
+                        .text_size(px(13.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(t.text)
+                        .truncate()
+                        .child(SharedString::from(a.name.clone())),
+                )
+                .child(
+                    div()
+                        .h(px(13.0))
+                        .text_size(px(10.0))
+                        .text_color(if mapped { tint.accent() } else { t.text_faint })
+                        .child(SharedString::from(if mapped { "key mapping" } else { "—" })),
+                ),
         )
         .when(!busy, |el| {
             el.on_click(cx.listener(move |st, _, _, cx| st.launch(package.clone(), cx)))

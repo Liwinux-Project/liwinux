@@ -44,6 +44,7 @@ pub trait Manager1 {
 
     fn list_apps(&self) -> zbus::Result<String>;
     fn launch_app(&self, package: &str) -> zbus::Result<()>;
+    fn open_store_page(&self, package: &str) -> zbus::Result<()>;
 
     fn list_profiles(&self) -> zbus::Result<String>;
     fn get_profile(&self, package: &str) -> zbus::Result<String>;
@@ -159,6 +160,11 @@ impl Manager {
 
     pub async fn launch(&self, package: &str) -> Result<(), ManagerError> {
         self.proxy.launch_app(package).await
+            .map_err(|e| ManagerError::Call(friendly(&e)))
+    }
+
+    pub async fn open_store(&self, package: &str) -> Result<(), ManagerError> {
+        self.proxy.open_store_page(package).await
             .map_err(|e| ManagerError::Call(friendly(&e)))
     }
 

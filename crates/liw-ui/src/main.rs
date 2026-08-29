@@ -15,6 +15,7 @@ mod library;
 mod tint;
 mod shell;
 mod state;
+mod store;
 mod theme;
 
 use gpui::{App, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};

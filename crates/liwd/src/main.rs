@@ -144,6 +144,34 @@ impl Manager {
         Ok(())
     }
 
+    /// Opens an app's Play Store page inside Android.
+    ///
+    /// There is no catalogue of our own to install from, and there will not
+    /// be one — that is a content operation. What we DO have is the list of
+    /// games with a tested key mapping, and the store already knows how to
+    /// install those: `market://details` opens straight at the page.
+    async fn open_store_page(&self, package: &str) -> Result<(), Error> {
+        if !liw_core::apps::valid_package(package) {
+            return Err(Error::Invalid(format!("not a package name: {package:?}")));
+        }
+        if !self.health.read().await.session_running {
+            return Err(Error::NoSession(
+                "the session is stopped — start it before opening the store".into()));
+        }
+        let out = tokio::process::Command::new("waydroid")
+            .args(["app", "intent", "android.intent.action.VIEW",
+                   &format!("market://details?id={package}")])
+            .stdin(std::process::Stdio::null())
+            .output().await
+            .map_err(|e| Error::Failed(e.to_string()))?;
+        if !out.status.success() {
+            return Err(Error::Failed(format!(
+                "could not open the store: {}",
+                String::from_utf8_lossy(&out.stderr).trim())));
+        }
+        Ok(())
+    }
+
     /// Every known profile, as a JSON array.
     ///
     /// Summaries only — a UI listing them does not need every binding, and
