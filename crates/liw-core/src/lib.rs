@@ -4,6 +4,7 @@
 //! This module keeps everything learned about that process — argument
 //! pitfalls, health signals, crash chains — in one place.
 
+pub mod apps;
 pub mod bench;
 pub mod perf;
 pub mod config;

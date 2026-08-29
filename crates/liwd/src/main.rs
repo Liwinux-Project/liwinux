@@ -110,6 +110,40 @@ impl Manager {
         self.km.state().await.foreground.unwrap_or_default()
     }
 
+    /// Installed Android apps, as a JSON array.
+    ///
+    /// Read from the `.desktop` files Waydroid writes, so this works with
+    /// the session stopped — a UI can draw its library before Android is
+    /// even up, which is when the user is most likely looking at it.
+    async fn list_apps(&self) -> Result<String, Error> {
+        Ok(serde_json::to_string(&liw_core::apps::discover())?)
+    }
+
+    /// Launches an Android app.
+    async fn launch_app(&self, package: &str) -> Result<(), Error> {
+        if !liw_core::apps::valid_package(package) {
+            return Err(Error::Invalid(format!("not a package name: {package:?}")));
+        }
+        // Refuse early with a NAME the client can act on. `waydroid app
+        // launch` against a stopped session fails with prose about D-Bus
+        // that tells the user nothing about what to do.
+        if !self.health.read().await.session_running {
+            return Err(Error::NoSession(
+                "the session is stopped — start it before launching an app".into()));
+        }
+        let out = tokio::process::Command::new("waydroid")
+            .args(["app", "launch", package])
+            .stdin(std::process::Stdio::null())
+            .output().await
+            .map_err(|e| Error::Failed(e.to_string()))?;
+        if !out.status.success() {
+            return Err(Error::Failed(format!(
+                "waydroid app launch failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim())));
+        }
+        Ok(())
+    }
+
     /// Every known profile, as a JSON array.
     ///
     /// Summaries only — a UI listing them does not need every binding, and
