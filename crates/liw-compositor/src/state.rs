@@ -11,12 +11,15 @@
 //! * `linux-dmabuf` — the one that matters. Waydroid's hwcomposer hands over
 //!   dmabuf; with no such global there is nowhere to put a frame.
 //!
-//! # What is deliberately absent
-//!
-//! `wl_seat`. Game input already bypasses the compositor entirely by writing
-//! to Waydroid's touch pipe, so a seat buys nothing yet. Whether hwcomposer
-//! *requires* one to proceed is a question for the first run, not for a guess
-//! here — if it does, the log will say so.
+//! * `wl_seat` — advertised because hwcomposer will not come up without it.
+//!   The first version left it out, reasoning that game input already
+//!   bypasses the compositor through Waydroid's touch pipe so a seat bought
+//!   nothing. Measured: with no seat the composer HAL never registers at all,
+//!   SurfaceFlinger waits for it forever and Android never finishes booting.
+//!   A control run against KWin's socket, everything else identical, booted
+//!   in 15 seconds — so the seat, not the environment, was the difference.
+//!   It carries keyboard, pointer and touch capabilities and delivers no
+//!   events; being there is what the client needs.
 
 use std::sync::{Arc, Mutex};
 
@@ -39,10 +42,11 @@ use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
 use smithay::wayland::output::OutputHandler;
-use smithay::input::{SeatHandler, SeatState};
+use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::{
-    delegate_compositor, delegate_dmabuf, delegate_output, delegate_shm, delegate_xdg_shell,
+    delegate_compositor, delegate_dmabuf, delegate_output, delegate_seat, delegate_shm,
+    delegate_xdg_shell,
 };
 
 use crate::{ClientState, Guest, GuestHandle};
@@ -62,11 +66,10 @@ pub struct Compositor {
     pub dmabuf: DmabufState,
     pub dmabuf_global: DmabufGlobal,
     pub output: Output,
-    /// Held only to satisfy xdg_shell, which needs a seat for its move,
-    /// resize and grab requests. No `wl_seat` GLOBAL is created from it, so
-    /// clients still see no seat — the state exists, the advertisement does
-    /// not. Input arrives over Waydroid's touch pipe instead.
-    pub seat: SeatState<Self>,
+    pub seat_state: SeatState<Self>,
+    /// The seat itself, kept alive for as long as the compositor is. Dropping
+    /// it would remove the global from under a client that needs it.
+    pub seat: Seat<Self>,
     /// What the host side is allowed to see. Nothing else crosses the thread.
     pub guest: GuestHandle,
     /// Size we tell the client to be.
@@ -97,6 +100,17 @@ impl Compositor {
         output.set_preferred(mode);
         output.create_global::<Self>(dh);
 
+        // The capabilities are advertised even though nothing is ever sent
+        // through them. hwcomposer checks that a seat exists and has the
+        // capability before it will proceed; an empty seat is not enough.
+        let mut seat_state = SeatState::new();
+        let mut seat = seat_state.new_wl_seat(dh, "liwinux");
+        seat.add_pointer();
+        seat.add_touch();
+        if let Err(e) = seat.add_keyboard(Default::default(), 200, 25) {
+            tracing::warn!(error = %e, "no keyboard on the seat");
+        }
+
         Self {
             dh: dh.clone(),
             compositor,
@@ -105,7 +119,8 @@ impl Compositor {
             dmabuf,
             dmabuf_global,
             output,
-            seat: SeatState::new(),
+            seat_state,
+            seat,
             guest: Arc::new(Mutex::new(Guest::default())),
             size,
             running: true,
@@ -198,7 +213,13 @@ fn describe_buffer(buf: &wl_buffer::WlBuffer) -> Option<(String, i32, i32)> {
         let (w, h) = (dma.width() as i32, dma.height() as i32);
         return Some((format!("dmabuf {:?}", dma.format().code), w, h));
     }
-    Some(("not a dmabuf (shm or unknown)".to_string(), 0, 0))
+    // Naming shm separately is not pedantry. "not a dmabuf" covers both a
+    // client that fell back to software copies and one that attached
+    // something we failed to recognise, and those call for opposite fixes.
+    if let Ok(d) = smithay::wayland::shm::with_buffer_contents(buf, |_, _, d| d) {
+        return Some((format!("shm {:?}", d.format), d.width, d.height));
+    }
+    Some(("unrecognised buffer type".to_string(), 0, 0))
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +329,7 @@ impl SeatHandler for Compositor {
     type TouchFocus = WlSurface;
 
     fn seat_state(&mut self) -> &mut SeatState<Self> {
-        &mut self.seat
+        &mut self.seat_state
     }
 }
 
@@ -316,6 +337,7 @@ delegate_compositor!(Compositor);
 delegate_shm!(Compositor);
 delegate_xdg_shell!(Compositor);
 delegate_output!(Compositor);
+delegate_seat!(Compositor);
 delegate_dmabuf!(Compositor);
 
 #[cfg(test)]

@@ -123,9 +123,46 @@ So testing the embedded path needs liwd stopped, or taught to start the
 session with the compositor's socket. That is the next thing to fix, and it
 is a liwd change rather than a compositor one.
 
+## Second run: Android renders into it (2026-08-29)
+
+With `liwd` stopped so it could not restart the session, and one thing
+fixed, the whole path works:
+
+```
+connected=true size=Some((2560, 1440)) commits=111 buffer=Some("dmabuf DrmFourcc(AB24)")
+```
+
+Real dmabuf frames, in the format hwcomposer asked for, arriving at a
+**median gap of 16.62 ms** — 60 FPS. Android boots in about 10 seconds
+against the nested compositor.
+
+### The fix, and the guess it disproved
+
+`wl_seat`. The first version left it out on the reasoning that game input
+already bypasses the compositor through the touch pipe, so a seat bought
+nothing. That was wrong, and not subtly:
+
+* with no seat, `android.hardware.graphics.composer@2.1::IComposer` never
+  registers at all. SurfaceFlinger waits for it in a one-second retry loop
+  forever and Android never finishes booting. Nothing in the log mentions
+  Wayland — the composer dies before it gets that far, so the symptom
+  points nowhere near the cause.
+* a control run against KWin's socket, everything else identical, booted in
+  15 seconds. That is what ruled out the environment and left the seat.
+
+The seat carries keyboard, pointer and touch capabilities and delivers no
+events. Being there is what the client checks for.
+
+### What the run also showed
+
+* **The surface is 2560x1440, not the 1280x720 we advertised.** Android
+  sizes itself from `waydroid.display_width/height`, which come from the
+  host display, not from our `wl_output` mode. Controlling the embedded
+  size means setting those properties, not just configuring the output.
+* **Nothing is drawn.** The compositor accepts the buffers and drops them.
+  Importing them as a gpui texture is the next step and the hard one.
+
 ### Still unproven
 
-No real frame has arrived yet: the buffer seen so far is not a dmabuf, and
-the client disconnects before presenting. Whether that is the same liwd
-restart or something else is not yet known, and guessing which would waste
-the next run.
+Whether a frame can cross into gpui at all. Everything up to the buffer
+arriving is now measured; everything after it is still the design document.
