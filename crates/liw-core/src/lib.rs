@@ -15,6 +15,7 @@ pub use liw_input as input;
 pub mod polkit;
 pub mod session;
 pub mod trace;
+pub mod video;
 pub mod waydroid;
 
 pub use config::Config;

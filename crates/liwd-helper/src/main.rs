@@ -255,6 +255,30 @@ impl Helper {
         Ok(parse_foreground(&String::from_utf8_lossy(&out.stdout)).unwrap_or_default())
     }
 
+    /// The video codec list Android actually REGISTERED.
+    ///
+    /// This is ground truth, and it is not the same as what the image
+    /// declares: a declaration whose backing file is missing produces no
+    /// codec at all, and Android reports no error for it.
+    async fn media_codecs(
+        &self,
+        #[zbus(header)] hdr: Header<'_>,
+    ) -> zbus::fdo::Result<String> {
+        self.authorize(&hdr, ACT_PERF, false).await?;
+        // The service that answers this differs between Android builds, so we
+        // try them in turn rather than betting on one name and reporting an
+        // empty codec list as though it were a real finding.
+        for svc in ["media.codec", "media.player"] {
+            if let Ok(s) = run_dumpsys(&["dumpsys", svc]).await {
+                if s.contains("OMX.") || s.contains("c2.") {
+                    return Ok(s);
+                }
+            }
+        }
+        Err(zbus::fdo::Error::Failed(
+            "no dumpsys service returned a codec list".into()))
+    }
+
     /// SurfaceFlinger layer list (for measurement).
     async fn surface_layers(
         &self,

@@ -6,6 +6,7 @@ mod trace;
 mod editor;
 mod keymap;
 mod profile;
+mod video;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -57,6 +58,11 @@ enum Cmd {
     Profile {
         #[command(subcommand)]
         action: ProfileAction,
+    },
+    /// Video decode: what decodes it, where, and what it costs
+    Video {
+        #[command(subcommand)]
+        action: VideoAction,
     },
     /// Key mapping
     Keymap {
@@ -235,6 +241,20 @@ enum PerfAction {
 }
 
 #[derive(Subcommand)]
+enum VideoAction {
+    /// What decodes video in Android, what the host can decode, and the gap
+    Status,
+    /// Measure what software decode costs against hardware, on the host
+    Probe {
+        /// Passes per decoder. More passes, less noise.
+        #[arg(short, long, default_value_t = 20)]
+        loops: u32,
+    },
+    /// Compare what a RUNNING Android registered against what the image declares
+    Verify,
+}
+
+#[derive(Subcommand)]
 enum SessionAction {
     /// Start the session (detached from the terminal)
     Start,
@@ -270,6 +290,11 @@ async fn main() -> Result<()> {
             return trace::run(package, duration, jank_ms).await,
         Cmd::Perf { action } => return match action {
             PerfAction::Status => perf::status(),
+        },
+        Cmd::Video { action } => return match action {
+            VideoAction::Status => video::status(),
+            VideoAction::Probe { loops } => video::probe(loops),
+            VideoAction::Verify => video::verify().await,
         },
         Cmd::Profile { action } => {
             return match action {

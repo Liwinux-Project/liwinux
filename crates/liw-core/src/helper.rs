@@ -49,6 +49,11 @@ impl HelperClient {
             .await.map_err(|e| HelperError::Call(e.to_string()))
     }
 
+    pub async fn media_codecs(&self) -> Result<String, HelperError> {
+        self.proxy.call("MediaCodecs", &())
+            .await.map_err(|e| HelperError::Call(e.to_string()))
+    }
+
     pub async fn surface_layers(&self) -> Result<String, HelperError> {
         self.proxy.call("SurfaceLayers", &())
             .await.map_err(|e| HelperError::Call(e.to_string()))

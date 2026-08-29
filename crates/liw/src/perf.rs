@@ -96,7 +96,7 @@ fn report(findings: &[Finding]) {
         println!("\n  {mark} {}  [{label}]", f.title);
         println!("      current: {}", f.current);
         if f.status == Status::Improvable {
-            println!("      hedef : {}", f.target);
+            println!("      target : {}", f.target);
         }
         if f.impact == Impact::Unknown && f.status == Status::Improvable {
             println!("      impact : NOT MEASURED");
@@ -112,7 +112,7 @@ fn report(findings: &[Finding]) {
     if imp > 0 {
         println!("  None of these has been MEASURED on this system. Take a");
         println!("  baseline before applying anything:\n");
-        println!("      liw bench <paket> --duration 60\n");
+        println!("      liw bench <package> --duration 60\n");
     }
 }
 
@@ -156,6 +156,6 @@ mod tests {
 
     #[test]
     fn missing_file_reads_as_empty_not_panic() {
-        assert_eq!(read("/proc/kesinlikle/olmayan/dosya"), "");
+        assert_eq!(read("/proc/definitely/not/a/file"), "");
     }
 }
