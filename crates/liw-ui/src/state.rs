@@ -66,6 +66,13 @@ pub struct AppState {
     pub featured: Option<String>,
     /// Free-text filter from the search box.
     pub search: String,
+    /// Focus for the search field.
+    ///
+    /// gpui ships no text input — the editor lives in Zed's workspace
+    /// crates, not in gpui — so this is a focusable div that collects key
+    /// events. Enough for a filter; it is not an editor and does not pretend
+    /// to be one (no selection, no caret movement, no clipboard).
+    pub search_focus: gpui::FocusHandle,
     /// Show system apps in the library. Off by default: half the list is
     /// Settings and Calculator.
     pub show_system: bool,
@@ -78,6 +85,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let search_focus = cx.focus_handle();
         let mut s = Self {
             nav: Nav::Library,
             link: Link::Connecting,
@@ -88,6 +96,7 @@ impl AppState {
             tints: HashMap::new(),
             featured: None,
             search: String::new(),
+            search_focus,
             show_system: false,
             error: None,
             busy: None,
@@ -111,6 +120,18 @@ impl AppState {
         self.art.get(package).map(|p| p.as_path())
     }
 
+    /// Applies one key press to the search field.
+    pub fn search_key(&mut self, ev: &gpui::KeyDownEvent, window: &mut gpui::Window) -> bool {
+        let k = &ev.keystroke;
+        let m = &k.modifiers;
+        match search_edit(&mut self.search, &k.key, k.key_char.as_deref(),
+                          m.control || m.alt || m.platform) {
+            SearchAction::Changed => true,
+            SearchAction::Blur => { window.blur(); false }
+            SearchAction::Nothing => false,
+        }
+    }
+
     pub fn tint(&self, package: &str) -> Tint {
         self.tints.get(package).copied().unwrap_or(Tint::NEUTRAL)
     }
@@ -122,6 +143,11 @@ impl AppState {
     /// the last launched, then to the first app with a key mapping — an
     /// empty hero on first run would look broken.
     pub fn hero(&self) -> Option<&AndroidApp> {
+        // While searching, the hero follows the search. Showing a game the
+        // filter just excluded reads as the page ignoring you.
+        if !self.search.trim().is_empty() {
+            return self.visible_apps().find(|a| a.package != "com.android.vending");
+        }
         let pick = self.snapshot.foreground.as_deref()
             .filter(|p| self.apps.iter().any(|a| a.package == *p))
             .or(self.featured.as_deref())
@@ -352,6 +378,133 @@ impl AppState {
             let _ = this.update(cx, |s, cx| { s.busy = None; s.error = r; cx.notify(); });
         })
         .detach();
+    }
+}
+
+/// What one key press does to the search text.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SearchAction {
+    Changed,
+    /// Give focus back to the page.
+    Blur,
+    Nothing,
+}
+
+/// The whole text-editing rule, separated from gpui so it can be tested.
+///
+/// It is not an editor: no selection, no caret movement, no clipboard. It is
+/// a filter box, and the parts worth getting right are the ones that fail
+/// silently — a modifier chord typing a letter, a control character landing
+/// in the string, an unbounded field.
+pub fn search_edit(
+    text: &mut String, key: &str, key_char: Option<&str>, modified: bool,
+) -> SearchAction {
+    match key {
+        "backspace" => {
+            if text.pop().is_some() { SearchAction::Changed } else { SearchAction::Nothing }
+        }
+        "escape" => {
+            // Clears if there is anything, otherwise hands focus back. Making
+            // an empty field take two presses to escape would be one too many.
+            if text.is_empty() {
+                SearchAction::Blur
+            } else {
+                text.clear();
+                SearchAction::Changed
+            }
+        }
+        "enter" | "tab" => SearchAction::Blur,
+        _ => {
+            // Modifier chords are shortcuts, not text: ctrl-a must not append
+            // an "a".
+            if modified { return SearchAction::Nothing }
+            // `key_char` is what the layout would actually have typed, so a
+            // Turkish keyboard gives ğ and ş rather than the ASCII key
+            // underneath them.
+            let Some(c) = key_char else { return SearchAction::Nothing };
+            if c.is_empty() || c.chars().any(char::is_control) {
+                return SearchAction::Nothing;
+            }
+            // Bounded: a filter box has no business holding a novel, and an
+            // unbounded one is a slow leak nobody notices.
+            if text.chars().count() >= 64 { return SearchAction::Nothing }
+            text.push_str(c);
+            SearchAction::Changed
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn type_str(t: &mut String, s: &str) {
+        for ch in s.chars() {
+            let c = ch.to_string();
+            search_edit(t, &c, Some(&c), false);
+        }
+    }
+
+    #[test]
+    fn typing_appends_and_backspace_removes() {
+        let mut t = String::new();
+        type_str(&mut t, "sub");
+        assert_eq!(t, "sub");
+        assert_eq!(search_edit(&mut t, "backspace", None, false), SearchAction::Changed);
+        assert_eq!(t, "su");
+    }
+
+    /// Backspace on an empty field must not claim a change; the caller
+    /// redraws on Changed and a held key would repaint the library forever.
+    #[test]
+    fn backspace_on_empty_changes_nothing() {
+        let mut t = String::new();
+        assert_eq!(search_edit(&mut t, "backspace", None, false), SearchAction::Nothing);
+    }
+
+    /// The layout's character is what gets typed, not the ASCII key under it.
+    #[test]
+    fn layout_characters_are_kept() {
+        let mut t = String::new();
+        // A Turkish keyboard reports key "g" with key_char "ğ".
+        search_edit(&mut t, "g", Some("ğ"), false);
+        search_edit(&mut t, "s", Some("ş"), false);
+        assert_eq!(t, "ğş");
+    }
+
+    /// ctrl-a is a shortcut. Appending "a" for it is the kind of bug that
+    /// only shows up as "the search box does weird things".
+    #[test]
+    fn modifier_chords_are_not_text() {
+        let mut t = String::new();
+        assert_eq!(search_edit(&mut t, "a", Some("a"), true), SearchAction::Nothing);
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn control_characters_never_enter_the_string() {
+        let mut t = String::new();
+        for c in ["\u{7f}", "\n", "\t", ""] {
+            assert_eq!(search_edit(&mut t, "x", Some(c), false), SearchAction::Nothing, "{c:?}");
+        }
+        assert!(t.is_empty());
+    }
+
+    /// Escape clears first, and only gives focus back once there is nothing
+    /// left — otherwise leaving a filled field takes two presses.
+    #[test]
+    fn escape_clears_then_blurs() {
+        let mut t = String::from("abc");
+        assert_eq!(search_edit(&mut t, "escape", None, false), SearchAction::Changed);
+        assert!(t.is_empty());
+        assert_eq!(search_edit(&mut t, "escape", None, false), SearchAction::Blur);
+    }
+
+    #[test]
+    fn the_field_is_bounded() {
+        let mut t = String::new();
+        type_str(&mut t, &"x".repeat(200));
+        assert_eq!(t.chars().count(), 64);
     }
 }
 

@@ -95,7 +95,7 @@ fn nav(
                 ),
         )
         .child(div().flex().flex_row().items_center().gap(px(S1)).children(tabs))
-        .child(search(s, t, cx))
+        .child(search(s, t, window, cx))
         .child(div().flex_1())
         .child(status)
         .when_some(caption, |el, c| el.child(c))
@@ -125,16 +125,22 @@ fn tab(s: &AppState, t: &Theme, n: Nav, cx: &mut Context<AppState>) -> gpui::Any
 
 /// Search field.
 ///
-/// Not a real text input yet: gpui's editor lives in Zed's workspace crates,
-/// not in gpui itself, so a proper one is its own piece of work. Typing is
-/// handled as key events on the focused strip, which covers filtering — the
-/// only thing search does here.
-fn search(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyElement {
+/// A focusable div collecting key events rather than a text editor: gpui has
+/// no input widget (Zed's lives in its workspace crates). That is enough for
+/// a filter and honest about what it is — no selection, no caret movement,
+/// no clipboard.
+fn search(
+    s: &AppState, t: &Theme, window: &Window, cx: &mut Context<AppState>,
+) -> gpui::AnyElement {
     let q = s.search.clone();
     let has = !q.is_empty();
+    let focused = s.search_focus.is_focused(window);
+    let handle = s.search_focus.clone();
+
     div()
         .id("search")
-        .w(px(190.0))
+        .track_focus(&s.search_focus)
+        .w(px(210.0))
         .flex()
         .flex_row()
         .items_center()
@@ -144,16 +150,36 @@ fn search(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyEleme
         .rounded(px(RADIUS))
         .bg(t.bg)
         .border_1()
-        .border_color(t.border)
+        .border_color(if focused { t.accent.opacity(0.7) } else { t.border })
         .text_size(px(12.0))
-        .text_color(if has { t.text } else { t.text_faint })
+        .cursor_pointer()
         .child(div().text_color(t.text_faint).child("⌕"))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
+                .flex()
+                .flex_row()
+                .items_center()
                 .truncate()
-                .child(if has { SharedString::from(q) } else { SharedString::from("Search") }),
+                .text_color(if has { t.text } else { t.text_faint })
+                .child(if has {
+                    SharedString::from(q)
+                } else if focused {
+                    SharedString::from("")
+                } else {
+                    SharedString::from("Search")
+                })
+                // A caret, so a focused empty field does not look dead.
+                .when(focused, |el| {
+                    el.child(
+                        div()
+                            .w(px(1.5))
+                            .h(px(13.0))
+                            .ml(px(1.0))
+                            .bg(t.accent),
+                    )
+                }),
         )
         .when(has, |el| {
             el.child(
@@ -169,6 +195,10 @@ fn search(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyEleme
                     })),
             )
         })
+        .on_click(cx.listener(move |_, _, window, cx| window.focus(&handle, cx)))
+        .on_key_down(cx.listener(|st, ev: &gpui::KeyDownEvent, window, cx| {
+            if st.search_key(ev, window) { cx.notify(); }
+        }))
         .into_any_element()
 }
 
