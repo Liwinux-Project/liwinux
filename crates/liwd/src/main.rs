@@ -144,6 +144,71 @@ impl Manager {
         Ok(())
     }
 
+    /// The user configuration, as JSON.
+    async fn get_config(&self) -> Result<String, Error> {
+        Ok(serde_json::to_string(&liw_core::Config::load())?)
+    }
+
+    /// Replaces the user configuration.
+    ///
+    /// Whole-document rather than per-key: a settings screen edits a form and
+    /// saves it, and a per-key interface would need every field named twice
+    /// and kept in step.
+    ///
+    /// Does NOT restart the keymapper. Several of these only take effect at
+    /// its next start, and restarting it as a side effect of a save would
+    /// yank the devices out from under a running game.
+    async fn set_config(
+        &self, json: &str,
+        #[zbus(signal_emitter)] em: zbus::object_server::SignalEmitter<'_>,
+    ) -> Result<(), Error> {
+        let cfg: liw_core::Config = serde_json::from_str(json)
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        cfg.save().map_err(|e| Error::Failed(e.to_string()))?;
+        let _ = Manager::keymapper_event(&em, "config-changed", "").await;
+        Ok(())
+    }
+
+    /// Input devices we could map from, as JSON.
+    ///
+    /// Read here rather than in the client because it needs `/dev/input`
+    /// access, and because the daemon already knows which one is in use.
+    async fn list_input_devices(&self) -> Result<String, Error> {
+        let cfg = liw_core::Config::load();
+        // Comparison is by CANONICAL path, not by string.
+        //
+        // The config stores a stable `/dev/input/by-id/...` symlink while
+        // discovery reports `/dev/input/eventN`; comparing the two as text
+        // never matches, and the settings screen showed nothing selected
+        // while the mapper was happily using that very device.
+        let real = |p: &std::path::Path| std::fs::canonicalize(p).ok();
+        let kb = cfg.keyboard.as_deref().and_then(real);
+        let ms = cfg.mouse.as_deref().and_then(real);
+
+        let devs = liw_core::input::discover();
+        let items: Vec<_> = devs.iter().map(|d| {
+            let canon = real(&d.path);
+            serde_json::json!({
+                "path": d.path.display().to_string(),
+                // The stable name, so a saved choice survives a reboot —
+                // eventN numbers are reassigned and a config pointing at one
+                // silently ends up on a sound card.
+                "stable_path": liw_core::input::capture::stable_path(&d.path)
+                    .map(|p| p.display().to_string()),
+                "name": d.name,
+                "kind": format!("{:?}", d.kind),
+                // A device we created ourselves must never be offered as a
+                // source: mapping our own virtual touchscreen back into
+                // itself is a feedback loop.
+                "virtual": d.virtual_device,
+                "typing_score": d.typing_score,
+                "is_keyboard": canon.is_some() && canon == kb,
+                "is_mouse": canon.is_some() && canon == ms,
+            })
+        }).collect();
+        Ok(serde_json::to_string(&items)?)
+    }
+
     /// Installs an APK the user pointed at.
     ///
     /// The path comes from the caller, so it is checked here rather than

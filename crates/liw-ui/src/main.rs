@@ -16,6 +16,7 @@ mod tint;
 mod shell;
 mod diagnostics;
 mod keymap;
+mod settings;
 mod state;
 mod theme;
 

@@ -46,6 +46,9 @@ pub trait Manager1 {
     fn launch_app(&self, package: &str) -> zbus::Result<()>;
     fn open_store_page(&self, package: &str) -> zbus::Result<()>;
     fn install_apk(&self, path: &str) -> zbus::Result<()>;
+    fn get_config(&self) -> zbus::Result<String>;
+    fn set_config(&self, json: &str) -> zbus::Result<()>;
+    fn list_input_devices(&self) -> zbus::Result<String>;
 
     fn list_profiles(&self) -> zbus::Result<String>;
     fn get_profile(&self, package: &str) -> zbus::Result<String>;
@@ -74,6 +77,43 @@ pub trait Manager1 {
 
     #[zbus(signal)]
     fn keymapper_event(&self, kind: String, detail: String) -> zbus::Result<()>;
+}
+
+/// One row of `ListInputDevices`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InputDevice {
+    pub path: String,
+    /// A `/dev/input/by-id/...` name that survives a reboot, when udev
+    /// provides one. eventN numbers are reassigned between boots.
+    #[serde(default)]
+    pub stable_path: Option<String>,
+    pub name: String,
+    /// `Keyboard`, `Pointer` or `Combo`.
+    pub kind: String,
+    /// Created by uinput — ours, or another mapper's. Never a valid source.
+    #[serde(rename = "virtual")]
+    pub is_virtual: bool,
+    /// How much this looks like a real typing keyboard.
+    pub typing_score: u32,
+    /// Resolved by the daemon, which compares canonical paths — the config
+    /// holds a by-id symlink and discovery reports eventN.
+    #[serde(default)]
+    pub is_keyboard: bool,
+    #[serde(default)]
+    pub is_mouse: bool,
+}
+
+impl InputDevice {
+    /// What should be written to the config: the stable name when there is
+    /// one, otherwise the node we found it at.
+    pub fn config_path(&self) -> String {
+        self.stable_path.clone().unwrap_or_else(|| self.path.clone())
+    }
+
+    /// The node, for telling two interfaces of one keyboard apart.
+    pub fn node(&self) -> &str {
+        self.path.rsplit('/').next().unwrap_or(&self.path)
+    }
 }
 
 /// One row of `ListProfiles`.
@@ -190,6 +230,24 @@ impl Manager {
     pub async fn install_apk(&self, path: &str) -> Result<(), ManagerError> {
         self.proxy.install_apk(path).await
             .map_err(|e| ManagerError::Call(friendly(&e)))
+    }
+
+    pub async fn config(&self) -> Result<crate::Config, ManagerError> {
+        let raw = self.proxy.get_config().await
+            .map_err(|e| ManagerError::Call(friendly(&e)))?;
+        Ok(serde_json::from_str(&raw)?)
+    }
+
+    pub async fn set_config(&self, c: &crate::Config) -> Result<(), ManagerError> {
+        let json = serde_json::to_string(c)?;
+        self.proxy.set_config(&json).await
+            .map_err(|e| ManagerError::Call(friendly(&e)))
+    }
+
+    pub async fn input_devices(&self) -> Result<Vec<InputDevice>, ManagerError> {
+        let raw = self.proxy.list_input_devices().await
+            .map_err(|e| ManagerError::Call(friendly(&e)))?;
+        Ok(serde_json::from_str(&raw)?)
     }
 
     pub async fn profiles(&self) -> Result<ProfileList, ManagerError> {

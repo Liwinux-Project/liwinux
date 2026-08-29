@@ -66,6 +66,10 @@ pub struct AppState {
     pub featured: Option<String>,
     /// Free-text filter from the search box.
     pub search: String,
+    /// The user configuration, once loaded.
+    pub config: Option<liw_core::Config>,
+    /// Input devices that could be mapped from.
+    pub devices: Vec<liw_core::manager::InputDevice>,
     /// Focus for the search field.
     ///
     /// gpui ships no text input — the editor lives in Zed's workspace
@@ -96,6 +100,8 @@ impl AppState {
             tints: HashMap::new(),
             featured: None,
             search: String::new(),
+            config: None,
+            devices: Vec::new(),
             search_focus,
             show_system: false,
             error: None,
@@ -183,11 +189,13 @@ impl AppState {
                     Some((a.package.clone(), tint::from_bytes(&bytes)))
                 })
                 .collect();
+            let config = m.config().await.ok();
+            let devices = m.input_devices().await.unwrap_or_default();
             let art: HashMap<String, std::path::PathBuf> = apps.iter()
                 .filter_map(|a| Some((a.package.clone(),
                                       liw_core::art::art_for(&a.package)?)))
                 .collect();
-            Ok::<_, String>((apps, profiles, snap, tints, art))
+            Ok::<_, String>((apps, profiles, snap, tints, art, config, devices))
         });
 
         cx.spawn(async move |this, cx| {
@@ -198,12 +206,14 @@ impl AppState {
             };
             let _ = this.update(cx, |s, cx| {
                 match outcome {
-                    Ok((apps, profiles, snap, tints, art)) => {
+                    Ok((apps, profiles, snap, tints, art, config, devices)) => {
                         s.apps = apps;
                         s.profiles = profiles;
                         s.snapshot = snap;
                         s.tints = tints;
                         s.art = art;
+                        s.config = config;
+                        s.devices = devices;
                         s.link = Link::Up;
                         s.start_watching(cx);
                     }
@@ -356,6 +366,35 @@ impl AppState {
             // The library is read from Waydroid's desktop entries, which it
             // writes a moment after the install finishes.
             let _ = this.update(cx, |s, cx| s.reload(cx));
+        })
+        .detach();
+    }
+
+    /// Saves the configuration after `edit` has changed it.
+    ///
+    /// Optimistic: the local copy is updated first so the control responds at
+    /// once. A save that fails puts the message in the banner rather than
+    /// silently reverting the switch under the cursor.
+    pub fn edit_config<F>(&mut self, edit: F, cx: &mut Context<Self>)
+    where
+        F: FnOnce(&mut liw_core::Config),
+    {
+        let Some(cfg) = self.config.as_mut() else { return };
+        edit(cfg);
+        let snapshot = cfg.clone();
+        self.error = None;
+        cx.notify();
+        let t = Tokio::spawn(cx, async move {
+            let m = Manager::connect().await.map_err(|e| e.to_string())?;
+            m.set_config(&snapshot).await.map_err(|e| e.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let r = match t.await {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(e),
+                Err(e) => Some(e.to_string()),
+            };
+            let _ = this.update(cx, |s, cx| { s.error = r; cx.notify(); });
         })
         .detach();
     }

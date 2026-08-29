@@ -283,7 +283,10 @@ fn hero_side(
         .take(5)
         .cloned()
         .collect();
-    if others.is_empty() { return None; }
+    // Below a handful of games this list is just the cards underneath it,
+    // written out again. It earns its place once the row starts to overflow.
+    const WORTH_LISTING: usize = 4;
+    if others.len() < WORTH_LISTING { return None; }
 
     let mut rows = Vec::with_capacity(others.len());
     for a in others {

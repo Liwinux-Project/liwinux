@@ -370,6 +370,7 @@ fn content(
         Nav::Library => library::render(s, t, window, cx),
         Nav::Keymap => crate::keymap::render(s, t, cx),
         Nav::Diagnostics => crate::diagnostics::render(s, t, cx),
+        Nav::Settings => crate::settings::render(s, t, cx),
         other => placeholder(t, other),
     }
 }
