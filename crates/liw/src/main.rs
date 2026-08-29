@@ -1,5 +1,6 @@
 //! liw — the liwinux command line client.
 
+mod art;
 mod bench;
 mod perf;
 mod trace;
@@ -37,6 +38,11 @@ enum Cmd {
         /// Measurement length (seconds)
         #[arg(short, long, default_value_t = 60)]
         duration: u64,
+    },
+    /// Per-game artwork: list candidates, preview them, choose one
+    Art {
+        #[command(subcommand)]
+        action: ArtAction,
     },
     /// Find WHY it stutters: frames + Android log + host, on one clock
     Trace {
@@ -121,6 +127,26 @@ enum ProfileAction {
         #[arg(long)]
         from: Option<std::path::PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum ArtAction {
+    /// Show what the package's APK might offer
+    List { package: String },
+    /// Extract every candidate so you can look at them
+    Dump {
+        package: String,
+        /// Where to write them
+        dir: std::path::PathBuf,
+    },
+    /// Choose a candidate by number, or point at your own image
+    Use {
+        package: String,
+        /// Candidate index from `list`, or a path to an image
+        what: String,
+    },
+    /// Remove the artwork again
+    Clear { package: String },
 }
 
 #[derive(Subcommand)]
@@ -286,6 +312,12 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let action = match cli.cmd {
         Cmd::Bench { package, duration } => return bench::run(package, duration).await,
+        Cmd::Art { action } => return match action {
+            ArtAction::List { package } => art::list(&package),
+            ArtAction::Dump { package, dir } => art::dump(&package, dir),
+            ArtAction::Use { package, what } => art::use_art(&package, &what),
+            ArtAction::Clear { package } => art::clear(&package),
+        },
         Cmd::Trace { package, duration, jank_ms } =>
             return trace::run(package, duration, jank_ms).await,
         Cmd::Perf { action } => return match action {

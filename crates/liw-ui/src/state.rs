@@ -53,6 +53,8 @@ pub struct AppState {
     pub snapshot: Snapshot,
     pub apps: Vec<AndroidApp>,
     pub profiles: ProfileList,
+    /// User-chosen key art per package, when there is any.
+    pub art: HashMap<String, std::path::PathBuf>,
     /// Accent colour per package, read from the app's own icon.
     ///
     /// Computed once at load: decoding a 54x54 PNG is trivial, but doing it
@@ -81,6 +83,7 @@ impl AppState {
             snapshot: Snapshot::default(),
             apps: Vec::new(),
             profiles: ProfileList::default(),
+            art: HashMap::new(),
             tints: HashMap::new(),
             featured: None,
             search: String::new(),
@@ -103,6 +106,10 @@ impl AppState {
                 || a.package.to_lowercase().contains(&q))
     }
 
+    pub fn art(&self, package: &str) -> Option<&std::path::Path> {
+        self.art.get(package).map(|p| p.as_path())
+    }
+
     pub fn tint(&self, package: &str) -> Tint {
         self.tints.get(package).copied().unwrap_or(Tint::NEUTRAL)
     }
@@ -121,8 +128,10 @@ impl AppState {
         if let Some(p) = pick {
             if let Some(a) = self.apps.iter().find(|a| a.package == p) { return Some(a); }
         }
-        self.apps.iter().find(|a| !a.system && self.has_profile(&a.package))
-            .or_else(|| self.apps.iter().find(|a| !a.system))
+        // The store is never the hero: it is a way to get games, not one.
+        let is_game = |a: &&AndroidApp| !a.system && a.package != "com.android.vending";
+        self.apps.iter().find(|a| is_game(a) && self.has_profile(&a.package))
+            .or_else(|| self.apps.iter().find(is_game))
     }
 
     pub fn has_profile(&self, package: &str) -> bool {
@@ -147,7 +156,11 @@ impl AppState {
                     Some((a.package.clone(), tint::from_bytes(&bytes)))
                 })
                 .collect();
-            Ok::<_, String>((apps, profiles, snap, tints))
+            let art: HashMap<String, std::path::PathBuf> = apps.iter()
+                .filter_map(|a| Some((a.package.clone(),
+                                      liw_core::art::art_for(&a.package)?)))
+                .collect();
+            Ok::<_, String>((apps, profiles, snap, tints, art))
         });
 
         cx.spawn(async move |this, cx| {
@@ -158,11 +171,12 @@ impl AppState {
             };
             let _ = this.update(cx, |s, cx| {
                 match outcome {
-                    Ok((apps, profiles, snap, tints)) => {
+                    Ok((apps, profiles, snap, tints, art)) => {
                         s.apps = apps;
                         s.profiles = profiles;
                         s.snapshot = snap;
                         s.tints = tints;
+                        s.art = art;
                         s.link = Link::Up;
                         s.start_watching(cx);
                     }

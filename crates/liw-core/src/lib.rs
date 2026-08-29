@@ -5,6 +5,7 @@
 //! pitfalls, health signals, crash chains — in one place.
 
 pub mod apps;
+pub mod art;
 pub mod bench;
 pub mod perf;
 pub mod config;

@@ -15,6 +15,11 @@ use crate::state::AppState;
 use crate::theme::{Theme, RADIUS, S1, S2, S3, S4, S6};
 use crate::tint::Tint;
 
+/// The store is not a game. It sits at the end of the row as its own action
+/// so "Your games" means what it says, and so there is somewhere obvious to
+/// go when the library is empty.
+const STORE: &str = "com.android.vending";
+
 const CARD_W: f32 = 156.0;
 const CARD_ICON: f32 = 52.0;
 const HERO_H: f32 = 188.0;
@@ -23,10 +28,17 @@ const HERO_ICON: f32 = 54.0;
 pub fn render(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyElement {
     let hero_el = s.hero().cloned().map(|a| hero(a, s, t, cx));
 
-    let games: Vec<AndroidApp> = s.visible_apps().filter(|a| !a.system).cloned().collect();
-    let mut cards = Vec::with_capacity(games.len());
+    let games: Vec<AndroidApp> = s.visible_apps()
+        .filter(|a| !a.system && a.package != STORE)
+        .cloned()
+        .collect();
+    let mut cards = Vec::with_capacity(games.len() + 1);
     for a in games.iter().cloned() {
         cards.push(card(a, s, t, cx));
+    }
+    // Always last, so it does not move as games come and go.
+    if let Some(store) = s.apps.iter().find(|a| a.package == STORE).cloned() {
+        cards.push(store_card(store, s, t, cx));
     }
 
     let system: Vec<AndroidApp> = s.visible_apps().filter(|a| a.system).cloned().collect();
@@ -50,8 +62,8 @@ pub fn render(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyE
                 .flex()
                 .flex_col()
                 .gap(px(S3))
-                .child(section(t, "Your games", cards.len()))
-                .child(if cards.is_empty() {
+                .child(section(t, "Your games", games.len()))
+                .child(if games.is_empty() && cards.len() <= 1 {
                     empty(t, s).into_any_element()
                 } else {
                     div()
@@ -124,20 +136,52 @@ fn hero(
     let busy = s.busy.is_some();
     let package = a.package.clone();
 
+    let art = s.art(&a.package).map(|p| p.to_path_buf());
+
     div()
         .h(px(HERO_H))
         .flex_none()
-        .flex()
-        .flex_row()
-        .items_end()
-        .justify_between()
-        .p(px(S6))
+        .relative()
+        .overflow_hidden()
         .rounded(px(RADIUS + 6.0))
-        // The wash is the whole trick: the panel takes the game's own colour,
-        // fading out to the right so the secondary list stays readable.
+        // Without artwork the panel takes the game's own colour instead, so
+        // the layout never has a hole where a picture should be.
         .bg(tint.gradient(110.0))
         .border_1()
         .border_color(tint.accent().opacity(0.22))
+        .when_some(art, |el, p| {
+            el.child(
+                img(gpui::ImageSource::Resource(gpui::Resource::Path(
+                    std::sync::Arc::from(p.as_path()),
+                )))
+                .absolute()
+                .inset_0()
+                .size_full()
+                // Cover, not contain: key art is 16:9 and the panel is wider
+                // and shorter, so letterboxing would show the page behind it.
+                .object_fit(gpui::ObjectFit::Cover),
+            )
+            // Scrim. Key art is busy and bright in places; white text on it
+            // is unreadable without one, and a flat overlay would kill the
+            // picture — so it is heavy on the left where the text is and
+            // clears toward the right.
+            .child(
+                div().absolute().inset_0().bg(gpui::linear_gradient(
+                    90.0,
+                    gpui::linear_color_stop(gpui::hsla(0.62, 0.10, 0.04, 0.92), 0.0),
+                    gpui::linear_color_stop(gpui::hsla(0.62, 0.10, 0.04, 0.15), 1.0),
+                )),
+            )
+        })
+        .child(
+            div()
+                .relative()
+                .size_full()
+                .flex()
+                .flex_row()
+                .items_end()
+                .justify_between()
+                .p(px(S6))
         .child(
             div()
                 .flex()
@@ -188,7 +232,8 @@ fn hero(
                         }),
                 ),
         )
-        .when_some(side, |el, sd| el.child(sd))
+                .when_some(side, |el, sd| el.child(sd)),
+        )
         .into_any_element()
 }
 
@@ -201,7 +246,7 @@ fn hero_side(
     current: &AndroidApp, s: &AppState, t: &Theme, cx: &mut Context<AppState>,
 ) -> Option<gpui::AnyElement> {
     let others: Vec<AndroidApp> = s.apps.iter()
-        .filter(|a| !a.system && a.package != current.package)
+        .filter(|a| !a.system && a.package != STORE && a.package != current.package)
         .take(5)
         .cloned()
         .collect();
@@ -309,6 +354,52 @@ fn icon_well(
                 .text_color(t.text_muted)
                 .child(initial(&a.name))
                 .into_any_element(),
+        })
+        .into_any_element()
+}
+
+/// The store, drawn as an invitation rather than as another game.
+fn store_card(
+    a: AndroidApp, s: &AppState, t: &Theme, cx: &mut Context<AppState>,
+) -> gpui::AnyElement {
+    let busy = s.busy.is_some();
+    let tint = s.tint(&a.package);
+    let package = a.package.clone();
+    div()
+        .id("card-store")
+        .w(px(CARD_W))
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(S2))
+        .pt(px(S4))
+        .pb(px(S3))
+        .px(px(S3))
+        .rounded(px(RADIUS + 4.0))
+        // Dashed and unfilled: it reads as "add something", not as content.
+        .border_dashed()
+        .border_1()
+        .border_color(t.border)
+        .cursor_pointer()
+        .hover(|x| x.border_color(t.accent.opacity(0.6)).bg(t.surface))
+        .child(icon_well(&a, CARD_ICON, CARD_ICON + 20.0, t, tint))
+        .child(
+            div()
+                .text_size(px(13.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(t.text)
+                .child("Get more games"),
+        )
+        .child(
+            div()
+                .h(px(14.0))
+                .text_size(px(10.0))
+                .text_color(t.text_faint)
+                .child("Play Store"),
+        )
+        .when(!busy, |el| {
+            el.on_click(cx.listener(move |st, _, _, cx| st.launch(package.clone(), cx)))
         })
         .into_any_element()
 }

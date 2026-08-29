@@ -311,6 +311,28 @@ straight to the display; an always-on-top overlay closes that path and forces
 full composition, which costs frames exactly where they matter. A GameLoop
 style sidebar over the game is the one thing this deliberately does not do.
 
+### Artwork
+
+```bash
+liw art list com.ForgeGames.SpecialForcesGroup2   # what its APK might offer
+liw art dump <package> /tmp/art                   # extract them to look at
+liw art use  <package> 0                          # or a path to your own image
+```
+
+Artwork is a file the user picks, and the APK is only a source of
+candidates. Pulling it automatically was measured on three installed apps
+and does not work: for Special Forces Group 2 the largest square image is
+a **speaker glyph** from the volume UI, Subway Surfers' widest image is a
+**Mintegral ad banner**, and Instagram's is a filter atlas. No size or
+aspect rule separates key art from ad assets, and guessing wrong puts
+someone else's advertisement on your game.
+
+The filter narrows hundreds of images to a shortlist — Special Forces
+Group 2 comes back with exactly its two 1280x720 key-art frames, Subway
+Surfers with nothing at all — and a person chooses. Without artwork the
+hero falls back to the icon's own colour, so the layout never has a hole
+where a picture should be.
+
 ## Control plane
 
 `liwd` owns the session and exposes it on the session bus as
