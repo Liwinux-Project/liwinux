@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# liwd-helper kurulumu (root gerekir)
+# liwd-helper installation (needs root)
 set -euo pipefail
-[ "$(id -u)" = 0 ] || { echo "root gerekiyor: sudo bash $0"; exit 1; }
+[ "$(id -u)" = 0 ] || { echo "root required: sudo bash $0"; exit 1; }
 R="$(cd "$(dirname "$0")/.." && pwd)"
 install -Dm755 "$R/target/release/liwd-helper" /usr/local/bin/liwd-helper
 install -Dm644 "$R/dist/polkit/id.liwinux.policy" /usr/share/polkit-1/actions/id.liwinux.policy

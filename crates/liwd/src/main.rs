@@ -19,6 +19,12 @@ use zbus::{connection, interface};
 /// window is noticed within half a minute — fullscreen is applied after the
 /// window appears anyway, so the delay is not felt.
 const WINDOW_POLL_EVERY: u32 = 6;
+/// How often to re-check the kernel's module tree, in ticks (~5 minutes).
+///
+/// A kernel update is rare, but it happens WHILE we run and gives no other
+/// sign. Noticing within minutes beats finding out hours later from a session
+/// that will not start and an error message that blames the firewall.
+const KERNEL_CHECK_EVERY: u32 = 60;
 
 const BUS_NAME: &str = "id.liwinux.Manager1";
 const OBJ_PATH: &str = "/id/liwinux/Manager1";
@@ -212,6 +218,8 @@ async fn main() -> Result<()> {
     let mut attempts = 0u32;
     let mut was_running = false;
     let mut win_tick: u32 = 0;
+    let mut kern_tick: u32 = 0;
+    let mut kernel = liw_core::host::KernelWatch::new();
     let mut ticker = tokio::time::interval(cfg.poll_interval);
     let mut sigterm = tokio::signal::unix::signal(
         tokio::signal::unix::SignalKind::terminate())?;
@@ -219,6 +227,28 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
+                // The kernel's module tree can be deleted underneath a running
+                // system by a package update. Report the change, not the state,
+                // so a healthy machine stays quiet.
+                if kern_tick % KERNEL_CHECK_EVERY == 0 {
+                    let stale = liw_core::host::check_modules();
+                    if let Some(changed) = kernel.poll(stale.is_some()) {
+                        match (&stale, changed) {
+                            (Some(s), true) => tracing::warn!(
+                                running = %s.running,
+                                on_disk = %s.available.join(", "),
+                                "the running kernel's modules were removed by an \
+                                 update; nothing new can be loaded until reboot, \
+                                 and a session start will fail with an error that \
+                                 does not mention modules"),
+                            (_, false) => tracing::info!(
+                                "kernel modules in place for the running kernel"),
+                            _ => {}
+                        }
+                    }
+                }
+                kern_tick = kern_tick.wrapping_add(1);
+
                 let h = sup.health().await;
                 let next = if !h.session_running {
                     unhealthy = 0; attempts = 0;
@@ -229,7 +259,7 @@ async fn main() -> Result<()> {
                     if unhealthy > 0 { tracing::info!("session recovered"); }
                     unhealthy = 0; attempts = 0;
 
-                    // Pencere durumunu SEYREK yokla.
+                    // Poll the window state RARELY.
                     //
                     // The health loop ticks every 5 seconds; loading a KWin
                     // script on every tick meant 720 loads per hour. Keeping

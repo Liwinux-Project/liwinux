@@ -388,14 +388,7 @@ async fn main() -> Result<()> {
                 // kernel's modules produces exactly this, and nothing in the
                 // visible error mentions modules.
                 eprintln!("the session did not come up");
-                if let Some(s) = liw_core::host::check_modules() {
-                    eprintln!("\n  The host explains it: {}\n", s.summary());
-                    eprintln!("  Waydroid's NAT rule needs nft_masq. That module is");
-                    eprintln!("  not loaded and can no longer be loaded, so the rule");
-                    eprintln!("  fails and the bridge is never created.\n");
-                    eprintln!("  Reboot into {}, then start the session again.\n",
-                              s.available.last().map(String::as_str).unwrap_or("the new kernel"));
-                }
+                report_host_state();
                 if let Err(e) = r { return Err(e); }
                 anyhow::bail!("session start was accepted but the session is not running");
             }
@@ -425,6 +418,14 @@ async fn main() -> Result<()> {
                 }
             } else {
                 println!("liwd      : not running");
+            }
+            // Surface a stale module tree here too. It is silent otherwise:
+            // the machine looks healthy right up until something needs a
+            // module that can no longer be loaded.
+            if let Some(h) = liw_core::host::check_modules() {
+                println!("kernel    : {} — MODULES MISSING", h.running);
+                println!("            on disk: {}", h.available.join(", "));
+                println!("            reboot before starting a session");
             }
         }
         SessionAction::Fullscreen => {
@@ -478,4 +479,57 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Reports what the HOST was measured to be, when a session will not start.
+///
+/// Every line here is a check performed at this moment. An earlier version
+/// printed a fixed explanation naming nft_masq, derived once by hand — so it
+/// said the same thing whatever the real cause was, and nothing in the code
+/// had actually looked at that module. A canned narrative that happens to be
+/// right once is still a guess.
+fn report_host_state() {
+    use liw_core::host::{self, ModuleState};
+
+    let stale = host::check_modules();
+    let report = host::waydroid_module_report();
+    let broken = host::unloadable(&report);
+
+    if stale.is_none() && broken.is_empty() {
+        eprintln!("  The host looks fine: the running kernel's modules are in");
+        eprintln!("  place and everything Waydroid needs can load. The cause is");
+        eprintln!("  somewhere else — try `journalctl -u waydroid-container -n 50`.");
+        return;
+    }
+
+    if let Some(s) = &stale {
+        eprintln!("\n  Running kernel : {}  — its module tree is GONE", s.running);
+        eprintln!("  On disk        : {}", s.available.join(", "));
+        eprintln!("  A kernel update removed it. Modules already loaded keep");
+        eprintln!("  working; nothing new can be loaded until reboot.");
+    }
+
+    eprintln!("\n  What Waydroid needs, measured just now:");
+    for (req, state) in &report {
+        let label = match state {
+            ModuleState::Present  => "loaded",
+            ModuleState::Loadable => "can load",
+            ModuleState::Missing  => "MISSING",
+            ModuleState::Unknown  => "not determined",
+        };
+        eprintln!("    {:<14} {:<15} {}", req.module, label, req.used_by);
+    }
+
+    if !broken.is_empty() {
+        eprintln!("\n  {} of these cannot be loaded, so the command that needs",
+                  broken.len());
+        eprintln!("  it fails. That failure surfaces far from its cause — a");
+        eprintln!("  missing nft_masq is reported by nft as a firewall error.");
+    }
+    if let Some(s) = &stale {
+        eprintln!("\n  Reboot into {} and start the session again.\n",
+                  s.available.last().map(String::as_str).unwrap_or("the new kernel"));
+    } else {
+        eprintln!();
+    }
 }
