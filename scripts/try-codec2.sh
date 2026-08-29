@@ -20,12 +20,26 @@
 #   result into the guest. make_base_props(), which would put ccodec=0 back,
 #   runs only on `waydroid init` and `waydroid upgrade`.
 #
-# WHAT THIS DOES NOT KNOW
-#   Whether Codec2 works here. Waydroid does not disable it for fun: Codec2's
-#   software components allocate graphic buffers through gralloc, and on the
-#   fallback path that allocation can fail. Video may break entirely. That is
-#   why the session is watched and rolled back automatically if it does not
-#   come up.
+# RESULT ON THIS SETUP: IT DOES NOT WORK
+#   Run on 2026-08-29 with the gbm fallback gralloc. Everything looked right:
+#   the session booted in 15s, 28 c2.android.* components registered, AV1
+#   among them, and no error above level I in the log.
+#
+#   Then video did not decode. In Subway Surfers an advert played its AUDIO
+#   with no picture at all, and the game crashed before the advert finished.
+#   `revert` fixed it immediately.
+#
+#   The audio/video split is the whole explanation. Codec2's software
+#   components allocate their output through gralloc; audio ones never ask for
+#   a GRAPHIC buffer so they work, video ones do so they fail. This is exactly
+#   what Waydroid ships the switch off to avoid.
+#
+#   So: REGISTERING IS NOT WORKING. A boot that completes and a list of
+#   twenty-eight components prove neither. The only test that counts is
+#   playing a video and looking at it.
+#
+#   Keep the script for a machine with a real HAL gralloc, where the switch is
+#   worth trying. On the fallback path it is a known dead end.
 
 set -u
 MODE="${1:-status}"
@@ -117,7 +131,7 @@ report_codecs() {
     return
   fi
   if [ "${c2:-0}" -gt 0 ]; then
-    say "-> Codec2 REGISTERED. Formats it adds over the OMX set:"
+    say "-> Codec2 REGISTERED (which is not the same as decoding). Adds:"
     waydroid --details-to-stdout shell -- dumpsys media.player 2>/dev/null \
       | tr -d '\r' | grep -oE "c2\.[A-Za-z0-9._]+" | sort -u | sed 's/^/       /'
   else
@@ -222,9 +236,19 @@ enable)
     S "4. What actually happened"
     report_codecs
     echo
-    say "The session came up. Whether video PLAYS is not something this"
-    say "script can answer - open the game or a video and watch."
-    say "If it is broken:  sudo bash $0 revert"
+    echo
+    say "THE SESSION CAME UP. THAT IS NOT SUCCESS."
+    say ""
+    say "Components registering says nothing about whether they decode."
+    say "On the gbm fallback gralloc this exact state - clean boot, every"
+    say "component present - still gave audio with no picture, and the app"
+    say "crashed mid-playback."
+    say ""
+    say "Play a video and LOOK at it. The failure to watch for:"
+    say "  * sound plays but the picture never appears"
+    say "  * the app dies partway through"
+    say ""
+    say "Either of those:  sudo bash $0 revert"
   else
     S "4. Boot did not complete - rolling back"
     say "Android did not reach boot_completed in ${BOOT_TIMEOUT}s."

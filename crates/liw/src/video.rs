@@ -550,11 +550,20 @@ pub async fn verify() -> Result<()> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
+    let gralloc = h.get_prop("ro.hardware.gralloc").await.unwrap_or_default();
+
     let (declared, _) = guest_codecs();
     let bar = "─".repeat(66);
     println!("\n  Registered vs declared\n  {bar}");
     println!("  registered by a running Android : {}", names.len());
     println!("  declared in the image           : {}", declared.len());
+
+    // Printed BEFORE the decoder list. A list of thirteen live decoders reads
+    // as good news, and on this path it is not — they register and then fail.
+    if let Some(w) = video::codec2_video_risk(&gralloc, ccodec.as_deref()) {
+        println!("\n  ✗ WARNING");
+        for l in wrap(&w, 64) { println!("      {l}"); }
+    }
 
     let live_video: Vec<&Codec> = declared.iter()
         .filter(|c| !c.encoder && names.iter().any(|n| *n == c.name))

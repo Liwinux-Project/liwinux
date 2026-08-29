@@ -292,6 +292,43 @@ pub fn mime_weight(mime: &str) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
+// Codec2's video path
+// ---------------------------------------------------------------------------
+
+/// gralloc implementations that are Waydroid's FALLBACK rather than a real
+/// vendor HAL. lxc.py picks these when it can find no HAL gralloc, and it
+/// disables Codec2 in the same branch.
+const FALLBACK_GRALLOC: &[&str] = &["gbm", "default", "minigbm_gbm_mesa"];
+
+/// Whether Codec2's video decoders can be trusted on this gralloc.
+///
+/// MEASURED on 2026-08-29, and it is the reason this function exists:
+/// with `debug.stagefright.ccodec=1` the components register perfectly —
+/// 28 of them, AV1 included — and then video does not decode. In Subway
+/// Surfers an advert played its AUDIO with no picture at all, and the game
+/// crashed before the advert finished. Reverting fixed it.
+///
+/// The split between audio and video is the whole story. Codec2's software
+/// components allocate their output through gralloc; audio components never
+/// ask for a GRAPHIC buffer, so they work, and video ones do, so they fail.
+/// This is exactly what Waydroid avoids by shipping the switch off.
+///
+/// Registration is therefore NOT evidence of function, and a report that
+/// counts registered decoders is not a report that video works.
+pub fn codec2_video_risk(gralloc: &str, ccodec: Option<&str>) -> Option<String> {
+    if ccodec != Some("1") { return None; }
+    let g = gralloc.trim();
+    if g.is_empty() { return None; }
+    if !FALLBACK_GRALLOC.iter().any(|f| g.contains(f)) { return None; }
+    Some(format!(
+        "Codec2 is ON with the fallback gralloc ({g}). Its video components \
+         allocate output through gralloc, and on this path that allocation \
+         was MEASURED to fail: the decoders register, audio plays, no picture \
+         appears and the app crashes. The count of live decoders below says \
+         they registered, not that they work."))
+}
+
+// ---------------------------------------------------------------------------
 // Findings
 // ---------------------------------------------------------------------------
 
@@ -606,6 +643,47 @@ pub fn unplayable(declared: &[Codec], registered: &[String]) -> Vec<(String, boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Codec2's video path ---------------------------------------------
+
+    /// The measured failure: switch on, fallback gralloc, video broken.
+    #[test]
+    fn codec2_on_a_fallback_gralloc_is_flagged() {
+        for g in ["gbm", "default", "minigbm_gbm_mesa"] {
+            assert!(codec2_video_risk(g, Some("1")).is_some(), "{g}");
+        }
+    }
+
+    /// With the switch off there is nothing to warn about — the OMX path is
+    /// what Waydroid ships and it works.
+    #[test]
+    fn the_warning_only_applies_when_codec2_is_on() {
+        assert_eq!(codec2_video_risk("gbm", Some("0")), None);
+        assert_eq!(codec2_video_risk("gbm", None), None);
+    }
+
+    /// A real vendor HAL gralloc is the case Codec2 was designed for. Warning
+    /// there would be spreading one machine's result to machines it never
+    /// applied to.
+    #[test]
+    fn a_hal_gralloc_is_not_warned_about() {
+        assert_eq!(codec2_video_risk("android", Some("1")), None);
+        assert_eq!(codec2_video_risk("qcom", Some("1")), None);
+    }
+
+    #[test]
+    fn an_unknown_gralloc_claims_nothing() {
+        assert_eq!(codec2_video_risk("", Some("1")), None);
+        assert_eq!(codec2_video_risk("   ", Some("1")), None);
+    }
+
+    /// The wording must not let a reader take registration for function —
+    /// that is the mistake the measurement caught.
+    #[test]
+    fn the_warning_separates_registering_from_working() {
+        let w = codec2_video_risk("gbm", Some("1")).unwrap();
+        assert!(w.contains("not that they work"), "{w}");
+    }
 
     // --- declared vs registered -------------------------------------------
 
