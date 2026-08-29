@@ -303,7 +303,7 @@ fn content(
     }
     match s.nav {
         Nav::Library => library::render(s, t, window, cx),
-        Nav::Store => crate::store::render(s, t, cx),
+        Nav::Keymap => crate::keymap::render(s, t, cx),
         other => placeholder(t, other),
     }
 }

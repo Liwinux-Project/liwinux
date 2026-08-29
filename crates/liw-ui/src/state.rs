@@ -18,19 +18,17 @@ use crate::tint::{self, Tint};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nav {
     Library,
-    Store,
     Keymap,
     Diagnostics,
     Settings,
 }
 
 impl Nav {
-    pub const ALL: [Nav; 5] =
-        [Nav::Library, Nav::Store, Nav::Keymap, Nav::Diagnostics, Nav::Settings];
+    pub const ALL: [Nav; 4] =
+        [Nav::Library, Nav::Keymap, Nav::Diagnostics, Nav::Settings];
     pub fn label(self) -> &'static str {
         match self {
             Nav::Library => "Library",
-            Nav::Store => "Store",
             Nav::Keymap => "Key mapping",
             Nav::Diagnostics => "Diagnostics",
             Nav::Settings => "Settings",

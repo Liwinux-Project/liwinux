@@ -333,28 +333,22 @@ Surfers with nothing at all — and a person chooses. Without artwork the
 hero falls back to the icon's own colour, so the layout never has a hole
 where a picture should be.
 
-### Store
+### Getting games
 
-A **Store** tab lists the games liwinux ships a key mapping for — titles
-somebody actually sat down and tuned — and says which of them are
-installed. It is not a catalogue: GameLoop can show a wall of games
-because Tencent runs a catalogue service, which is a content operation
-and not something a client can reproduce.
+The library's last two cards are **Get more games** (opens the Play Store)
+and **Install an APK** (a file picker). Aurora Store is the other sensible
+source and installs the same way.
 
-"Install" opens the Play Store at that page rather than installing
-anything. Owning downloads, signatures and updates would mean rebuilding
-what the store already does properly.
+liwinux does not have a catalogue and will not grow one. Browsing Play
+needs Play API auth: the user's own Google credentials, or somebody
+else's pooled anonymous accounts like the dispenser Aurora Store runs.
+Aurora already solves that in a client built to ask the account question
+properly; pointing a different product at its dispenser would be leeching
+infrastructure they pay for, and one outage from a dead front page.
 
-A **Where games come from** row names the real sources — Play Store,
-Aurora Store, or an APK you already have — with a file picker for the
-last one.
-
-liwinux will not grow a Play catalogue of its own. Browsing Play needs
-Play API auth, which means either the user's own Google credentials or
-somebody else's pooled anonymous accounts. Aurora Store solves that in a
-client built to ask that question, and quietly borrowing its token
-dispenser to power a different product would be leeching infrastructure
-somebody else pays for — and one outage away from a dead front page.
+There was briefly a "Store" tab. Without a catalogue the name promised
+something it could not do, so it is gone and its parts went where they
+belong — profiles to **Key mapping**, install actions to the library.
 
 ## Control plane
 

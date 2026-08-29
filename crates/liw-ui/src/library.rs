@@ -58,10 +58,11 @@ pub fn render(
     for a in games.iter().cloned() {
         cards.push(card(a, s, t, cx));
     }
-    // Always last, so it does not move as games come and go.
+    // Always last, so they do not move as games come and go.
     if let Some(store) = s.apps.iter().find(|a| a.package == STORE).cloned() {
         cards.push(store_card(store, s, t, cx));
     }
+    cards.push(install_card(s, t, cx));
 
     let system: Vec<AndroidApp> = s.visible_apps().filter(|a| a.system).cloned().collect();
     let mut rows = Vec::with_capacity(system.len());
@@ -85,7 +86,7 @@ pub fn render(
                 .flex_col()
                 .gap(px(S3))
                 .child(section(t, "Your games", games.len()))
-                .child(if games.is_empty() && cards.len() <= 1 {
+                .child(if games.is_empty() && cards.len() <= 2 {
                     empty(t, s).into_any_element()
                 } else {
                     div()
@@ -443,6 +444,64 @@ fn store_card(
         )
         .when(!busy, |el| {
             el.on_click(cx.listener(move |st, _, _, cx| st.launch(package.clone(), cx)))
+        })
+        .into_any_element()
+}
+
+/// Install an APK the user already has.
+///
+/// Lives beside the store card because both answer the same question — "how
+/// do I get another game?" — and that question belongs on the library, next
+/// to what you already have.
+fn install_card(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyElement {
+    let busy = s.busy.is_some();
+    div()
+        .id("card-install")
+        .w(px(CARD_W))
+        .flex()
+        .flex_col()
+        .rounded(px(RADIUS + 4.0))
+        .overflow_hidden()
+        .border_dashed()
+        .border_1()
+        .border_color(t.border)
+        .cursor_pointer()
+        .hover(|x| x.border_color(t.accent.opacity(0.6)).bg(t.surface))
+        .child(
+            div()
+                .w_full()
+                .h(px(CARD_ART_H))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(28.0))
+                .text_color(t.text_faint)
+                .child("+"),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(S1))
+                .px(px(S3))
+                .py(px(S2 + 2.0))
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(t.text)
+                        .child("Install an APK"),
+                )
+                .child(
+                    div()
+                        .h(px(13.0))
+                        .text_size(px(10.0))
+                        .text_color(t.text_faint)
+                        .child("Or Aurora Store"),
+                ),
+        )
+        .when(!busy, |el| {
+            el.on_click(cx.listener(|st, _, _, cx| st.pick_and_install(cx)))
         })
         .into_any_element()
 }
