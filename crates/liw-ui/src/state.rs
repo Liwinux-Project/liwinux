@@ -212,8 +212,26 @@ impl AppState {
                 Err(_) => return,
             };
             let Ok(mut changes) = props.receive_properties_changed().await else { return };
-            while changes.next().await.is_some() {
+            // Latency is the one figure that has to be POLLED.
+            //
+            // Everything else is a fact that changes when something happens,
+            // so it arrives as a signal. Latency changes continuously —
+            // making it a property would mean a change signal several times a
+            // second for a number nobody is watching most of the time. So it
+            // is read on a slow tick, and only while the keymapper is
+            // actually running.
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut mapping = false;
+            loop {
+                tokio::select! {
+                    ev = changes.next() => {
+                        if ev.is_none() { return }
+                    }
+                    _ = tick.tick(), if mapping => {}
+                }
                 let Ok(s) = m.snapshot().await else { continue };
+                mapping = s.keymapper_running;
                 if tx.send(s).await.is_err() { return; }
             }
         });

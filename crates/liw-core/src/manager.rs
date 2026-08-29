@@ -118,6 +118,12 @@ pub struct Snapshot {
     pub host_focused: bool,
     pub active_profile: Option<String>,
     pub foreground: Option<String>,
+    /// Our own layer's live latency (microseconds), and how many samples it
+    /// rests on. Zero samples means "not measured yet" — a UI must not draw
+    /// that as a real zero.
+    pub latency_p50_us: u64,
+    pub latency_p99_us: u64,
+    pub latency_samples: u64,
 }
 
 pub struct Manager {
@@ -133,7 +139,16 @@ impl Manager {
     pub fn proxy(&self) -> &Manager1Proxy<'static> { &self.proxy }
 
     /// Reads every status property at once.
+    ///
+    /// Latency is not a property: it changes continuously and announcing
+    /// every tick would be a change signal a few times a second for a number
+    /// nobody is watching most of the time. It comes from
+    /// `KeymapperStatus`, which a caller reads when it wants it.
     pub async fn snapshot(&self) -> Result<Snapshot, ManagerError> {
+        let km: serde_json::Value = self.proxy.keymapper_status().await.ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let num = |k: &str| km.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
         // Empty string means "none" on the wire: D-Bus has no null, and a
         // separate presence flag is one more thing for a client to get wrong.
         let none_if_empty = |s: String| if s.is_empty() { None } else { Some(s) };
@@ -150,6 +165,9 @@ impl Manager {
                 self.proxy.active_profile().await.unwrap_or_default()),
             foreground: none_if_empty(
                 self.proxy.foreground_package().await.unwrap_or_default()),
+            latency_p50_us: num("latency_p50_us"),
+            latency_p99_us: num("latency_p99_us"),
+            latency_samples: num("latency_samples"),
         })
     }
 

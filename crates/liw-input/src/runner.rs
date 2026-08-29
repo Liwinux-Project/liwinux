@@ -74,8 +74,16 @@ pub struct RunnerState {
     /// Is the Waydroid window focused on the host? If not, mapping stops.
     pub host_focused: bool,
     /// Latency of our own layer (microseconds, p50/p99).
+    ///
+    /// While the runner is alive these come from the LIVE window, so a UI
+    /// bound to them shows how it feels now. At exit they are replaced with
+    /// the run-long figures for the final report.
     pub latency_p50_us: u64,
     pub latency_p99_us: u64,
+    /// How many samples the live figures rest on. Zero means "no measurement
+    /// yet", which a UI must not draw as "0.00 ms".
+    #[serde(default)]
+    pub latency_samples: u64,
 }
 
 /// Events reported out of the loop (for logging / UI).
@@ -454,7 +462,25 @@ impl Runner {
                 // On a separate, slower clock: tying it to the gesture clock
                 // meant it never ran when there was no gesture — exactly when
                 // injection had stopped.
-                _ = repair_tick.tick(), if pipe_dead => {
+                // --- housekeeping ---
+                //
+                // Publishes the live latency and, when the pipe has broken,
+                // asks for a new one. Ungated on purpose: the figures have to
+                // keep flowing while everything is fine, which is most of the
+                // time.
+                _ = repair_tick.tick() => {
+                    let (p50, p99) = lat.recent_percentiles();
+                    {
+                        let mut st = self.state.write().await;
+                        // Only the LIVE window here. The run-long figures are
+                        // written once at exit; overwriting them each tick
+                        // would turn the final report into "the last two
+                        // seconds", which is not what it claims to be.
+                        st.latency_p50_us = p50;
+                        st.latency_p99_us = p99;
+                        st.latency_samples = lat.recent_len() as u64;
+                    }
+                    if !pipe_dead { continue }
                     let Some(tx) = self.pipe_provider.clone() else {
                         tracing::error!("the pipe broke and there is no channel to renew it \
                                          — the keymapper must be restarted");
@@ -702,10 +728,12 @@ mod tests {
     fn state_is_serialisable_for_dbus() {
         let s = RunnerState { running: true, foreground: Some("com.x".into()),
             active_profile: Some("P".into()), grabbed: true, host_focused: true,
-            game_mode: true, latency_p50_us: 80, latency_p99_us: 170 };
+            game_mode: true, latency_p50_us: 80, latency_p99_us: 170,
+            latency_samples: 512 };
         let j = serde_json::to_string(&s).unwrap();
         let back: RunnerState = serde_json::from_str(&j).unwrap();
         assert_eq!(back.active_profile.as_deref(), Some("P"));
         assert_eq!(back.latency_p99_us, 170);
+        assert_eq!(back.latency_samples, 512);
     }
 }

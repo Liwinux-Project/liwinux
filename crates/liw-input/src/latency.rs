@@ -12,11 +12,23 @@
 //! The rest is invisible to this tool and **pretending otherwise would be
 //! wrong** — so the report states plainly what it does and does not cover.
 
+use std::collections::VecDeque;
 use std::time::{Duration, SystemTime};
+
+/// How many samples the live window keeps.
+///
+/// The run-long percentiles answer "how did that session go"; a status bar
+/// needs "how does it feel right now", and those are different questions. At
+/// roughly 200 dispatches a second this is about ten seconds of history —
+/// long enough to be stable, short enough that a stall shows up and then
+/// clears instead of staining the number for the rest of the session.
+const RECENT: usize = 2048;
 
 #[derive(Debug, Default)]
 pub struct LatencyStats {
     samples_us: Vec<u64>,
+    /// Bounded tail of `samples_us`, for the live figure.
+    recent: VecDeque<u64>,
     /// Events whose timestamp appears in the future rather than the past.
     /// Clock skew makes the measurement meaningless; we count these instead
     /// of silently treating them as zero.
@@ -29,14 +41,33 @@ impl LatencyStats {
     /// Records the time elapsed from the evdev event timestamp until now.
     pub fn record(&mut self, event_time: SystemTime) {
         match SystemTime::now().duration_since(event_time) {
-            Ok(d) => self.samples_us.push(d.as_micros() as u64),
+            Ok(d) => self.push(d.as_micros() as u64),
             Err(_) => self.skipped += 1,
         }
     }
 
     pub fn record_duration(&mut self, d: Duration) {
-        self.samples_us.push(d.as_micros() as u64);
+        self.push(d.as_micros() as u64);
     }
+
+    fn push(&mut self, us: u64) {
+        self.samples_us.push(us);
+        if self.recent.len() == RECENT { self.recent.pop_front(); }
+        self.recent.push_back(us);
+    }
+
+    /// (p50, p99) over the live window, in microseconds.
+    ///
+    /// Separate from `percentiles` on purpose: mixing the two would let a
+    /// single early stall sit in the status bar for the rest of the session.
+    pub fn recent_percentiles(&self) -> (u64, u64) {
+        if self.recent.is_empty() { return (0, 0) }
+        let mut v: Vec<u64> = self.recent.iter().copied().collect();
+        v.sort_unstable();
+        (Self::pct(&v, 50.0), Self::pct(&v, 99.0))
+    }
+
+    pub fn recent_len(&self) -> usize { self.recent.len() }
 
     pub fn len(&self) -> usize { self.samples_us.len() }
     pub fn is_empty(&self) -> bool { self.samples_us.is_empty() }
@@ -95,6 +126,38 @@ mod tests {
         let (p50, p95, p99, max) = l.percentiles();
         assert_eq!(max, 10_000);
         assert!(p50 > 0 && p50 < p95 && p95 <= p99 && p99 <= max);
+    }
+
+    /// The live window must forget. A stall at the start of a session
+    /// should not still be in the status bar an hour later.
+    #[test]
+    fn the_recent_window_forgets() {
+        let mut l = LatencyStats::new();
+        // One terrible sample, then a long calm stretch that evicts it.
+        l.record_duration(Duration::from_millis(900));
+        for _ in 0..RECENT { l.record_duration(Duration::from_micros(500)); }
+        let (p50, p99) = l.recent_percentiles();
+        assert_eq!(p50, 500);
+        assert_eq!(p99, 500, "the stall should have been evicted");
+        assert_eq!(l.recent_len(), RECENT, "the window must stay bounded");
+
+        // The run-long view still remembers it — that is its job.
+        assert_eq!(l.percentiles().3, 900_000);
+    }
+
+    /// Before it fills, the window still has to answer.
+    #[test]
+    fn a_short_window_still_reports() {
+        let mut l = LatencyStats::new();
+        for us in [100u64, 200, 300] { l.record_duration(Duration::from_micros(us)); }
+        let (p50, p99) = l.recent_percentiles();
+        assert_eq!(p50, 200);
+        assert_eq!(p99, 300);
+    }
+
+    #[test]
+    fn an_empty_window_is_zero_not_a_panic() {
+        assert_eq!(LatencyStats::new().recent_percentiles(), (0, 0));
     }
 
     #[test]

@@ -191,6 +191,7 @@ fn status(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyEleme
         .flex_row()
         .items_center()
         .gap(px(S2))
+        .when_some(latency(s, t), |el, l| el.child(l))
         .when(s.snapshot.game_mode, |el| el.child(pill(t, "game mode", t.accent)))
         .child(pill(t, label, colour))
         .when(matches!(s.link, Link::Up), |el| {
@@ -220,6 +221,40 @@ fn status(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyEleme
             )
         })
         .into_any_element()
+}
+
+/// Our own layer's latency, shown only once it has been measured.
+///
+/// This is the number liwinux exists to keep small, and it is the one thing
+/// no other launcher will tell you. It is hidden rather than shown as zero
+/// when there are no samples: "0.00 ms" reads as a measurement, and a
+/// measurement that has not happened is not one.
+fn latency(s: &AppState, t: &Theme) -> Option<gpui::AnyElement> {
+    if s.snapshot.latency_samples == 0 { return None }
+    let p50 = s.snapshot.latency_p50_us as f32 / 1000.0;
+    let p99 = s.snapshot.latency_p99_us as f32 / 1000.0;
+    // Thresholds against the frame budget rather than against a feeling: a
+    // millisecond is nothing at 60 Hz and a third of the budget at 240.
+    let colour = if p99 < 2.0 { t.ok } else if p99 < 6.0 { t.warn } else { t.bad };
+    Some(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(S1 + 2.0))
+            .px(px(S2 + 2.0))
+            .py(px(S1))
+            .rounded(px(RADIUS))
+            .bg(t.raised)
+            .child(div().w(px(6.0)).h(px(6.0)).rounded(px(3.0)).bg(colour))
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(t.text_muted)
+                    .child(SharedString::from(format!("input {p50:.1} / {p99:.1} ms"))),
+            )
+            .into_any_element(),
+    )
 }
 
 fn pill(t: &Theme, text: &str, colour: gpui::Hsla) -> gpui::AnyElement {
