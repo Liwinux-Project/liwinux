@@ -358,11 +358,47 @@ async fn main() -> Result<()> {
 
     match action {
         SessionAction::Start => {
-            match &proxy {
-                Some(p) => p.call::<_, _, ()>("Start", &()).await.context("Start call")?,
-                None => sup.start_detached().await.context("starting the session")?,
+            let r = match &proxy {
+                Some(p) => p.call::<_, _, ()>("Start", &()).await
+                    .map_err(anyhow::Error::from).context("Start call"),
+                None => sup.start_detached().await
+                    .map_err(anyhow::Error::from).context("starting the session"),
+            };
+            // Asking for a start is not the same as starting. The D-Bus
+            // call returns as soon as the request is accepted, and waydroid
+            // fails afterwards in its own process — so reporting success from
+            // the call alone announces a session that is not there.
+            let requested = r.is_ok();
+            let mut up = false;
+            if requested {
+                for _ in 0..30 {
+                    if sup.status().await.map(|s| s.session_running()).unwrap_or(false) {
+                        up = true;
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
             }
-            println!("session started");
+            if up {
+                println!("session started");
+            } else {
+                // A failed start gets blamed on Waydroid or on the firewall,
+                // because that is what the error text talks about. Check the
+                // host first: a kernel update that removed the running
+                // kernel's modules produces exactly this, and nothing in the
+                // visible error mentions modules.
+                eprintln!("the session did not come up");
+                if let Some(s) = liw_core::host::check_modules() {
+                    eprintln!("\n  The host explains it: {}\n", s.summary());
+                    eprintln!("  Waydroid's NAT rule needs nft_masq. That module is");
+                    eprintln!("  not loaded and can no longer be loaded, so the rule");
+                    eprintln!("  fails and the bridge is never created.\n");
+                    eprintln!("  Reboot into {}, then start the session again.\n",
+                              s.available.last().map(String::as_str).unwrap_or("the new kernel"));
+                }
+                if let Err(e) = r { return Err(e); }
+                anyhow::bail!("session start was accepted but the session is not running");
+            }
         }
         SessionAction::Stop => {
             match &proxy {
