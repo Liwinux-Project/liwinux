@@ -221,6 +221,8 @@ pub enum ProfileError {
     Parse(#[from] toml::de::Error),
     #[error("invalid profile: {0}")]
     Invalid(String),
+    #[error("could not write profile: {0}")]
+    Edit(String),
 }
 
 impl Profile {

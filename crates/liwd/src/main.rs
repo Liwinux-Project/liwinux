@@ -110,6 +110,85 @@ impl Manager {
         self.km.state().await.foreground.unwrap_or_default()
     }
 
+    /// Every known profile, as a JSON array.
+    ///
+    /// Summaries only — a UI listing them does not need every binding, and
+    /// sending them all would make the list call grow with the profile
+    /// count. `GetProfile` returns the full thing.
+    #[allow(clippy::unused_async)]
+    async fn list_profiles(&self) -> Result<String, Error> {
+        let store = liw_core::input::Store::discover();
+        let items: Vec<_> = store.entries().map(|e| serde_json::json!({
+            "package": e.profile.package,
+            "name": e.profile.name,
+            "path": e.path.display().to_string(),
+            "origin": format!("{:?}", e.origin),
+            "bindings": e.profile.bindings.len(),
+            // Only user profiles can be written or removed. Without this a
+            // UI would offer Delete on a system profile and then fail.
+            "editable": e.origin == liw_core::input::Origin::User,
+        })).collect();
+        // Broken files are reported too. Swallowing them leaves "why is my
+        // profile not working" unanswered.
+        let problems: Vec<_> = store.problems.iter().map(|p| serde_json::json!({
+            "path": p.path.display().to_string(),
+            "error": p.error,
+        })).collect();
+        Ok(serde_json::to_string(&serde_json::json!({
+            "profiles": items, "problems": problems }))?)
+    }
+
+    /// One profile in full, as JSON.
+    async fn get_profile(&self, package: &str) -> Result<String, Error> {
+        let store = liw_core::input::Store::discover();
+        let e = store.for_package(package)
+            .ok_or_else(|| Error::NoProfile(package.to_string()))?;
+        Ok(serde_json::to_string(&e.profile)?)
+    }
+
+    /// Saves a profile given as JSON. Returns the path written.
+    ///
+    /// The package comes from the payload, so a client cannot save a
+    /// profile under one name while it declares another.
+    ///
+    /// Writing a system profile edits a NEW user file that shadows it; the
+    /// original is left alone so a package update neither loses the user's
+    /// edits nor overwrites them.
+    async fn save_profile(
+        &self, json: &str,
+        #[zbus(signal_emitter)] em: zbus::object_server::SignalEmitter<'_>,
+    ) -> Result<String, Error> {
+        let p: liw_core::input::Profile = serde_json::from_str(json)
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        let store = liw_core::input::Store::discover();
+        let path = store.save(&p).map_err(|e| match e {
+            liw_core::input::ProfileError::Invalid(m) => Error::Invalid(m),
+            other => Error::Failed(other.to_string()),
+        })?;
+        // The running keymapper still holds the OLD profile: it loads the
+        // store when it starts. Restarting it here would be a surprising
+        // side effect of a save, so say it happened and let the client
+        // decide.
+        let _ = Manager::keymapper_event(
+            &em, "profiles-changed", &path.display().to_string()).await;
+        Ok(path.display().to_string())
+    }
+
+    /// Deletes the user profile for a package. Returns the path removed.
+    async fn delete_profile(
+        &self, package: &str,
+        #[zbus(signal_emitter)] em: zbus::object_server::SignalEmitter<'_>,
+    ) -> Result<String, Error> {
+        let store = liw_core::input::Store::discover();
+        let path = store.delete(package).map_err(|e| match e {
+            liw_core::input::ProfileError::Invalid(m) => Error::Invalid(m),
+            other => Error::Failed(other.to_string()),
+        })?;
+        let _ = Manager::keymapper_event(
+            &em, "profiles-changed", &path.display().to_string()).await;
+        Ok(path.display().to_string())
+    }
+
     /// A transient keymapper event.
     ///
     /// Only for things that are NOT state: a system overlay covering the

@@ -22,7 +22,7 @@
 //!   bindings produces a "sometimes it works" bug that is very hard to spot.
 
 use anyhow::{bail, Context, Result};
-use liw_core::input::{Binding, Profile, Store};
+use liw_core::input::{Binding, Store};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -181,29 +181,6 @@ async fn window_geometry() -> Result<(i32, i32, u32, u32)> {
 /// The `Display` impl of `f32` already produces the shortest round-tripping
 /// decimal, so this reduction loses NO precision: the same `f32` is read back.
 /// At 2560 pixels `f32` resolution is ~0.0002 pixel.
-fn normalise_floats(item: &mut toml_edit::Item) {
-    fn fix(v: &mut toml_edit::Value) {
-        match v {
-            toml_edit::Value::Float(f) => {
-                let short: f64 = (*f.value() as f32).to_string().parse()
-                    .unwrap_or(*f.value());
-                let decor = f.decor().clone();
-                *v = toml_edit::Value::from(short);
-                *v.decor_mut() = decor;
-            }
-            toml_edit::Value::InlineTable(t) => {
-                for (_, iv) in t.iter_mut() { fix(iv); }
-            }
-            toml_edit::Value::Array(a) => { for iv in a.iter_mut() { fix(iv); } }
-            _ => {}
-        }
-    }
-    match item {
-        toml_edit::Item::Value(v) => fix(v),
-        toml_edit::Item::Table(t) => { for (_, i) in t.iter_mut() { normalise_floats(i); } }
-        _ => {}
-    }
-}
 
 /// Writes the edited bindings back to TOML.
 ///
@@ -211,74 +188,20 @@ fn normalise_floats(item: &mut toml_edit::Item) {
 /// comments in profiles are half the documentation in this project and
 /// regeneration would delete all of them. Because comments live in the key's
 /// decor, changing only the VALUE preserves them.
+/// Writes the profile back.
+///
+/// The comment-preserving TOML work lives in `liw_input::store` so the daemon
+/// (and any UI on top of it) writes these files the same way. A second,
+/// diverging writer for the same files is how comments quietly disappear.
 fn write_back(path: &Path, bindings: &BTreeMap<String, Binding>,
               name: &str, package: &str) -> Result<()> {
-    // Validate BEFORE saving. Most important is the same trigger used in two
-    // bindings: the engine cannot know which to pick and the user experiences
-    // it as "sometimes it works".
-    Profile { name: name.into(), package: package.into(), bindings: bindings.clone() }
-        .validate().context("invalid profile")?;
-
-    let text = std::fs::read_to_string(path)?;
-    let mut doc: toml_edit::DocumentMut = text.parse()?;
-    if doc.get("bindings").is_none() {
-        doc.insert("bindings", toml_edit::Item::Table({
-            let mut t = toml_edit::Table::new();
-            t.set_implicit(true);
-            t
-        }));
-    }
-    let tbl = doc.get_mut("bindings").and_then(|i| i.as_table_mut())
-        .context("[bindings] is not a table")?;
-
-    // Silinenler.
-    for k in tbl.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>() {
-        if !bindings.contains_key(&k) { tbl.remove(&k); }
-    }
-
-    for (bname, b) in bindings {
-        let fresh = toml_edit::ser::to_document(b)
-            .with_context(|| format!("could not convert '{bname}' to TOML"))?;
-        let fresh = fresh.as_table();
-        match tbl.get_mut(bname).and_then(|i| i.as_table_like_mut()) {
-            Some(old) => {
-                // Existing: change only the VALUES, so comments living in the
-                // key's decor stay in place.
-                for (k, v) in fresh.iter() {
-                    let mut v = v.clone();
-                    normalise_floats(&mut v);
-                    match old.get_mut(k) {
-                        Some(slot) => {
-                            // SATIR SONU yorumunu koru.
-                            //
-                            // The "# W" in `up = { Key = 17 }   # W` lives in
-                            // the value's suffix decor; replacing the value
-                            // outright deleted it. Those comments are the ONLY
-                            // place saying which letter a key code is — losing
-                            // them is silent and permanent.
-                            let keep = slot.as_value().map(|x| x.decor().clone());
-                            *slot = v;
-                            if let (Some(d), Some(nv)) = (keep, slot.as_value_mut()) {
-                                *nv.decor_mut() = d;
-                            }
-                        }
-                        None => { old.insert(k, v); }
-                    }
-                }
-                // If the type changed, keys of the old type must not remain.
-                for k in old.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>() {
-                    if fresh.get(&k).is_none() { old.remove(&k); }
-                }
-            }
-            None => {
-                let mut t = fresh.clone();
-                for (_, v) in t.iter_mut() { normalise_floats(v); }
-                t.set_implicit(false);
-                tbl.insert(bname, toml_edit::Item::Table(t));
-            }
-        }
-    }
-    std::fs::write(path, doc.to_string())?;
+    let p = liw_core::input::Profile {
+        name: name.into(), package: package.into(), bindings: bindings.clone(),
+    };
+    let existing = std::fs::read_to_string(path).ok();
+    let text = liw_core::input::store::render(existing.as_deref(), &p)
+        .context("could not render the profile")?;
+    std::fs::write(path, text)?;
     Ok(())
 }
 
@@ -445,6 +368,7 @@ async fn serve(sock: &mut tokio::net::TcpStream, ed: Arc<Editor>) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
+    use liw_core::input::Profile;
     use super::*;
     use liw_core::input::{Norm, Trigger};
 

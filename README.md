@@ -296,3 +296,25 @@ the community's:
 ## License
 
 GPL-3.0-or-later.
+
+## Control plane
+
+`liwd` owns the session and exposes it on the session bus as
+`id.liwinux.Manager1`, so a UI does not have to drive the CLI:
+
+* **Properties**, all announcing changes: `State`, `HealthJson`,
+  `KeymapperRunning`, `GameMode`, `Grabbed`, `HostFocused`,
+  `ActiveProfile`, `ForegroundPackage`. `HealthJson` is served from the
+  supervision loop's cache — `Health()` still measures on demand, and it
+  is expensive enough that nothing should poll it.
+* **Signal** `KeymapperEvent(kind, detail)` for things that are not
+  state: a system overlay covering the game, an escape request, a
+  profile file changing on disk.
+* **Profiles**: `ListProfiles`, `GetProfile`, `SaveProfile`,
+  `DeleteProfile`. Writes preserve the file's comments, and editing a
+  system profile creates a user file that shadows it rather than
+  changing it in place.
+* **Errors carry names** — `id.liwinux.Error.NoSession`, `.NoHelper`,
+  `.NoProfile`, `.NoWindow`, `.Invalid`, `.Failed` — so a client can
+  branch instead of matching on prose.
+
