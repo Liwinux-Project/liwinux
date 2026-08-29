@@ -124,9 +124,16 @@ report_codecs() {
     say "-> Codec2 did NOT register. The switch alone was not enough."
   fi
   echo
-  say "recent Codec2/CCodec errors in the log (empty is good):"
+  # Level E and F only.
+  #
+  # Matching on the WORD "fail" across every level reported
+  # "CCodecConfig: query failed after returning 12 values (BAD_INDEX)" as a
+  # problem. That line is level I, is emitted on healthy devices, and means
+  # nothing here. Showing it as an error is how a real one gets ignored.
+  say "Codec2 errors in the log, level E or F only (empty is good):"
   waydroid --details-to-stdout shell -- logcat -d -t 4000 2>/dev/null | tr -d '\r' \
-    | grep -iE "CCodec|Codec2|c2\.android" | grep -iE "error|fail|cannot|unable|abort" \
+    | grep -E "^[0-9-]+ [0-9:.]+ +[0-9]+ +[0-9]+ [EF] " \
+    | grep -iE "CCodec|Codec2|c2\.android|MediaCodec" \
     | tail -8 | sed 's/^/       /' || true
 }
 

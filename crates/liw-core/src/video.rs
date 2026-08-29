@@ -44,6 +44,14 @@ pub struct Codec {
     pub mime: String,
     pub kind: CodecKind,
     pub encoder: bool,
+    /// The `domain` attribute, when the declaration carries one.
+    ///
+    /// AOSP gates these components on the device type: `domain="tv"` only
+    /// registers on a TV, `domain="telephony"` only where telephony exists.
+    /// A gated component missing on an ordinary device is the design working,
+    /// not a fault — and without this field it reads as one.
+    #[serde(default)]
+    pub domain: Option<String>,
 }
 
 /// Classifies a MediaCodec component by name.
@@ -150,6 +158,7 @@ pub fn parse_codec_xml(xml: &str) -> Vec<Codec> {
         out.push(Codec {
             kind: codec_kind(&name),
             encoder: encoder_section || name.contains(".encoder"),
+            domain: attr(line, "domain"),
             name,
             mime,
         });
@@ -502,59 +511,95 @@ pub fn summarise(f: &[Finding]) -> (usize, usize, usize, usize, usize) {
 // Declared vs registered
 // ---------------------------------------------------------------------------
 
-/// Why a component the image declares never appears at runtime.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Shortfall {
-    /// Codec2 is switched off, so only the legacy OMX components register.
+/// Why the components the image declares never appear at runtime.
+///
+/// Several reasons can apply at once, so this is a report rather than a single
+/// verdict. Collapsing it to one cause would mean picking whichever was
+/// checked first and calling it the answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Shortfall {
+    /// Codec2 is switched off, so no `c2.*` component registers at all.
     ///
     /// Waydroid sets `debug.stagefright.ccodec=0` when it finds no HAL
     /// gralloc (lxc.py). Codec2's software components allocate graphic
     /// buffers through gralloc, and on the fallback path that allocation
-    /// fails — so the switch trades newer decoders for working ones.
-    Codec2Disabled,
-    /// Something else. Named as unexplained rather than guessed at.
-    Unexplained(Vec<String>),
+    /// fails — the switch trades newer decoders for working ones.
+    pub codec2_disabled: bool,
+    /// Components AOSP gates on the device type: (component, domain).
+    /// Their absence on an ordinary device is expected.
+    pub domain_gated: Vec<(String, String)>,
+    /// Absences nothing here accounts for. Named as unexplained, not guessed.
+    pub unexplained: Vec<String>,
+}
+
+impl Shortfall {
+    pub fn is_empty(&self) -> bool {
+        !self.codec2_disabled
+            && self.domain_gated.is_empty()
+            && self.unexplained.is_empty()
+    }
 }
 
 /// Compares what the image declares against what Android registered.
 ///
 /// The comparison is only worth making with the CAUSE attached. Listing
 /// fourteen "declared but not registered" components with no explanation
-/// reads as fourteen faults; it is one setting.
+/// reads as fourteen faults; it was one setting.
 pub fn explain_shortfall(
     declared: &[Codec],
     registered: &[String],
     ccodec: Option<&str>,
-) -> Option<Shortfall> {
+) -> Shortfall {
     let missing: Vec<&Codec> = declared.iter()
         .filter(|d| !registered.iter().any(|r| r == &d.name))
         .collect();
-    if missing.is_empty() { return None; }
+    let mut s = Shortfall::default();
+    if missing.is_empty() { return s; }
 
-    // Every missing component being a Codec2 one, with the switch off, is
-    // not a coincidence — it is the switch.
-    let all_c2 = missing.iter().all(|c| c.name.starts_with("c2."));
-    if all_c2 && ccodec == Some("0") {
-        return Some(Shortfall::Codec2Disabled);
+    // A gated component is accounted for first: it would be missing whatever
+    // the Codec2 switch said, so blaming the switch for it would be wrong.
+    let mut rest: Vec<&Codec> = Vec::new();
+    for c in missing {
+        match &c.domain {
+            Some(d) => s.domain_gated.push((c.name.clone(), d.clone())),
+            None => rest.push(c),
+        }
     }
-    Some(Shortfall::Unexplained(
-        missing.iter().map(|c| c.name.clone()).collect()))
+    if rest.is_empty() { return s; }
+
+    // Every remaining absence being a Codec2 one, with the switch off, is not
+    // a coincidence — it is the switch.
+    if rest.iter().all(|c| c.name.starts_with("c2.")) && ccodec == Some("0") {
+        s.codec2_disabled = true;
+        return s;
+    }
+    s.unexplained = rest.iter().map(|c| c.name.clone()).collect();
+    s
 }
 
 /// Video formats that have no decoder at runtime at all.
 ///
 /// This is the part that bites a user rather than a benchmark: a format with
 /// no component does not play slowly, it does not play.
-pub fn unplayable(declared: &[Codec], registered: &[String]) -> Vec<String> {
+/// Returns (mime, gated_by_domain) for each format with no live decoder.
+///
+/// The flag matters: a format whose only component is gated to TV devices is
+/// absent by design on a phone, and reporting that as a fault sends the reader
+/// after a bug that is not there.
+pub fn unplayable(declared: &[Codec], registered: &[String]) -> Vec<(String, bool)> {
     let live: Vec<&Codec> = declared.iter()
         .filter(|c| !c.encoder && registered.iter().any(|r| r == &c.name))
         .collect();
-    let mut out = Vec::new();
+    let mut out: Vec<(String, bool)> = Vec::new();
     for c in declared.iter().filter(|c| !c.encoder && c.mime.starts_with("video/")) {
         if live.iter().any(|l| l.mime == c.mime) { continue; }
-        if !out.contains(&c.mime) { out.push(c.mime.clone()); }
+        match out.iter_mut().find(|(m, _)| *m == c.mime) {
+            // Only gated if EVERY component for the format is gated.
+            Some(e) => e.1 = e.1 && c.domain.is_some(),
+            None => out.push((c.mime.clone(), c.domain.is_some())),
+        }
     }
-    out.sort_by(|a, b| mime_weight(b).cmp(&mime_weight(a)).then(a.cmp(b)));
+    out.sort_by(|a, b| mime_weight(&b.0).cmp(&mime_weight(&a.0)).then(a.0.cmp(&b.0)));
     out
 }
 
@@ -566,7 +611,13 @@ mod tests {
 
     fn c2(name: &str, mime: &str) -> Codec {
         Codec { name: name.into(), mime: mime.into(),
-                kind: CodecKind::Software, encoder: false }
+                kind: CodecKind::Software, encoder: false, domain: None }
+    }
+
+    fn gated(name: &str, mime: &str, domain: &str) -> Codec {
+        Codec { name: name.into(), mime: mime.into(),
+                kind: CodecKind::Software, encoder: false,
+                domain: Some(domain.into()) }
     }
 
     /// The real case: every c2.* is absent and the switch is off. That is one
@@ -577,8 +628,9 @@ mod tests {
                             c2("c2.android.av1.decoder", "video/av01"),
                             c2("OMX.google.h264.decoder", "video/avc")];
         let reg = vec!["OMX.google.h264.decoder".to_string()];
-        assert_eq!(explain_shortfall(&declared, &reg, Some("0")),
-                   Some(Shortfall::Codec2Disabled));
+        let s = explain_shortfall(&declared, &reg, Some("0"));
+        assert!(s.codec2_disabled);
+        assert!(s.unexplained.is_empty(), "the switch accounts for all of them");
     }
 
     /// With the switch ON, the same absence is NOT explained by it, and
@@ -587,30 +639,61 @@ mod tests {
     fn the_switch_only_explains_it_when_it_is_actually_off() {
         let declared = vec![c2("c2.android.avc.decoder", "video/avc")];
         let reg: Vec<String> = vec![];
-        assert!(matches!(explain_shortfall(&declared, &reg, Some("1")),
-                         Some(Shortfall::Unexplained(_))));
-        assert!(matches!(explain_shortfall(&declared, &reg, None),
-                         Some(Shortfall::Unexplained(_))));
+        for prop in [Some("1"), None] {
+            let s = explain_shortfall(&declared, &reg, prop);
+            assert!(!s.codec2_disabled, "prop {prop:?}");
+            assert_eq!(s.unexplained.len(), 1);
+        }
     }
 
     /// A missing OMX component has nothing to do with the Codec2 switch.
     #[test]
     fn a_missing_omx_component_is_not_blamed_on_codec2() {
         let declared = vec![c2("OMX.google.vp9.decoder", "video/x-vnd.on2.vp9")];
-        let reg: Vec<String> = vec![];
-        assert!(matches!(explain_shortfall(&declared, &reg, Some("0")),
-                         Some(Shortfall::Unexplained(_))));
+        let s = explain_shortfall(&declared, &[], Some("0"));
+        assert!(!s.codec2_disabled);
+        assert_eq!(s.unexplained.len(), 1);
     }
 
     #[test]
     fn nothing_missing_is_no_finding() {
         let declared = vec![c2("OMX.google.h264.decoder", "video/avc")];
         let reg = vec!["OMX.google.h264.decoder".to_string()];
-        assert_eq!(explain_shortfall(&declared, &reg, Some("0")), None);
+        assert!(explain_shortfall(&declared, &reg, Some("0")).is_empty());
+    }
+
+    /// Measured on this machine: with Codec2 ON, the ONLY absentees were the
+    /// two components carrying a domain attribute. Those are gated by AOSP on
+    /// the device type and would be missing whatever the switch said, so the
+    /// switch must not be blamed for them.
+    #[test]
+    fn domain_gated_components_are_not_a_fault() {
+        let declared = vec![
+            c2("c2.android.avc.decoder", "video/avc"),
+            gated("c2.android.mpeg2.decoder", "video/mpeg2", "tv"),
+        ];
+        let reg = vec!["c2.android.avc.decoder".to_string()];
+        let s = explain_shortfall(&declared, &reg, Some("1"));
+        assert_eq!(s.domain_gated, vec![("c2.android.mpeg2.decoder".into(),
+                                         "tv".into())]);
+        assert!(s.unexplained.is_empty(), "a gate is an explanation");
+        assert!(!s.codec2_disabled);
+    }
+
+    /// A gated component must not be swept into the Codec2 verdict either:
+    /// it would be absent with the switch on.
+    #[test]
+    fn a_gate_is_accounted_for_before_the_switch() {
+        let declared = vec![
+            c2("c2.android.avc.decoder", "video/avc"),
+            gated("c2.android.mpeg2.decoder", "video/mpeg2", "tv"),
+        ];
+        let s = explain_shortfall(&declared, &[], Some("0"));
+        assert!(s.codec2_disabled, "the ungated one is the switch");
+        assert_eq!(s.domain_gated.len(), 1, "the gated one is the gate");
     }
 
     /// A format whose ONLY component fails to register cannot play at all.
-    /// This is the consequence a user actually meets.
     #[test]
     fn a_format_with_no_live_component_is_unplayable() {
         let declared = vec![c2("c2.android.av1.decoder", "video/av01"),
@@ -618,7 +701,21 @@ mod tests {
                             c2("OMX.google.h264.decoder", "video/avc")];
         let reg = vec!["OMX.google.h264.decoder".to_string()];
         let u = unplayable(&declared, &reg);
-        assert_eq!(u, vec!["video/av01"], "H.264 still has a live component");
+        assert_eq!(u, vec![("video/av01".to_string(), false)],
+                   "H.264 still has a live component");
+    }
+
+    /// An unplayable format is flagged as gated only when EVERY component for
+    /// it is gated — otherwise a real absence would be excused by design.
+    #[test]
+    fn a_format_is_only_excused_when_all_its_components_are_gated() {
+        let declared = vec![gated("c2.android.mpeg2.decoder", "video/mpeg2", "tv")];
+        assert_eq!(unplayable(&declared, &[]), vec![("video/mpeg2".to_string(), true)]);
+
+        let mixed = vec![gated("c2.android.mpeg2.decoder", "video/mpeg2", "tv"),
+                         c2("OMX.google.mpeg2.decoder", "video/mpeg2")];
+        assert_eq!(unplayable(&mixed, &[]), vec![("video/mpeg2".to_string(), false)],
+                   "one ungated component means the absence is not by design");
     }
 
     #[test]
@@ -628,7 +725,22 @@ mod tests {
         assert!(unplayable(&declared, &reg).is_empty());
     }
 
-    // --- component classification -----------------------------------------
+    /// The domain attribute must actually be read off the XML, or every gate
+    /// silently becomes an unexplained fault.
+    #[test]
+    fn the_domain_attribute_is_parsed() {
+        let xml = r#"<MediaCodec name="c2.android.mpeg2.decoder" type="video/mpeg2" domain="tv" />"#;
+        let c = parse_codec_xml(xml);
+        assert_eq!(c[0].domain.as_deref(), Some("tv"));
+    }
+
+    #[test]
+    fn a_declaration_without_a_domain_has_none() {
+        let xml = r#"<MediaCodec name="c2.android.avc.decoder" type="video/avc" />"#;
+        assert_eq!(parse_codec_xml(xml)[0].domain, None);
+    }
+
+    // --- component classification -----------------------------------------    // --- component classification -----------------------------------------
 
     #[test]
     fn aosp_prefixes_are_software() {
@@ -811,7 +923,7 @@ vainfo: Supported profile and entrypoints
 
     fn sw(name: &str, mime: &str) -> Codec {
         Codec { name: name.into(), mime: mime.into(),
-                kind: CodecKind::Software, encoder: false }
+                kind: CodecKind::Software, encoder: false, domain: None }
     }
 
     /// The host capability, measured.
@@ -874,7 +986,8 @@ vainfo: Supported profile and entrypoints
     fn hardware_guest_codec_is_ok() {
         let guest = vec![Codec { name: "c2.qti.avc.decoder".into(),
                                  mime: "video/avc".into(),
-                                 kind: CodecKind::Hardware, encoder: false }];
+                                 kind: CodecKind::Hardware, encoder: false,
+                                 domain: None }];
         let f = diagnose(Source::Live, &guest, &measured(&["video/avc"]), &[]);
         assert_eq!(f[0].severity, Severity::Ok);
     }
@@ -894,7 +1007,8 @@ vainfo: Supported profile and entrypoints
     fn encoders_are_not_diagnosed() {
         let guest = vec![Codec { name: "OMX.google.h264.encoder".into(),
                                  mime: "video/avc".into(),
-                                 kind: CodecKind::Software, encoder: true }];
+                                 kind: CodecKind::Software, encoder: true,
+                                 domain: None }];
         assert!(guest_decode_mimes(&guest).is_empty(),
                 "a game plays video, it does not record it");
     }
@@ -905,7 +1019,7 @@ vainfo: Supported profile and entrypoints
         let guest = vec![
             sw("c2.android.avc.decoder", "video/avc"),
             Codec { name: "c2.qti.avc.decoder".into(), mime: "video/avc".into(),
-                    kind: CodecKind::Hardware, encoder: false },
+                    kind: CodecKind::Hardware, encoder: false, domain: None },
         ];
         let m = guest_decode_mimes(&guest);
         assert_eq!(m.len(), 1);

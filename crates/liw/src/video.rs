@@ -564,37 +564,61 @@ pub async fn verify() -> Result<()> {
         println!("      {:<28} {}", c.name, video::mime_label(&c.mime));
     }
 
-    match video::explain_shortfall(&declared, &names, ccodec.as_deref()) {
-        None => println!("\n  Every declared component was registered."),
-        Some(video::Shortfall::Codec2Disabled) => {
-            println!("\n  ✗ Codec2 is switched OFF: debug.stagefright.ccodec=0");
-            println!();
-            for l in wrap(
-                "Every c2.android.* component the image declares is absent, and \
-                 this one setting accounts for all of them. Waydroid sets it \
-                 itself when it finds no HAL gralloc: Codec2's software \
-                 components allocate graphic buffers through gralloc, and on \
-                 the fallback path that allocation fails. The switch trades \
-                 newer decoders for ones that work.", 64) {
-                println!("      {l}");
-            }
+    let short = video::explain_shortfall(&declared, &names, ccodec.as_deref());
+    if short.is_empty() {
+        println!("\n  ✓ Every declared component was registered.");
+    }
+    if short.codec2_disabled {
+        println!("\n  ✗ Codec2 is switched OFF: debug.stagefright.ccodec=0");
+        println!();
+        for l in wrap(
+            "Every c2.android.* component the image declares is absent, and \
+             this one setting accounts for all of them. Waydroid sets it \
+             itself when it finds no HAL gralloc: Codec2's software \
+             components allocate graphic buffers through gralloc, and on the \
+             fallback path that allocation fails. The switch trades newer \
+             decoders for ones that work.", 64) {
+            println!("      {l}");
         }
-        Some(video::Shortfall::Unexplained(missing)) => {
-            println!("\n  ✗ {} declared components did not register, and nothing \
-                      here explains why:", missing.len());
-            for m in missing.iter().take(20) { println!("      {m}"); }
+    }
+    if !short.domain_gated.is_empty() {
+        println!("\n  · {} component(s) gated on the device type, absent by design:",
+                 short.domain_gated.len());
+        for (name, dom) in &short.domain_gated {
+            println!("      {name}  (domain=\"{dom}\")");
         }
+        for l in wrap(
+            "AOSP registers these only where the domain applies — a TV, or a \
+             device with telephony. Their absence here is the design working, \
+             not a fault.", 64) {
+            println!("      {l}");
+        }
+    }
+    if !short.unexplained.is_empty() {
+        println!("\n  ✗ {} declared component(s) did not register, and nothing \
+                  here explains why:", short.unexplained.len());
+        for m in short.unexplained.iter().take(20) { println!("      {m}"); }
     }
 
     let dead = video::unplayable(&declared, &names);
-    if !dead.is_empty() {
-        println!("\n  ✗ No decoder at all for: {}",
-                 dead.iter().map(|m| video::mime_label(m))
-                     .collect::<Vec<_>>().join(", "));
+    let lost: Vec<&str> = dead.iter().filter(|(_, g)| !g)
+        .map(|(m, _)| video::mime_label(m)).collect();
+    let gated: Vec<&str> = dead.iter().filter(|(_, g)| *g)
+        .map(|(m, _)| video::mime_label(m)).collect();
+
+    if !lost.is_empty() {
+        println!("\n  ✗ No decoder at all for: {}", lost.join(", "));
         for l in wrap(
             "This is not a slow path, it is an absent one. Content in these \
              formats does not play. The image declares a component for each \
              of them, which is why reading the image alone does not show it.", 64) {
+            println!("      {l}");
+        }
+    }
+    if !gated.is_empty() {
+        println!("\n  · No decoder for {} either.", gated.join(", "));
+        for l in wrap("Its only component is gated on the device type, so the \
+                       absence is expected here rather than a fault.", 64) {
             println!("      {l}");
         }
     }
