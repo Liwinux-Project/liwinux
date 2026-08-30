@@ -169,6 +169,7 @@ fn run(
     let start = Instant::now();
     let mut drawn_commits = u64::MAX;
     let mut applied = (0i32, 0i32, f64::NAN);
+    let mut stats = Stats::new();
 
     while running.load(Ordering::Relaxed) && state.running {
         event_loop
@@ -216,6 +217,7 @@ fn run(
         drawn_commits = commits;
 
         let mut element_count = 0usize;
+        let painted = Instant::now();
         let result = headless.capture(|renderer, fb| {
             let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                 render_elements_from_surface_tree(
@@ -236,6 +238,15 @@ fn run(
                 .map(|_| ())
                 .map_err(|e| format!("render: {e}"))
         });
+
+        if let Some(line) = stats.record(painted.elapsed()) {
+            tracing::info!(
+                fps = line.fps,
+                frame_ms = line.mean_ms,
+                size = ?headless.size(),
+                "embedded frame rate",
+            );
+        }
 
         match result {
             Ok(frame) => {
@@ -335,5 +346,82 @@ mod tests {
                    "1x1 must not scale");
         assert_eq!(crate::headless::fit((2560, 1440), (1280, 720)).0, 0.5,
                    "a real screen must");
+    }
+}
+
+/// What one report says.
+pub struct Report {
+    pub fps: f32,
+    pub mean_ms: f32,
+}
+
+/// Frame rate and cost, reported once a second.
+///
+/// Here because "it feels slower" cannot be answered by reading code. The
+/// number that matters is not how fast this loop could spin — it only draws
+/// when the guest commits — but how much of each frame is spent getting the
+/// picture out of the GPU and into a buffer the host can draw.
+struct Stats {
+    frames: u32,
+    total: Duration,
+    since: Instant,
+}
+
+impl Stats {
+    fn new() -> Self {
+        Self { frames: 0, total: Duration::ZERO, since: Instant::now() }
+    }
+
+    /// Adds a frame; returns a report roughly once a second.
+    fn record(&mut self, cost: Duration) -> Option<Report> {
+        self.frames += 1;
+        self.total += cost;
+        let elapsed = self.since.elapsed();
+        if elapsed < Duration::from_secs(1) {
+            return None;
+        }
+        let report = Report {
+            fps: self.frames as f32 / elapsed.as_secs_f32(),
+            mean_ms: self.total.as_secs_f32() * 1000.0 / self.frames as f32,
+        };
+        self.frames = 0;
+        self.total = Duration::ZERO;
+        self.since = Instant::now();
+        Some(report)
+    }
+}
+
+#[cfg(test)]
+mod stat_tests {
+    use super::*;
+
+    /// Nothing is reported before a second has passed: a report per frame
+    /// would cost more than the thing it measures.
+    #[test]
+    fn a_report_waits_for_a_second() {
+        let mut s = Stats::new();
+        assert!(s.record(Duration::from_millis(5)).is_none());
+    }
+
+    #[test]
+    fn the_mean_is_over_the_frames_in_the_window() {
+        let mut s = Stats::new();
+        s.record(Duration::from_millis(10));
+        s.record(Duration::from_millis(20));
+        // Pretend a second went by.
+        s.since = Instant::now() - Duration::from_secs(1);
+        let r = s.record(Duration::from_millis(30)).expect("a report is due");
+        assert!((r.mean_ms - 20.0).abs() < 0.1, "mean was {}", r.mean_ms);
+        assert!((r.fps - 3.0).abs() < 0.1, "fps was {}", r.fps);
+    }
+
+    /// The window resets, or a slow second would haunt every later report.
+    #[test]
+    fn a_report_starts_a_fresh_window() {
+        let mut s = Stats::new();
+        s.since = Instant::now() - Duration::from_secs(1);
+        s.record(Duration::from_millis(50)).unwrap();
+        assert_eq!(s.frames, 0);
+        assert_eq!(s.total, Duration::ZERO);
     }
 }

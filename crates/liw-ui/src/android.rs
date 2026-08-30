@@ -13,6 +13,7 @@
 //! is the price of not needing the patch yet.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use gpui::RenderImage;
 use liw_compositor::Embedded;
@@ -35,6 +36,43 @@ pub struct Android {
     /// Chrome hidden, Android filling the window. Toggled with F11.
     pub immersive: bool,
     pub error: Option<String>,
+    /// How many frames the view actually picks up, per second.
+    ///
+    /// Not the same number as the compositor's: that one says how fast frames
+    /// are PRODUCED, this one says how many reach the screen. They differ
+    /// when the poll misses one, and the difference is what a player feels.
+    meter: Meter,
+}
+
+/// Counts frames taken, and reports once a second.
+#[derive(Default)]
+struct Meter {
+    taken: u32,
+    polls: u32,
+    since: Option<Instant>,
+}
+
+impl Meter {
+    /// Records one poll; logs a line roughly once a second.
+    fn tick(&mut self, took: bool) {
+        self.polls += 1;
+        if took {
+            self.taken += 1;
+        }
+        let since = self.since.get_or_insert_with(Instant::now);
+        let elapsed = since.elapsed();
+        if elapsed < std::time::Duration::from_secs(1) {
+            return;
+        }
+        tracing::info!(
+            fps = self.taken as f32 / elapsed.as_secs_f32(),
+            polls = self.polls as f32 / elapsed.as_secs_f32(),
+            "frames reaching the window",
+        );
+        self.taken = 0;
+        self.polls = 0;
+        self.since = Some(Instant::now());
+    }
 }
 
 impl Android {
@@ -65,14 +103,32 @@ impl Android {
     /// repaint it does not need. Converting costs a copy; doing it for a
     /// frame already on screen would pay that copy for nothing.
     pub fn poll(&mut self) -> bool {
+        let took = self.take_frame();
+        self.meter.tick(took);
+        took
+    }
+
+    fn take_frame(&mut self) -> bool {
         let Some(e) = &self.embedded else { return false };
-        let Ok(slot) = e.frames.lock() else { return false };
-        let Some(frame) = slot.as_ref() else { return false };
-        if self.image.as_ref().is_some_and(|(s, _)| *s == frame.serial) {
+        let Ok(mut slot) = e.frames.lock() else { return false };
+        // Read the serial before taking anything: an unchanged frame has to
+        // be left in the slot, or a repaint that arrives before the next
+        // commit would find it empty and blank the window.
+        let serial = match slot.as_ref() {
+            Some(f) => f.serial,
+            None => return false,
+        };
+        if self.image.as_ref().is_some_and(|(s, _)| *s == serial) {
             return false;
         }
-        let Some(buf) =
-            image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra.clone())
+        // TAKE rather than clone. The frame is a full screen of pixels — at
+        // 2560x1440 that is 14 MB, and cloning it paid for a second copy of
+        // every frame on top of the readback that produced it. Nothing else
+        // reads this slot, and the compositor overwrites it with the newest
+        // frame regardless.
+        let Some(frame) = slot.take() else { return false };
+        drop(slot);
+        let Some(buf) = image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra)
         else {
             return false;
         };

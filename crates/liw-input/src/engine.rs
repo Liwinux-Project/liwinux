@@ -984,7 +984,7 @@ mod tests {
                 assert!((at.x - 0.2).abs() < 1e-5, "merkez x: {at:?}");
                 assert!((at.y - 0.7).abs() < 1e-5, "merkez y: {at:?}");
             }
-            _ => panic!("Down bekleniyordu: {a:?}"),
+            _ => panic!("expected a Down: {a:?}"),
         }
         assert!(e.has_pending(), "the direction must be deferred to the next frame");
     }
@@ -992,12 +992,12 @@ mod tests {
     #[test]
     fn joystick_direction_applied_on_next_tick() {
         let mut e = Engine::new(joystick_profile());
-        e.handle(InputEvent::Press(key(W)));
+        let _ = e.handle(InputEvent::Press(key(W)));
         let a = e.tick(5);
         match a[..] {
             [TouchAction::Move { at, .. }] =>
                 assert!(at.y < 0.7, "must go up: {at:?}"),
-            _ => panic!("Move bekleniyordu: {a:?}"),
+            _ => panic!("expected a Move: {a:?}"),
         }
     }
 
@@ -1010,13 +1010,13 @@ mod tests {
         e.set_aspect(2560, 1440);
         let (w, h) = (2560.0f32, 1440.0f32);
 
-        e.handle(InputEvent::Press(key(W)));
+        let _ = e.handle(InputEvent::Press(key(W)));
         let up = match e.tick(5)[..] { [TouchAction::Move { at, .. }] => at, _ => panic!() };
         let dy_px = (0.7 - up.y) * h;
 
         let mut e2 = Engine::new(joystick_profile());
         e2.set_aspect(2560, 1440);
-        e2.handle(InputEvent::Press(key(D)));
+        let _ = e2.handle(InputEvent::Press(key(D)));
         let right = match e2.tick(5)[..] { [TouchAction::Move { at, .. }] => at, _ => panic!() };
         let dx_px = (right.x - 0.2) * w;
 
@@ -1089,7 +1089,7 @@ mod tests {
         match a[..] {
             [TouchAction::Move { at, .. }] =>
                 assert!((at.x - 0.6).abs() < 1e-5, "0.5 + 100*0.001 = 0.6, {at:?}"),
-            _ => panic!("Move bekleniyordu: {a:?}"),
+            _ => panic!("expected a Move: {a:?}"),
         }
     }
 
@@ -1193,7 +1193,7 @@ mod tests {
                 assert!((d.x - 0.5).abs() < 1e-5, "must start at the centre: {d:?}");
                 assert!((m.x - 0.55).abs() < 1e-5, "0.5 + 50*0.001: {m:?}");
             }
-            _ => panic!("Down+Move bekleniyordu: {a:?}"),
+            _ => panic!("expected Down+Move: {a:?}"),
         }
     }
 
@@ -1261,7 +1261,6 @@ mod tests {
         let mut e = always_on_aim();
         let mut moves = 0usize;
         let mut downs = 0usize;
-        let mut t = 0u64;
         for _ in 0..60 {
             for act in mouse(&mut e, 200.0, 0.0) {
                 match act {
@@ -1270,7 +1269,7 @@ mod tests {
                     _ => {}
                 }
             }
-            t = e.now_ms() + 20;
+            let t = e.now_ms() + 20;
             for act in e.tick(t) {
                 match act {
                     TouchAction::Move { .. } => moves += 1,
@@ -1650,7 +1649,7 @@ mod tests {
             [TouchAction::Move { at, .. }] =>
                 assert!((at.x - (0.72 + 0.06)).abs() < 1e-4,
                         "the deferred movement must not be lost: {at:?}"),
-            _ => panic!("sonra hareket bekleniyordu: {second:?}"),
+            _ => panic!("expected a move afterwards: {second:?}"),
         }
     }
 

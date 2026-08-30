@@ -380,7 +380,7 @@ radius = 0.9
         let p = Profile::from_toml(SAMPLE).unwrap();
         match p.bindings.get("sol").unwrap() {
             Binding::Swipe { easing, .. } => assert_eq!(*easing, Easing::Linear),
-            other => panic!("swipe bekleniyordu: {other:?}"),
+            other => panic!("expected a swipe: {other:?}"),
         }
     }
 

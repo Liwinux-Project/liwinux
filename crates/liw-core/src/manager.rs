@@ -34,6 +34,7 @@ pub enum ManagerError {
 pub trait Manager1 {
     fn start(&self) -> zbus::Result<()>;
     fn set_embedded_display(&self, name: &str) -> zbus::Result<()>;
+    fn set_active_window(&self, class: &str) -> zbus::Result<()>;
     fn stop(&self) -> zbus::Result<()>;
     fn restart(&self) -> zbus::Result<()>;
     fn health(&self) -> zbus::Result<String>;
@@ -96,6 +97,12 @@ pub struct InputDevice {
     pub is_virtual: bool,
     /// How much this looks like a real typing keyboard.
     pub typing_score: u32,
+    /// How much this looks like the mouse a person actually moves.
+    ///
+    /// Defaulted: a daemon from before this existed sends a list without it,
+    /// and a UI that refused to parse that would show no devices at all.
+    #[serde(default)]
+    pub pointer_score: u32,
     /// Resolved by the daemon, which compares canonical paths — the config
     /// holds a by-id symlink and discovery reports eventN.
     #[serde(default)]
@@ -261,6 +268,20 @@ impl Manager {
     /// default.
     pub async fn set_embedded_display(&self, name: &str) -> Result<(), ManagerError> {
         self.proxy.set_embedded_display(name).await
+            .map_err(|e| ManagerError::Call(friendly(&e)))
+    }
+
+    /// Tells the daemon which window class has the focus.
+    ///
+    /// Normally a KWin script reports this, but a window that draws Android
+    /// itself knows better than any script does, and it knows without one:
+    /// the script only exists on KDE, and it only ever samples focus at the
+    /// moment it loads and on changes after that. Measured — a game window
+    /// that already had the focus when the mapper started was never reported,
+    /// so mapping stayed off and no key reached the game until the user
+    /// clicked away and back.
+    pub async fn set_active_window(&self, class: &str) -> Result<(), ManagerError> {
+        self.proxy.set_active_window(class).await
             .map_err(|e| ManagerError::Call(friendly(&e)))
     }
 

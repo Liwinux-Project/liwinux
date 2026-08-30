@@ -216,6 +216,7 @@ impl Manager {
                 // itself is a feedback loop.
                 "virtual": d.virtual_device,
                 "typing_score": d.typing_score,
+                "pointer_score": d.pointer_score,
                 "is_keyboard": canon.is_some() && canon == kb,
                 "is_mouse": canon.is_some() && canon == ms,
             })

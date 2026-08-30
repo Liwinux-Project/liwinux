@@ -409,10 +409,12 @@ impl AppState {
             .filter(|d| !d.is_virtual && d.typing_score > 0)
             .max_by_key(|d| d.typing_score)
             .map(|d| d.stable_path.clone().unwrap_or_else(|| d.path.clone()));
+        // Not "the first pointer": measured, that picked a keyboard's own
+        // mouse endpoint over the mouse on the desk. See `pointer_score`.
         let mouse = self.devices.iter()
             .filter(|d| !d.is_virtual && d.kind != "Keyboard")
-            .map(|d| d.stable_path.clone().unwrap_or_else(|| d.path.clone()))
-            .next();
+            .max_by_key(|d| d.pointer_score)
+            .map(|d| d.stable_path.clone().unwrap_or_else(|| d.path.clone()));
         if kb.is_none() && mouse.is_none() {
             self.error = Some(
                 "No usable device found. Is the user in the `input` group?".into());

@@ -10,7 +10,7 @@
 //! and nothing that does not.
 
 use gpui::{
-    div, prelude::*, px, App, Context, Entity, FocusHandle, IntoElement, Render,
+    div, prelude::*, px, App, Context, FocusHandle, IntoElement, Render,
     SharedString, Window,
 };
 
@@ -64,6 +64,7 @@ impl GameView {
         package: String,
         title: String,
         icon: Option<std::path::PathBuf>,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut v = Self {
@@ -83,7 +84,77 @@ impl GameView {
         v.pump(cx);
         v.open_touch_pipe(cx);
         v.bring_up_android(cx);
+        v.stop_android_on_close(cx);
+        v.report_focus(window, cx);
         v
+    }
+
+    /// Tells the daemon when this window has the focus.
+    ///
+    /// The key mapper only maps while Android's screen is focused, and it
+    /// learns that from the focused window's class. A KWin script reports
+    /// those, which leaves two holes this closes:
+    ///
+    /// * The script samples focus when it LOADS and on changes after that.
+    ///   Measured: this window already had the focus when the mapper started,
+    ///   nothing changed afterwards, so nothing was ever reported. Game mode
+    ///   turned on, said so, and mapped nothing.
+    /// * The script is KWin's. On any other compositor there is no report at
+    ///   all.
+    ///
+    /// This window knows the answer without asking anyone, so it says so —
+    /// once at once, and on every change. It reports the same class KWin
+    /// would, so the two agree rather than fight.
+    fn report_focus(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        report(window.is_window_active(), cx);
+        cx.observe_window_activation(window, |_v, window, cx| {
+            report(window.is_window_active(), cx);
+        })
+        .detach();
+    }
+
+    /// Closing the window closes the game.
+    ///
+    /// The whole session goes, not just the package. Two reasons, and the
+    /// second is the one that decides it:
+    ///
+    /// * `waydroid app` has no stop verb. Killing one package means
+    ///   `am force-stop` through a root shell, which would mean a new
+    ///   privileged method and a new polkit action for something the user can
+    ///   already do by closing a window.
+    /// * This window WAS Android's screen. With it gone the session is
+    ///   drawing into a socket nobody is listening on — the same state the
+    ///   embedded display is checked for before every start, because Android
+    ///   boots happily into nothing and looks fine while doing it.
+    ///
+    /// It costs nothing either: the next game window would have had to stop
+    /// and restart this session anyway to move it onto its own socket.
+    fn stop_android_on_close(&mut self, cx: &mut Context<Self>) {
+        cx.on_release(|v, cx| {
+            // If the stop below fails — the daemon is gone, the call times out
+            // — the session outlives the window. A finger left down in it is
+            // held forever with nothing able to lift it.
+            v.touch.release_all();
+            // The compositor thread owns the listening socket, and it outlives
+            // the window unless it is told not to. Measured: after closing one
+            // game the socket file was still bound, so the next game window
+            // could not take the name and never got a picture. Stopping is a
+            // flag the thread reads every 4ms, so this returns at once.
+            if let Some(e) = v.android.embedded.take() {
+                e.stop();
+            }
+            let task = gpui_tokio::Tokio::spawn(cx, async move {
+                let Ok(m) = liw_core::manager::Manager::connect().await else { return };
+                // Clear the display FIRST. If the stop is what fails, the
+                // name of a socket that no longer exists must not be left
+                // behind for the next session to be started against.
+                let _ = m.set_embedded_display("").await;
+                let _ = m.session_stop().await;
+                tracing::info!("game window closed — Android stopped");
+            });
+            task.detach();
+        })
+        .detach();
     }
 
     /// Points the daemon at this window's socket and starts Android on it.
@@ -213,9 +284,7 @@ impl GameView {
             return;
         }
         self.frame_pump = Some(cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(16))
-                .await;
+            cx.background_executor().timer(POLL).await;
             let keep = this.update(cx, |v, cx| {
                 if !v.android.running() {
                     v.frame_pump = None;
@@ -369,10 +438,28 @@ fn picture(
                         {
                             v.touch.drag(n);
                         }
+                    } else {
+                        // Drag off the WINDOW and release there and no mouse-up
+                        // reaches us at all — the pointer left first. The next
+                        // move back in is the first news of it, and it says the
+                        // button is up, so lift then.
+                        v.touch.release();
                     }
                 },
             ))
             .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(move |v: &mut GameView, _: &gpui::MouseUpEvent, _, cx| {
+                    v.touch.release();
+                    cx.notify();
+                }),
+            )
+            // Press on the game, drag onto the rail, let go there: `on_mouse_up`
+            // only fires inside the element's own bounds, so that release never
+            // arrives and the finger stays down — the game keeps walking, or
+            // keeps firing, with nothing touching the mouse. This catches it.
+            // Harmless when no finger is down: `release` returns immediately.
+            .on_mouse_up_out(
                 gpui::MouseButton::Left,
                 cx.listener(move |v: &mut GameView, _: &gpui::MouseUpEvent, _, cx| {
                     v.touch.release();
@@ -719,6 +806,49 @@ fn message(t: &Theme, title: &str, detail: &str) -> gpui::AnyElement {
 /// `title` is the game's name rather than its package: a window called
 /// `com.ForgeGames.SpecialForcesGroup2` in the task switcher is a package
 /// manager's idea of a name, not a person's.
+/// How often the view looks for a new frame.
+///
+/// Deliberately much shorter than a frame. At 16ms this polled at the same
+/// rate the compositor produced, but the two clocks were not locked together:
+/// measured, 60.0 frames a second were produced and 56.3 reached the window —
+/// a tick would find nothing, and the tick after it would find a frame that
+/// had already been overwritten by the next one. Four a second, lost to
+/// beating.
+///
+/// At 4ms there are four looks per frame, so a frame can only be missed if
+/// two arrive inside 4ms, which 60Hz cannot do. A look that finds nothing
+/// costs one lock and one integer compare, and the window is only repainted
+/// when a frame is actually taken.
+const POLL: std::time::Duration = std::time::Duration::from_millis(4);
+
+/// The window class this window carries.
+///
+/// It is NOT the launcher's. The key mapper decides whether Android has the
+/// focus from the focused window's class, and this window is Android's screen
+/// while the launcher is a list of games; one class for both would mean the
+/// keyboard is grabbed over the library, where the user is trying to type.
+///
+/// Wayland also has no per-window icon, so a compositor looks this up in the
+/// desktop entries — hence `dist/desktop/liwinux-game.desktop`, whose
+/// StartupWMClass has to match.
+pub const APP_ID: &str = "liwinux-game";
+
+/// Sends the focus state to the daemon, as the class it would see from KWin.
+///
+/// Failures are ignored on purpose: no daemon means no key mapper either, and
+/// a window that refused to draw because it could not report focus would be
+/// worse than one that simply does not map keys.
+fn report(active: bool, cx: &mut App) {
+    let class = if active { APP_ID } else { "" };
+    gpui_tokio::Tokio::spawn(cx, async move {
+        if let Ok(m) = liw_core::manager::Manager::connect().await {
+            let _ = m.set_active_window(class).await;
+            tracing::debug!(class, "reported focus");
+        }
+    })
+    .detach();
+}
+
 pub fn open(
     package: String,
     title: String,
@@ -736,17 +866,18 @@ pub fn open(
             }),
             // Same family as the launcher, so the two group together and the
             // window is recognisable before its own icon is drawn inside it.
-            app_id: Some("liwinux".into()),
+            // A class of its OWN, not the launcher's. The keymapper decides
+            // whether Android has the focus from the focused window's class,
+            // and this window is Android's screen while the launcher is a
+            // list of games. One class for both would mean the keyboard is
+            // grabbed over the library, where the user is trying to type.
+            app_id: Some(APP_ID.into()),
             ..Default::default()
         },
-        |_, cx| cx.new(|cx| GameView::new(package, title, icon, cx)),
+        |window, cx| cx.new(|cx| GameView::new(package, title, icon, window, cx)),
     )?;
     Ok(())
 }
-
-/// A handle to keep, so the launcher does not open a second window for a game
-/// that already has one.
-pub type Open = Entity<GameView>;
 
 #[cfg(test)]
 mod tests {

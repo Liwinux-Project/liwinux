@@ -14,7 +14,22 @@ const POLL_MS: u64 = 1000;
 
 /// KWin class name of the Waydroid window. Measured with `find-waydroid.js`:
 /// cls='waydroid'.
-const WAYDROID_CLASS: &str = "waydroid";
+/// Window classes that mean "Android's screen has the focus".
+///
+/// There are two ways to be looking at Android. `waydroid` is its own window,
+/// from `waydroid show-full-ui` — the path that existed before this program
+/// had a window. `liwinux-game` is that window: Android is rendered inside it
+/// through the embedded compositor, so focusing it IS focusing Android.
+///
+/// Measured, and the reason this list exists: with only `waydroid` here, KWin
+/// reported `liwinux` the instant the game window took the focus, mapping was
+/// switched off 40ms after it came on, and the grab was dropped. Game mode
+/// looked on — the hotkey was seen and the UI said so — while no key reached
+/// the game.
+///
+/// The launcher's own `liwinux` is deliberately absent: it shows a library,
+/// not a game, and grabbing the keyboard there would stop the user typing.
+const ANDROID_CLASSES: [&str; 2] = ["waydroid", "liwinux-game"];
 /// Registration name of the KWin script; unloaded under the same name.
 const KWIN_SCRIPT: &str = "liwinux-focus";
 
@@ -95,7 +110,7 @@ impl Handle {
     pub async fn set_active_window(&self, class: &str) {
         let guard = self.inner.lock().await;
         let Some(r) = guard.as_ref() else { return };
-        let focused = class.eq_ignore_ascii_case(WAYDROID_CLASS);
+        let focused = ANDROID_CLASSES.iter().any(|c| class.eq_ignore_ascii_case(c));
         // Only send on change: if the watch channel re-emits the same value
         // the Runner does pointless work.
         if *r.focus.borrow() != focused {
@@ -330,4 +345,41 @@ fn kwin_script_path() -> Option<std::path::PathBuf> {
         dir = dir.parent()?;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn is_android(class: &str) -> bool {
+        ANDROID_CLASSES.iter().any(|c| class.eq_ignore_ascii_case(c))
+    }
+
+    /// Both ways of looking at Android count.
+    #[test]
+    fn android_has_the_focus_in_its_own_window_and_in_ours() {
+        assert!(is_android("waydroid"));
+        assert!(is_android("liwinux-game"));
+    }
+
+    /// The launcher must NOT. It is a library of games, and a grab there is a
+    /// keyboard the user cannot type on.
+    #[test]
+    fn the_launcher_is_not_android() {
+        assert!(!is_android("liwinux"));
+    }
+
+    /// KWin lowercases before reporting, but nothing guarantees it always
+    /// will, and a case change must not silently turn mapping off.
+    #[test]
+    fn the_class_is_matched_regardless_of_case() {
+        assert!(is_android("Waydroid"));
+        assert!(is_android("liwinux-Game"));
+    }
+
+    /// No focused window at all reports an empty class.
+    #[test]
+    fn nothing_focused_is_not_android() {
+        assert!(!is_android(""));
+    }
 }

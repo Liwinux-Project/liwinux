@@ -26,17 +26,21 @@ pub fn list_devices() -> Result<()> {
             c == p || c.canonicalize().ok() == p.canonicalize().ok()
         })
     };
-    println!("{:<20} {:<9} {:<5} {:<7} {}", "PATH", "KIND", "SCORE", "VIRTUAL", "NAME");
+    println!("{:<20} {:<9} {:<5} {:<5} {:<7} {}",
+             "PATH", "KIND", "KEYS", "MOUSE", "VIRTUAL", "NAME");
     for d in &devs {
         let mark = if want(&d.path, &cfg.keyboard) { "  <- CONFIGURED keyboard" }
             else if want(&d.path, &cfg.mouse) { "  <- CONFIGURED mouse" }
             else { "" };
-        println!("{:<20} {:<9} {:<5} {:<7} {}{}",
+        println!("{:<20} {:<9} {:<5} {:<5} {:<7} {}{}",
             d.path.display(), format!("{:?}", d.kind), d.typing_score,
+            d.pointer_score,
             if d.virtual_device { "yes" } else { "no" }, d.name, mark);
     }
     println!();
-    println!("SCORE = likelihood of being a real typing keyboard (out of 22).");
+    println!("KEYS  = likelihood of being a real typing keyboard (out of 22).");
+    println!("MOUSE = likelihood of being the mouse you move (out of 15). A");
+    println!("        keyboard's own pointer node scores low but not zero.");
     if cfg.keyboard.is_none() {
         println!("WARNING: no keyboard configured — auto-selection will be used.");
     }

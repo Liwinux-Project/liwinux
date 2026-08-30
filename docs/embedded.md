@@ -578,3 +578,116 @@ the screen from every commit is not.
 
 Verified: three clicks, zero recomputations of the fit, no undelivered
 touches.
+## Game mode looked on and mapped nothing (2026-08-30)
+
+Pressing the hotkey in the game window hid the cursor for a moment, and then
+it came back on the first movement. WASD did nothing. The status said game
+mode was on.
+
+Two separate faults, both of which had to be fixed before a single key
+reached the game.
+
+### The key mapper never learned that Android had the focus
+
+The mapper only maps while Android's screen is focused, and it learns that
+from the focused window's class, which a KWin script reports. The list of
+classes it accepted was one entry long: `waydroid`. That was right while
+Android had a window of its own. It is not right now — Android is drawn
+inside our window, whose class was `liwinux`, the same as the launcher's.
+
+The log says it plainly:
+
+```
+focus changed window="waydroid"  waydroid_focused=true
+device grabbed
+focus changed window="liwinux"   waydroid_focused=false
+Waydroid not focused — mapping off
+```
+
+Forty milliseconds. After that, every `game mode ON` in the log has no
+`device grabbed` under it.
+
+So the game window carries its own class, `liwinux-game`, and the mapper
+accepts that as well as `waydroid`. The launcher's `liwinux` is deliberately
+NOT accepted: grabbing the keyboard over a library of games would mean the
+user cannot type in their own program.
+
+That alone was not enough. The KWin script samples focus when it LOADS and
+on changes after that, so a window that already had the focus when the mapper
+started was never reported at all — measured, and it is the state the user
+was in. The script is also KWin's; on any other compositor there is none.
+
+The window now reports its own focus through the same D-Bus method, once at
+once and on every change. It knows the answer without asking anyone, and it
+reports the same class KWin would, so the two agree rather than fight.
+
+### The configured mouse was not a mouse
+
+`liw keymap devices`, with the pointer score added:
+
+```
+/dev/input/event12   Pointer   0     15    no   Razer Razer Basilisk V3
+/dev/input/event26   Pointer   0      7    no   Razer Razer BlackWidow V3 Tenkeyless
+/dev/input/event8    Pointer   0     12    no   Compx 2.4G Receiver Mouse
+```
+
+`event26` is the keyboard's `if02` node. It reports REL_X, REL_Y and
+BTN_LEFT..BTN_EXTRA, so "has X and Y and a left button" calls it a pointer
+exactly like the mouse on the desk — and auto-detection took the first
+pointer in path order. Mouse-look then read a device that never moves.
+
+What separates them, from the capability bitmaps: the keyboard's node also
+reports four KEY_MACRO codes (a mouse reports buttons and nothing else), it
+has no horizontal wheel, and it has five buttons against thirteen. Scored
+that way the real mouse wins 15 to 7, and a virtual device — including our
+own touchscreen, which scores 10 — is excluded before scoring matters.
+
+### Verified
+
+With a synthetic keyboard and mouse driven at the mapper (`cargo run -p
+liw-input --example fake-input`), so the desk hardware is never grabbed:
+
+```
+focus changed window="liwinux-game" waydroid_focused=true
+device grabbed
+game mode ON — grab + mapping
+Latency      : p50 0.26 ms   p99 0.26 ms
+```
+
+The latency line is the proof: it only appears once events have been
+translated into touches and written to the pipe.
+
+## Four frames a second, lost to beating (2026-08-30)
+
+"The game feels like it runs a little slower in the window." It did, by
+about six per cent, and the cause was two 60Hz clocks that were not locked
+together.
+
+The compositor publishes a frame into a slot; the view polled that slot on a
+16ms timer. Same rate, no common phase. Measured:
+
+```
+produced=60.0  delivered=59.0  polls=60.0
+produced=60.1  delivered=56.4  polls=60.4
+produced=59.9  delivered=54.7  polls=60.7
+```
+
+A tick would find nothing, and the tick after it would find a frame that had
+already been overwritten. The poll is now 4ms — four looks per frame, so a
+miss needs two frames inside 4ms, which 60Hz cannot do:
+
+```
+produced=60.1  delivered=60.8  polls=181
+produced=60.0  delivered=59.9  polls=186
+```
+
+A look that finds nothing costs one lock and one integer compare, and the
+window is still only repainted when a frame is actually taken.
+
+The view also cloned every frame out of the slot before converting it — a
+full screen of pixels, 12MB at 2248x1342, copied for nothing on top of the
+readback that produced it. It takes the frame instead.
+
+What is NOT slow: the compositor. At 2248x1342 it produces a steady 60 and
+spends 4.6ms a frame doing it. A dip to 10fps during one run was the game's
+own menu, and the frame cost never moved.

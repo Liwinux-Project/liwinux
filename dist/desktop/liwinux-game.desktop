@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=liwinux
+Comment=A game running under liwinux
+Exec=liw-ui
+Icon=liwinux
+Terminal=false
+Categories=Game;
+# The game window carries its own app_id so the keymapper can tell Android's
+# screen apart from the launcher. That app_id has to resolve to an entry or
+# the window gets no icon in the task bar, which is all this file is for —
+# hence NoDisplay: it must not appear in the menu a second time.
+NoDisplay=true
+StartupWMClass=liwinux-game

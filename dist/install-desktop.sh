@@ -11,6 +11,8 @@ apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 icons="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
 
 install -Dm644 "$R/dist/desktop/liwinux.desktop" "$apps/liwinux.desktop"
+# The game window has an app_id of its own; without an entry it has no icon.
+install -Dm644 "$R/dist/desktop/liwinux-game.desktop" "$apps/liwinux-game.desktop"
 for s in 32 48 64 128 256; do
   install -Dm644 "$R/dist/icons/liwinux-$s.png" "$icons/${s}x${s}/apps/liwinux.png"
 done

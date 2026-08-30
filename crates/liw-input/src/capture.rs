@@ -56,6 +56,8 @@ pub struct DeviceInfo {
     pub virtual_device: bool,
     /// Score for being a real typing keyboard (higher = more likely).
     pub typing_score: u32,
+    /// Score for being the mouse a person actually moves (higher = more likely).
+    pub pointer_score: u32,
 }
 
 /// Keys looked for when identifying a real typing keyboard.
@@ -74,6 +76,60 @@ const TYPING_KEYS: &[KeyCode] = &[
     KeyCode::KEY_F1, KeyCode::KEY_F12,
     KeyCode::KEY_UP, KeyCode::KEY_DOWN, KeyCode::KEY_LEFT, KeyCode::KEY_RIGHT,
 ];
+
+/// Key codes that belong to buttons rather than to keys.
+///
+/// Two ranges, because the kernel's numbering is not contiguous: `BTN_MISC`
+/// through `BTN_GEAR_UP`, and the `BTN_TRIGGER_HAPPY` block far above it.
+fn is_button(code: u16) -> bool {
+    (0x100..=0x15f).contains(&code) || (0x2c0..=0x2ff).contains(&code)
+}
+
+/// How much the device looks like the mouse a person actually moves.
+///
+/// Needed because "has X and Y and a left button" is not enough to find a
+/// mouse. Measured on this machine: a Razer BlackWidow keyboard publishes an
+/// `if02` node reporting REL_X, REL_Y and BTN_LEFT..BTN_EXTRA, so `classify`
+/// calls it a Pointer exactly like the real mouse two nodes away. Taking the
+/// first pointer found took that one, and mouse-look in game mode then read a
+/// device that never moves — the symptom being a game that ignores the mouse
+/// while everything reports working.
+///
+/// What actually separated them, measured from their capability bitmaps:
+///
+/// | | keyboard's node | Basilisk mouse |
+/// |---|---|---|
+/// | keys outside the button ranges | 4 macro keys | none |
+/// | horizontal wheel | no | yes |
+/// | buttons | 5 | 13 |
+///
+/// A mouse reports buttons and nothing else, so the first line carries the
+/// most weight. The rest only orders real mice against each other, and there
+/// this is a hint rather than an answer: the setting stays editable, and the
+/// list shows the score so a wrong pick can be seen.
+pub fn pointer_score(dev: &Device) -> u32 {
+    let Some(keys) = dev.supported_keys() else { return 0 };
+    let rels = dev.supported_relative_axes();
+    let moves = rels.is_some_and(|r| {
+        r.contains(RelativeAxisCode::REL_X) && r.contains(RelativeAxisCode::REL_Y)
+    });
+    if !moves || !keys.contains(KeyCode::BTN_LEFT) {
+        return 0;
+    }
+    let mut score = 0;
+    if keys.iter().all(|k| is_button(k.0)) {
+        score += 4;
+    }
+    if rels.is_some_and(|r| r.contains(RelativeAxisCode::REL_WHEEL)) {
+        score += 2;
+    }
+    if rels.is_some_and(|r| r.contains(RelativeAxisCode::REL_HWHEEL)) {
+        score += 1;
+    }
+    // Capped: a device claiming forty buttons should not outrank one that is
+    // a better mouse on every other count.
+    score + keys.iter().filter(|k| is_button(k.0)).count().min(8) as u32
+}
 
 /// How likely the device is to be a real typing keyboard.
 pub fn typing_score(dev: &Device) -> u32 {
@@ -170,6 +226,7 @@ pub fn discover() -> Vec<DeviceInfo> {
         out.push(DeviceInfo {
             path, name, kind, virtual_device,
             typing_score: typing_score(&dev),
+            pointer_score: pointer_score(&dev),
         });
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -186,6 +243,17 @@ pub fn best_keyboard(devs: &[DeviceInfo]) -> Option<&DeviceInfo> {
         .filter(|d| !d.virtual_device)
         .filter(|d| matches!(d.kind, DeviceKind::Keyboard | DeviceKind::Combo))
         .max_by_key(|d| d.typing_score)
+}
+
+/// Picks the most likely mouse.
+///
+/// Ordering: non-virtual, then by `pointer_score`. See that function for why
+/// "it is a pointer" on its own picks the wrong device.
+pub fn best_pointer(devs: &[DeviceInfo]) -> Option<&DeviceInfo> {
+    devs.iter()
+        .filter(|d| !d.virtual_device)
+        .filter(|d| matches!(d.kind, DeviceKind::Pointer | DeviceKind::Combo))
+        .max_by_key(|d| d.pointer_score)
 }
 
 /// A single grabbed device. The grab is released on `Drop`.
@@ -354,5 +422,81 @@ mod tests {
     fn irrelevant_events_are_ignored() {
         assert_eq!(translate(&RawEvent::new(EventType::LED.0, 0, 1)), None);
         assert_eq!(translate(&RawEvent::new(EventType::SYNCHRONIZATION.0, 0, 0)), None);
+    }
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    use super::*;
+
+    fn dev(name: &str, kind: DeviceKind, pointer_score: u32, virtual_device: bool)
+        -> DeviceInfo
+    {
+        DeviceInfo {
+            path: PathBuf::from(format!("/dev/input/{name}")),
+            name: name.into(),
+            kind,
+            virtual_device,
+            typing_score: 0,
+            pointer_score,
+        }
+    }
+
+    /// The scores are the ones this machine actually produces: the Basilisk
+    /// mouse, a wireless mouse, and the BlackWidow keyboard's pointer node.
+    /// The keyboard's node must lose to both real mice.
+    #[test]
+    fn a_keyboards_pointer_node_loses_to_a_real_mouse() {
+        let devs = vec![
+            dev("basilisk", DeviceKind::Pointer, 15, false),
+            dev("blackwidow-if02", DeviceKind::Pointer, 7, false),
+            dev("compx", DeviceKind::Pointer, 12, false),
+        ];
+        assert_eq!(best_pointer(&devs).unwrap().name, "basilisk");
+    }
+
+    /// Path order is what used to decide, and it decided wrong. The list here
+    /// is in the order `discover` sorts it, with the bad device first.
+    #[test]
+    fn the_first_pointer_in_path_order_does_not_win_by_being_first() {
+        let devs = vec![
+            dev("blackwidow-if02", DeviceKind::Pointer, 7, false),
+            dev("basilisk", DeviceKind::Pointer, 15, false),
+        ];
+        assert_eq!(best_pointer(&devs).unwrap().name, "basilisk");
+    }
+
+    /// Ours is the touchscreen the mapper writes to. Reading it back would be
+    /// a feedback loop.
+    #[test]
+    fn a_virtual_device_is_never_the_mouse() {
+        let devs = vec![dev("liwinux-touch", DeviceKind::Pointer, 99, true)];
+        assert!(best_pointer(&devs).is_none());
+    }
+
+    /// A keyboard with a trackpoint is a Combo and is a legitimate mouse.
+    #[test]
+    fn a_combo_device_can_be_the_mouse() {
+        let devs = vec![dev("laptop", DeviceKind::Combo, 6, false)];
+        assert_eq!(best_pointer(&devs).unwrap().name, "laptop");
+    }
+
+    #[test]
+    fn a_keyboard_is_never_the_mouse() {
+        let devs = vec![dev("kbd", DeviceKind::Keyboard, 0, false)];
+        assert!(best_pointer(&devs).is_none());
+    }
+
+    /// The two ranges the kernel uses for buttons, and the keys around them.
+    #[test]
+    fn buttons_are_told_apart_from_keys() {
+        assert!(is_button(0x110), "BTN_LEFT");
+        assert!(is_button(0x151), "BTN_GEAR_UP");
+        assert!(is_button(0x2c0), "BTN_TRIGGER_HAPPY");
+        assert!(!is_button(30), "KEY_A");
+        // KEY_MACRO27 — one of the four the BlackWidow's pointer node reports,
+        // and the reason it scores below a real mouse.
+        assert!(!is_button(682));
+        assert!(!is_button(0x160), "just past the first button range");
     }
 }

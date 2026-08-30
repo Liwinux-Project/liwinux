@@ -132,6 +132,19 @@ fn devices_panel(
                                 format!("{}/22 keys", d.typing_score))),
                     )
                 })
+                // The same trap on the mouse side: a keyboard publishes a
+                // pointer node that looks like a mouse until you compare
+                // scores. Showing it is what makes a wrong pick visible.
+                .when(!want_keyboard && d.pointer_score > 0, |el| {
+                    el.child(
+                        div()
+                            .w(px(96.0))
+                            .text_size(px(10.0))
+                            .text_color(t.text_faint)
+                            .child(SharedString::from(
+                                format!("mouse {}/15", d.pointer_score))),
+                    )
+                })
                 .on_click(cx.listener(move |st: &mut AppState, _, _, cx| {
                     let p = std::path::PathBuf::from(path.clone());
                     st.edit_config(|c| {

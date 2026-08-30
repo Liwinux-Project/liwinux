@@ -76,6 +76,17 @@ fn main() {
                 }
             }
         }
+        // With no windows there is nothing left to do and nothing to show.
+        // gpui does not assume that — an app can legitimately live in a tray —
+        // so it has to be said. Without it, closing the launcher leaves a
+        // resident process and the next start from KDE adds another beside it.
+        cx.on_window_closed(|cx, _id| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
+
         cx.activate(true);
     });
 }
