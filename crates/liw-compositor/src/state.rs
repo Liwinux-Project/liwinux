@@ -203,11 +203,23 @@ impl CompositorHandler for Compositor {
         // a dmabuf is named, and nothing is drawn.
         smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
 
+        // Only the TOPLEVEL's own surface says how big Android is.
+        //
+        // Every surface the client owns commits through here, including the
+        // cursor it sets on our seat. Measured: a 37x37 cursor surface
+        // alternating with the 2560x1440 screen, and since the view fits
+        // itself to whatever size was recorded last, the picture leapt to
+        // thirty-odd times its size for as long as a finger was down and
+        // snapped back on release. It read as a zoom, and it was a
+        // measurement of the wrong surface.
+        let is_main = self.surface.as_ref() == Some(surface);
+
         self.with_guest(|g| {
-            g.commits += 1;
+            g.saw_commit();
             if let Some((kind, w, h)) = attached {
-                g.buffer = Some(kind);
-                g.size = Some((w, h));
+                if is_main {
+                    g.saw_screen(kind, w, h);
+                }
             }
         });
     }

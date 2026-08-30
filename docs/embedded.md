@@ -547,3 +547,34 @@ Clicking to play. The pipe attaches (logged, with the guest's real
 resolution), the coordinate conversion is unit-tested, and the backend
 behind it is the one the key mapper already uses — but that a click in the
 window moves something in the game needs a hand on the mouse.
+
+## The zoom on touch (2026-08-30)
+
+Touching the game blew the picture up for as long as a finger was down and
+snapped it back on release. It looked like the game was zooming. It was the
+compositor measuring the wrong surface.
+
+Every surface a client owns commits through the same handler, and the
+recorded screen size was taken from whichever committed last. Android sets
+a **cursor** on the seat we advertise, that cursor surface commits at 37x37,
+and the view fits itself to the last size recorded:
+
+```
+fitted guest=(37, 37)
+fitted guest=(2560, 1440)
+fitted guest=(37, 37)
+fitted guest=(2560, 1440)
+```
+
+37 is below `REAL_SCREEN`, the guard that stops a 1x1 placeholder producing
+an absurd scale — so `fit` fell back to 1.0 and drew a 2560x1440 guest 1:1
+into a 1236x760 view. The top-left quarter, filling the window. That is
+exactly what a zoom looks like.
+
+`Guest::saw_commit` and `Guest::saw_screen` are now separate calls, and only
+the toplevel's own surface reaches the second. Counting every commit is
+still right — a subsurface changing is a reason to repaint — but measuring
+the screen from every commit is not.
+
+Verified: three clicks, zero recomputations of the fit, no undelivered
+touches.
