@@ -57,6 +57,17 @@ pub struct AppState {
     pub android: crate::android::Android,
     /// The repaint loop that runs while Android is on screen.
     frame_pump: Option<gpui::Task<()>>,
+    /// Whether the panel beside the game is open. The rail always is.
+    pub sidebar_open: bool,
+    /// Placing key bindings on the picture.
+    pub mapper: crate::mapper::Mapper,
+    /// Focus for the mapping layer.
+    ///
+    /// Key presses reach a focused element, so the layer that binds them has
+    /// to hold focus while mapping is on — otherwise the key that should
+    /// become a binding goes to whatever had focus before, which is usually
+    /// the search box.
+    pub map_focus: gpui::FocusHandle,
     pub link: Link,
     pub snapshot: Snapshot,
     pub apps: Vec<AndroidApp>,
@@ -101,6 +112,9 @@ impl AppState {
             nav: Nav::Library,
             android: Default::default(),
             frame_pump: None,
+            sidebar_open: true,
+            mapper: Default::default(),
+            map_focus: cx.focus_handle(),
             link: Link::Connecting,
             snapshot: Snapshot::default(),
             apps: Vec::new(),
@@ -136,6 +150,31 @@ impl AppState {
         if nav == Nav::Play {
             self.android.start(1280, 720);
             self.pump_frames(cx);
+        }
+        cx.notify();
+    }
+
+    /// Turns key mapping on or off.
+    ///
+    /// Which profile is edited follows the foreground package, because that
+    /// is the game on screen. Mapping without knowing what is running would
+    /// write bindings into whichever profile happened to be remembered.
+    pub fn toggle_mapping(&mut self, cx: &mut Context<Self>) {
+        if self.mapper.is_on() {
+            self.mapper.end();
+        } else {
+            let pkg = self.snapshot.foreground.clone().unwrap_or_default();
+            if pkg.is_empty() {
+                self.mapper.error =
+                    Some("Nothing is in the foreground to map keys for.".into());
+            } else {
+                let name = self.apps.iter()
+                    .find(|a| a.package == pkg)
+                    .map(|a| a.name.clone())
+                    .unwrap_or_else(|| pkg.clone());
+                self.mapper.begin(&pkg, &name);
+                self.sidebar_open = true;
+            }
         }
         cx.notify();
     }

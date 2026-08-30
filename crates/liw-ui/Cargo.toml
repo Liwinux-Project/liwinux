@@ -20,6 +20,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 futures = "0.3"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 liw-compositor = { path = "../liw-compositor" }
+liw-input = { path = "../liw-input" }
+toml = "0.9.8"
 zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
 
 # Pinned to the same Zed fork/rev postillion uses. gpui is Zed's internal

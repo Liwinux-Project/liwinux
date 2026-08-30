@@ -416,15 +416,3 @@ fn offline(t: &Theme, why: &str) -> gpui::AnyElement {
         .into_any_element()
 }
 
-fn placeholder(t: &Theme, n: Nav) -> gpui::AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .size_full()
-        .gap(px(S2))
-        .child(div().text_size(px(15.0)).text_color(t.text_muted).child(n.label()))
-        .child(div().text_size(px(12.0)).text_color(t.text_faint).child("Not built yet."))
-        .into_any_element()
-}

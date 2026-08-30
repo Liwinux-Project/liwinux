@@ -14,6 +14,9 @@
 mod library;
 mod tint;
 mod android;
+mod keys;
+mod mapper;
+mod sidebar;
 mod shell;
 mod diagnostics;
 mod keymap;

@@ -383,3 +383,52 @@ enough evidence to name a culprit — which is what naming the renderer was.
 but pressing it needs a keyboard and every check here was done from a
 script. The resize path is verified, because the fit follows the real
 window size in the log above.
+
+## The rail and the key mapper (2026-08-30)
+
+A thin strip beside the picture, in the shape GameLoop uses: controls next to
+the game rather than on top of it, so nothing a player needs is hidden behind
+the thing they are playing. Three buttons — open the panel, map keys, fill the
+window — and the panel opens to their detail.
+
+### Mapping
+
+Click where a button is on the game, then press the key that should press it.
+Nothing is typed and no coordinates are entered; the thing being aimed at is
+the running game rather than a screenshot of it.
+
+What is stored is an **evdev code and a normalised position**, so a binding
+survives a resized window and a different keyboard layout. That is the
+existing model in `liw_input::profile::Trigger`, and honouring it meant a
+name-to-code table: gpui reports the printed character, the profile wants the
+physical key. The table covers letters, digits, arrows, modifiers, space and
+the function keys, and **refuses** anything else rather than guessing —
+binding the wrong physical key fails silently and only during play.
+
+### One piece of arithmetic, not two
+
+`liw_compositor::fit` decides both what the compositor renders and where a
+click lands on the guest. It was moved there specifically so there is one
+copy: two would drift, and the symptom would be taps landing somewhere other
+than where they were placed — which reads as a broken input engine rather
+than a broken editor.
+
+The same applies to the rail's width. `sidebar::width()` is what the picture's
+size is computed from, so a second opinion about how wide the rail is cannot
+put every binding a few pixels off.
+
+### Verified, and not
+
+The rail renders and the layout arithmetic is right: the log shows
+`view=(844, 668)` with the panel open and `view=(1076, 668)` with it closed,
+against a 1120-wide window — 276 and 44 pixels, which is what
+`sidebar::width` returns for each.
+
+The mapper's own logic is covered by tests: placing, refusing a click in the
+letterboxing, binding, refusing an unmappable key, the second binding of the
+same key getting its own name, removing, and which bindings get markers.
+
+**The click-and-press flow has not been exercised in the running UI.** Every
+check here ran from a script, and pressing a key or clicking a marker needs
+hands. The pieces are tested individually and the layout is right; that they
+compose is inference, not measurement, until someone uses it.

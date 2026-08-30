@@ -20,7 +20,6 @@ use anyhow::{Context, Result};
 use liw_core::video::{self, Codec, CodecKind, HostCaps, Severity, Source};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Instant;
 
 const ROOTFS: &str = "/var/lib/waydroid/rootfs";
 const IMAGES: &str = "/var/lib/waydroid/images";
@@ -156,8 +155,6 @@ struct Fixture {
     file: &'static str,
     /// ffmpeg's explicit NVDEC decoder for this format.
     cuvid: &'static str,
-    /// ffmpeg's software decoder, for the cost comparison.
-    software: &'static str,
     clip: &'static [u8],
 }
 
@@ -167,18 +164,12 @@ struct Fixture {
 /// installed, and a missing encoder would be indistinguishable from a missing
 /// decoder. These are 320x180, half a second, a few KB each.
 const FIXTURES: &[Fixture] = &[
-    Fixture { mime: "video/avc", file: "h264.mp4", cuvid: "h264_cuvid",
-              software: "h264", clip: include_bytes!("../probe/h264.mp4") },
-    Fixture { mime: "video/hevc", file: "hevc.mp4", cuvid: "hevc_cuvid",
-              software: "hevc", clip: include_bytes!("../probe/hevc.mp4") },
-    Fixture { mime: "video/x-vnd.on2.vp9", file: "vp9.webm", cuvid: "vp9_cuvid",
-              software: "vp9", clip: include_bytes!("../probe/vp9.webm") },
-    Fixture { mime: "video/x-vnd.on2.vp8", file: "vp8.webm", cuvid: "vp8_cuvid",
-              software: "vp8", clip: include_bytes!("../probe/vp8.webm") },
-    Fixture { mime: "video/av01", file: "av1.mp4", cuvid: "av1_cuvid",
-              software: "av1", clip: include_bytes!("../probe/av1.mp4") },
-    Fixture { mime: "video/mp4v-es", file: "mpeg4.mp4", cuvid: "mpeg4_cuvid",
-              software: "mpeg4", clip: include_bytes!("../probe/mpeg4.mp4") },
+    Fixture { mime: "video/avc", file: "h264.mp4", cuvid: "h264_cuvid", clip: include_bytes!("../probe/h264.mp4") },
+    Fixture { mime: "video/hevc", file: "hevc.mp4", cuvid: "hevc_cuvid", clip: include_bytes!("../probe/hevc.mp4") },
+    Fixture { mime: "video/x-vnd.on2.vp9", file: "vp9.webm", cuvid: "vp9_cuvid", clip: include_bytes!("../probe/vp9.webm") },
+    Fixture { mime: "video/x-vnd.on2.vp8", file: "vp8.webm", cuvid: "vp8_cuvid", clip: include_bytes!("../probe/vp8.webm") },
+    Fixture { mime: "video/av01", file: "av1.mp4", cuvid: "av1_cuvid", clip: include_bytes!("../probe/av1.mp4") },
+    Fixture { mime: "video/mp4v-es", file: "mpeg4.mp4", cuvid: "mpeg4_cuvid", clip: include_bytes!("../probe/mpeg4.mp4") },
 ];
 
 /// Writes a fixture clip to a temporary file.
@@ -276,15 +267,17 @@ fn child_cpu_seconds() -> Option<f64> {
 }
 
 /// One decode run.
+///
+/// CPU seconds only. Wall time was measured too at first and then never
+/// reported: a decoder spread across threads finishes sooner in wall time
+/// while costing more, which is the opposite of what this is asking.
 struct Run {
     cpu_s: f64,
-    wall_s: f64,
 }
 
 /// Decodes a clip and measures what it cost.
 fn timed_decode(decoder: &str, clip: &Path, loops: u32) -> Option<Run> {
     let before = child_cpu_seconds()?;
-    let t0 = Instant::now();
     for _ in 0..loops {
         Command::new("ffmpeg")
             .args(["-hide_banner", "-loglevel", "error", "-c:v", decoder, "-i"])
@@ -293,9 +286,8 @@ fn timed_decode(decoder: &str, clip: &Path, loops: u32) -> Option<Run> {
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
             .status().ok()?;
     }
-    let wall_s = t0.elapsed().as_secs_f64();
     let after = child_cpu_seconds()?;
-    Some(Run { cpu_s: after - before, wall_s })
+    Some(Run { cpu_s: after - before })
 }
 
 // ---------------------------------------------------------------------------

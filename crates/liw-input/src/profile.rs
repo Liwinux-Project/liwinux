@@ -99,7 +99,7 @@ pub enum Binding {
         /// same thing and games expect it.
         #[serde(default = "default_recenter_margin")]
         recenter_margin: f32,
-        /// Devir teslimle yeniden ortalama.
+        /// Recentre by handing over rather than by lifting.
         ///
         /// When on, a second finger goes down at the centre BEFORE the first
         /// reaches the edge and both move together; the first is released only

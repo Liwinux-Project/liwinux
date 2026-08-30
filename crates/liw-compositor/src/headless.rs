@@ -181,6 +181,29 @@ impl Headless {
     }
 }
 
+/// A guest smaller than this is not a screen.
+///
+/// Waydroid's session manager attaches a 1x1 placeholder before Android is
+/// up. Fitting to it gives a scale of over a thousand, which is then sent to
+/// the client as its output scale — and Android stops booting.
+pub const REAL_SCREEN: i32 = 64;
+
+/// How much to shrink the guest to fit a view, and how big it then looks.
+///
+/// ONE implementation, used by both the compositor that renders and the UI
+/// that turns a click into a position on the Android screen. Two copies of
+/// this arithmetic would drift, and the symptom would be taps landing
+/// somewhere other than where they were placed — the kind of bug that reads
+/// as a broken input engine.
+pub fn fit(guest: (i32, i32), view: (i32, i32)) -> (f64, (f32, f32)) {
+    let (gw, gh) = guest;
+    if gw < REAL_SCREEN || gh < REAL_SCREEN || view.0 <= 0 || view.1 <= 0 {
+        return (1.0, (view.0 as f32, view.1 as f32));
+    }
+    let s = (view.0 as f64 / gw as f64).min(view.1 as f64 / gh as f64);
+    (s, ((gw as f64 * s) as f32, (gh as f64 * s) as f32))
+}
+
 /// The transform the offscreen path renders with.
 ///
 /// Unlike the winit backend, which hands back a framebuffer that is already
@@ -216,6 +239,35 @@ mod tests {
         let a = Frame { width: 1, height: 1, bgra: vec![0; 4], serial: 1 };
         let b = Frame { width: 1, height: 1, bgra: vec![0; 4], serial: 2 };
         assert!(b.serial > a.serial);
+    }
+
+    /// The shared fit is what makes a click in the UI land where it was put.
+    /// Both sides call this; the arithmetic exists once.
+    #[test]
+    fn fit_shrinks_a_large_guest_and_reports_its_shown_size() {
+        let (s, shown) = fit((2560, 1440), (1280, 720));
+        assert_eq!(s, 0.5);
+        assert_eq!(shown, (1280.0, 720.0));
+    }
+
+    /// A view that is not the guest's aspect letterboxes: the smaller of the
+    /// two ratios wins, so nothing is cropped.
+    #[test]
+    fn fit_uses_the_smaller_ratio_so_nothing_is_cropped() {
+        let (s, shown) = fit((1000, 1000), (500, 250));
+        assert_eq!(s, 0.25);
+        assert_eq!(shown, (250.0, 250.0), "height-limited, so it letterboxes");
+    }
+
+    #[test]
+    fn fit_refuses_to_scale_to_a_placeholder() {
+        assert_eq!(fit((1, 1), (1280, 720)).0, 1.0);
+    }
+
+    /// A view of zero happens while a window is being laid out.
+    #[test]
+    fn fit_survives_a_zero_view() {
+        assert_eq!(fit((2560, 1440), (0, 0)).0, 1.0);
     }
 
     /// Offscreen rendering is not flipped. The winit path needs

@@ -26,14 +26,6 @@ use smithay::wayland::socket::ListeningSocketSource;
 use crate::headless::{Frame, FrameSlot, Headless, OFFSCREEN_TRANSFORM};
 use crate::{ClientState, Compositor, GuestHandle};
 
-/// A guest smaller than this is not a screen.
-///
-/// Waydroid's session manager attaches a 1x1 placeholder before Android is
-/// up. Fitting to it gives a scale of over a thousand, which is then sent to
-/// the client as its output scale — and Android stops booting. Measured, and
-/// the reason this constant exists rather than a bare `> 0` check.
-const REAL_SCREEN: i32 = 64;
-
 /// Handles the host application holds onto.
 pub struct Embedded {
     /// The newest frame, or `None` before the first one.
@@ -197,11 +189,7 @@ fn run(
         // waydroid.display_width/height, set from the host display — so the
         // guest is almost always a different size from the view.
         let (gw, gh) = guest_size.unwrap_or(size);
-        let fit = if gw >= REAL_SCREEN && gh >= REAL_SCREEN {
-            (size.0 as f64 / gw as f64).min(size.1 as f64 / gh as f64)
-        } else {
-            1.0
-        };
+        let (fit, _shown) = crate::headless::fit((gw, gh), size);
 
         if (size.0, size.1) != (applied.0, applied.1) || (fit - applied.2).abs() > 1e-9 {
             output.change_current_state(
@@ -343,14 +331,9 @@ mod tests {
     /// absurd output scale. Android stopped booting when it did.
     #[test]
     fn a_placeholder_surface_does_not_drive_the_scale() {
-        let fit = |gw: i32, gh: i32, vw: i32, vh: i32| {
-            if gw >= REAL_SCREEN && gh >= REAL_SCREEN {
-                (vw as f64 / gw as f64).min(vh as f64 / gh as f64)
-            } else {
-                1.0
-            }
-        };
-        assert_eq!(fit(1, 1, 1280, 720), 1.0, "1x1 must not scale");
-        assert_eq!(fit(2560, 1440, 1280, 720), 0.5, "a real screen must");
+        assert_eq!(crate::headless::fit((1, 1), (1280, 720)).0, 1.0,
+                   "1x1 must not scale");
+        assert_eq!(crate::headless::fit((2560, 1440), (1280, 720)).0, 0.5,
+                   "a real screen must");
     }
 }

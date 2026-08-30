@@ -22,7 +22,7 @@ use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{surface::render_elements_from_surface_tree, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::{ExportMem, Renderer};
+use smithay::backend::renderer::ExportMem;
 use smithay::backend::winit::{self, WinitEvent};
 use smithay::reexports::winit::window::WindowAttributes;
 use smithay::desktop::utils::send_frames_surface_tree;

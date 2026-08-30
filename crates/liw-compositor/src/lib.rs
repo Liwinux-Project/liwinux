@@ -24,7 +24,7 @@ pub mod headless;
 pub mod state;
 
 pub use embedded::{spawn, Embedded};
-pub use headless::{Frame, FrameSlot, Headless};
+pub use headless::{fit, Frame, FrameSlot, Headless, REAL_SCREEN};
 pub use state::{Compositor, Surface};
 
 /// What the host needs to know about the guest, without holding Wayland types.
