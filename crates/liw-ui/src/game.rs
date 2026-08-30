@@ -42,11 +42,24 @@ pub struct GameView {
     /// The package this window is showing, for the profile being edited.
     pub package: String,
     pub title: String,
+    /// The game's own icon, drawn in the panel.
+    ///
+    /// Wayland has no per-window icon, so this is where the game's face
+    /// actually appears — inside the window rather than on its frame.
+    pub icon: Option<std::path::PathBuf>,
+    /// Mouse presses, sent into Android as touches.
+    pub touch: crate::touch::Touch,
     frame_pump: Option<gpui::Task<()>>,
+    _pipe: Option<gpui::Task<()>>,
 }
 
 impl GameView {
-    pub fn new(package: String, title: String, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        package: String,
+        title: String,
+        icon: Option<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut v = Self {
             android: Android::default(),
             mapper: Mapper::default(),
@@ -54,11 +67,92 @@ impl GameView {
             focus: cx.focus_handle(),
             package,
             title,
+            icon,
+            touch: Default::default(),
             frame_pump: None,
+            _pipe: None,
         };
         v.android.start(1280, 720);
         v.pump(cx);
+        v.open_touch_pipe(cx);
+        v.bring_up_android(cx);
         v
+    }
+
+    /// Points the daemon at this window's socket and starts Android on it.
+    ///
+    /// The order is the whole trick: the socket exists as soon as the window
+    /// does, the daemon is told about it, and only then is the session
+    /// started. Starting first would send Android to the desktop compositor,
+    /// and telling the daemon afterwards would not move a session already
+    /// running.
+    ///
+    /// Telling the DAEMON rather than setting an environment variable is what
+    /// makes it survive: liwd restarts the session when it looks unhealthy,
+    /// and a restart that forgot the socket would take the game out of this
+    /// window without explanation.
+    fn bring_up_android(&mut self, cx: &mut Context<Self>) {
+        let task = gpui_tokio::Tokio::spawn(cx, async move {
+            let m = liw_core::manager::Manager::connect().await
+                .map_err(|e| e.to_string())?;
+            m.set_embedded_display(crate::android::SOCKET).await
+                .map_err(|e| e.to_string())?;
+            let running = m.snapshot().await
+                .map(|s| s.state == "RUNNING")
+                .unwrap_or(false);
+            if running {
+                // A session already attached to something else has to be
+                // restarted to move: Waydroid reads WAYLAND_DISPLAY once, at
+                // session start.
+                m.session_stop().await.map_err(|e| e.to_string())?;
+            }
+            m.session_start().await.map_err(|e| e.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let r = match task.await {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(e),
+                Err(e) => Some(e.to_string()),
+            };
+            if let Some(e) = r {
+                let _ = this.update(cx, |v, cx| {
+                    v.android.error = Some(format!("could not start Android: {e}"));
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Asks the daemon's helper for the touch pipe.
+    ///
+    /// Opening it needs root — the FIFO lives inside the container's mount
+    /// namespace — so the helper opens it and passes the descriptor over
+    /// D-Bus. Retried until the session is up, because the window is normally
+    /// open before Android has finished booting.
+    fn open_touch_pipe(&mut self, cx: &mut Context<Self>) {
+        self._pipe = Some(cx.spawn(async move |this, cx| {
+            for attempt in 0..60u32 {
+                if attempt > 0 {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(2))
+                        .await;
+                }
+                let task = gpui_tokio::Tokio::spawn(cx, async move {
+                    let h = liw_core::helper::HelperClient::connect().await.ok()?;
+                    h.open_touch_pipe().await.ok()
+                });
+                let Ok(Some((pipe, w, h))) = task.await else { continue };
+                let done = this.update(cx, |v, cx| {
+                    v.touch.attach(pipe, w, h);
+                    cx.notify();
+                    v.touch.is_ready()
+                });
+                if matches!(done, Ok(true)) {
+                    return;
+                }
+            }
+        }));
     }
 
     /// Repaints while frames are arriving.
@@ -188,8 +282,46 @@ fn picture(
     };
 
     let mut layer = div().relative().size_full().child(body);
+
     if !v.mapper.is_on() {
-        return layer.into_any_element();
+        // Playing. The mouse is a finger: press, drag, release.
+        //
+        // Move is only listened for while something is down. Android has no
+        // hover, so a stream of moves with no finger on the screen is work
+        // for nothing — and on this path every one of them is a write into a
+        // FIFO the guest has to read.
+        return layer
+            .id("play-surface")
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |v: &mut GameView, ev: &gpui::MouseDownEvent, _, cx| {
+                    if let Some(n) = crate::touch::to_norm(
+                        (f32::from(ev.position.x), f32::from(ev.position.y)), shown)
+                    {
+                        v.touch.press(n);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_move(cx.listener(
+                move |v: &mut GameView, ev: &gpui::MouseMoveEvent, _, _| {
+                    if ev.pressed_button == Some(gpui::MouseButton::Left) {
+                        if let Some(n) = crate::touch::to_norm(
+                            (f32::from(ev.position.x), f32::from(ev.position.y)), shown)
+                        {
+                            v.touch.drag(n);
+                        }
+                    }
+                },
+            ))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(move |v: &mut GameView, _: &gpui::MouseUpEvent, _, cx| {
+                    v.touch.release();
+                    cx.notify();
+                }),
+            )
+            .into_any_element();
     }
 
     // The catcher goes UNDER the controls, so clicking a control selects it
@@ -344,7 +476,7 @@ fn idle(v: &GameView, t: &Theme) -> gpui::AnyElement {
         .flex()
         .flex_col()
         .gap(px(S2))
-        .child(head(t, &v.title))
+        .child(title_row(v, t))
         .child(note(t, if v.android.running() {
             "Android is drawing into this window."
         } else {
@@ -464,6 +596,31 @@ where
         .into_any_element()
 }
 
+/// The game's icon and name, at the top of the panel.
+fn title_row(v: &GameView, t: &Theme) -> gpui::AnyElement {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(S2))
+        .when_some(v.icon.clone(), |el, p| {
+            el.child(
+                gpui::img(gpui::ImageSource::Resource(gpui::Resource::Path(
+                    std::sync::Arc::from(p.as_path()),
+                )))
+                .w(px(28.0))
+                .h(px(28.0)),
+            )
+        })
+        .child(
+            div()
+                .text_size(px(13.0))
+                .text_color(t.text)
+                .child(SharedString::from(v.title.clone())),
+        )
+        .into_any_element()
+}
+
 fn head(t: &Theme, s: &str) -> gpui::AnyElement {
     div()
         .text_size(px(11.0))
@@ -500,7 +657,16 @@ fn message(t: &Theme, title: &str, detail: &str) -> gpui::AnyElement {
 }
 
 /// Opens the game window.
-pub fn open(package: String, title: String, cx: &mut App) -> anyhow::Result<()> {
+///
+/// `title` is the game's name rather than its package: a window called
+/// `com.ForgeGames.SpecialForcesGroup2` in the task switcher is a package
+/// manager's idea of a name, not a person's.
+pub fn open(
+    package: String,
+    title: String,
+    icon: Option<std::path::PathBuf>,
+    cx: &mut App,
+) -> anyhow::Result<()> {
     let bounds = gpui::Bounds::centered(None, gpui::size(px(1280.), px(760.)), cx);
     cx.open_window(
         gpui::WindowOptions {
@@ -510,9 +676,12 @@ pub fn open(package: String, title: String, cx: &mut App) -> anyhow::Result<()> 
                 title: Some(SharedString::from(title.clone())),
                 ..Default::default()
             }),
+            // Same family as the launcher, so the two group together and the
+            // window is recognisable before its own icon is drawn inside it.
+            app_id: Some("liwinux".into()),
             ..Default::default()
         },
-        |_, cx| cx.new(|cx| GameView::new(package, title, cx)),
+        |_, cx| cx.new(|cx| GameView::new(package, title, icon, cx)),
     )?;
     Ok(())
 }

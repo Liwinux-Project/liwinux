@@ -137,6 +137,14 @@ impl Default for SupervisorConfig {
 pub struct Supervisor {
     wd: Waydroid,
     cfg: SupervisorConfig,
+    /// Wayland socket the session should attach to, when it is not the
+    /// desktop's own.
+    ///
+    /// Held in memory rather than in the config on purpose. It names a socket
+    /// owned by a window that is open right now; persisting it would outlive
+    /// that window and send the next session to a socket nobody is listening
+    /// on. It is also validated before every use, for the same reason.
+    embedded_display: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// For privileged reads. Without it the boot state cannot be MEASURED, only
     /// inferred.
     helper: Option<HelperClient>,
@@ -144,7 +152,8 @@ pub struct Supervisor {
 
 impl Supervisor {
     pub fn new(cfg: SupervisorConfig) -> Self {
-        Self { wd: Waydroid::new(), cfg, helper: None }
+        Self { wd: Waydroid::new(), cfg, helper: None,
+               embedded_display: Default::default() }
     }
 
     /// Tries to connect to liwd-helper. Failure is not fatal: the supervisor
@@ -161,6 +170,25 @@ impl Supervisor {
 
     pub fn config(&self) -> &SupervisorConfig { &self.cfg }
 
+    /// Points new sessions at a window's socket. `None` restores the default.
+    pub fn set_embedded_display(&self, name: Option<String>) {
+        if let Ok(mut d) = self.embedded_display.lock() {
+            *d = name;
+        }
+    }
+
+    /// The socket to start against, if one is set AND still there.
+    ///
+    /// The check is the point. A window that has closed leaves a name behind
+    /// with nothing listening on it, and starting Android against that gives
+    /// a session that boots and draws into nothing — which looks like a
+    /// broken compositor rather than a stale setting.
+    fn display_to_use(&self) -> Option<String> {
+        let name = self.embedded_display.lock().ok()?.clone()?;
+        let dir = std::env::var("XDG_RUNTIME_DIR").ok()?;
+        std::path::Path::new(&dir).join(&name).exists().then_some(name)
+    }
+
     pub async fn status(&self) -> Result<Status, WaydroidError> {
         self.wd.status().await
     }
@@ -175,20 +203,22 @@ impl Supervisor {
             tracing::info!("session already running");
             return Ok(());
         }
-        tracing::info!("starting session (detached)");
-        Command::new("setsid")
-            .args(["--fork", "waydroid", "session", "start"])
-            .stdin(Stdio::null())
+        let socket = self.display_to_use();
+        tracing::info!(?socket, "starting session (detached)");
+        let mut cmd = Command::new("setsid");
+        cmd.args(["--fork", "waydroid", "session", "start"]);
+        if let Some(d) = &socket {
+            cmd.env("WAYLAND_DISPLAY", d);
+        }
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?
-            .wait()
-            .await?;
+            .stderr(Stdio::null());
+        cmd.spawn()?.wait().await?;
         Ok(())
     }
 
     pub async fn stop(&self) -> Result<(), WaydroidError> {
-        tracing::info!("session durduruluyor");
+        tracing::info!("stopping the session");
         self.wd.session_stop().await
     }
 

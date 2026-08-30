@@ -483,3 +483,67 @@ Placing, binding and nudging in the running window. The logic is covered by
 tests — placing, refusing a click in the letterboxing, per-kind behaviour,
 the joystick filling four directions, nudging and its clamp, resize limits,
 removal, selection — but pressing keys and clicking markers needs hands.
+
+## Ready to play (2026-08-30)
+
+Start the launcher, click a game, and it opens in its own window with
+Android already coming up in it. Nothing has to be typed.
+
+### What closes the loop
+
+* **The daemon is told which socket to use**, not an environment variable.
+  `SetEmbeddedDisplay` names the game window's socket, and liwd keeps it for
+  restarts — which matters because liwd restarts the session whenever it
+  looks unhealthy, and a restart that forgot the socket would take the game
+  out of the window with no explanation.
+* **The name is held in memory and checked before every use.** It belongs to
+  a window that is open right now; persisting it would send the next session
+  to a socket nobody is listening on, and Android would boot happily into
+  nothing. Absence of the socket falls back to the desktop's own.
+* **Order matters**: the window exists, then the daemon is told, then the
+  session starts. Waydroid reads `WAYLAND_DISPLAY` once, at session start, so
+  a session already running has to be stopped to move.
+
+Measured end to end, with nothing run by hand beyond opening the window:
+
+```
+liwd: embedded display set display="wayland-liw"
+liwd: starting session (detached) socket=Some("wayland-liw")
+t=15s session=RUNNING boot=true
+liw_ui::touch: touch pipe attached width=2560 height=1440
+fitted guest=(2560, 1440) view=(1236, 760) fit=0.4828125
+```
+
+### The mouse
+
+A click is a finger. It goes through `/dev/input/wl_touch_events` — the FIFO
+Waydroid's patched `EventHub` reads, which the key mapper already uses and
+which bypasses the compositor entirely. Sending `wl_pointer` would have been
+a second, unproven route into the same place.
+
+The mouse takes pointer id 9. The engine's pool allocates from 0 upward, so
+that is the last id it will hand out. It is not a guarantee — a profile
+holding ten bindings at once would take it, and then a click and a mapped
+key would share a finger. Ten simultaneous held bindings is not a real
+profile, but the limit is real and written down rather than assumed away.
+
+### Icons
+
+Wayland hands a window no picture. The compositor looks the window's `app_id`
+up in the desktop entries and takes the icon from there, so liwinux ships
+`dist/desktop/liwinux.desktop` and a rendered icon set, installed by
+`dist/install-desktop.sh`, and both windows set `app_id = "liwinux"`.
+
+That also means there is **no per-window icon** on Wayland: the game's own
+icon cannot go on its frame. It is drawn inside the window instead, at the
+top of the panel, next to the game's name — and the title bar carries the
+game's name rather than its package, because
+`com.ForgeGames.SpecialForcesGroup2` in a task switcher is a package
+manager's idea of a name, not a person's.
+
+### Not verified
+
+Clicking to play. The pipe attaches (logged, with the guest's real
+resolution), the coordinate conversion is unit-tested, and the backend
+behind it is the one the key mapper already uses — but that a click in the
+window moves something in the game needs a hand on the mouse.

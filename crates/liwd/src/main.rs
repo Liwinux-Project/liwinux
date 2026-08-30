@@ -52,6 +52,20 @@ impl Manager {
         self.sup.start_detached().await.map_err(|e| Error::Failed(e.to_string()))
     }
 
+    /// Points new sessions at a window's Wayland socket.
+    ///
+    /// An empty name restores the default. Held only in memory: the name
+    /// belongs to a window that is open right now, and it is checked before
+    /// every use so a closed window cannot strand the next session on a
+    /// socket nobody is listening to.
+    async fn set_embedded_display(&self, name: &str) -> Result<(), Error> {
+        let name = name.trim();
+        self.sup.set_embedded_display(
+            (!name.is_empty()).then(|| name.to_string()));
+        tracing::info!(display = name, "embedded display set");
+        Ok(())
+    }
+
     async fn stop(&self) -> Result<(), Error> {
         self.sup.stop().await.map_err(|e| Error::Failed(e.to_string()))
     }

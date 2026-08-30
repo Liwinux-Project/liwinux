@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=liwinux
+Comment=Android games on Linux
+Exec=liw-ui
+Icon=liwinux
+Terminal=false
+Categories=Game;
+StartupWMClass=liwinux

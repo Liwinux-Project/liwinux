@@ -307,11 +307,10 @@ impl AppState {
         self.error = None;
         self.busy = Some("launch");
 
-        let title = self.apps.iter()
-            .find(|a| a.package == package)
-            .map(|a| a.name.clone())
-            .unwrap_or_else(|| package.clone());
-        if let Err(e) = crate::game::open(package.clone(), title, cx) {
+        let app = self.apps.iter().find(|a| a.package == package);
+        let title = app.map(|a| a.name.clone()).unwrap_or_else(|| package.clone());
+        let icon = app.and_then(|a| a.icon.clone());
+        if let Err(e) = crate::game::open(package.clone(), title, icon, cx) {
             self.error = Some(format!("could not open the game window: {e}"));
             self.busy = None;
             cx.notify();

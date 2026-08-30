@@ -33,6 +33,7 @@ pub enum ManagerError {
 )]
 pub trait Manager1 {
     fn start(&self) -> zbus::Result<()>;
+    fn set_embedded_display(&self, name: &str) -> zbus::Result<()>;
     fn stop(&self) -> zbus::Result<()>;
     fn restart(&self) -> zbus::Result<()>;
     fn health(&self) -> zbus::Result<String>;
@@ -254,6 +255,13 @@ impl Manager {
         let raw = self.proxy.list_profiles().await
             .map_err(|e| ManagerError::Call(e.to_string()))?;
         Ok(serde_json::from_str(&raw)?)
+    }
+
+    /// Points new sessions at a window's Wayland socket. Empty restores the
+    /// default.
+    pub async fn set_embedded_display(&self, name: &str) -> Result<(), ManagerError> {
+        self.proxy.set_embedded_display(name).await
+            .map_err(|e| ManagerError::Call(friendly(&e)))
     }
 
     pub async fn session_start(&self) -> Result<(), ManagerError> {

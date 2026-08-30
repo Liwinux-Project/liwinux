@@ -17,6 +17,7 @@ mod android;
 mod keys;
 mod game;
 mod mapper;
+mod touch;
 mod shell;
 mod diagnostics;
 mod keymap;
@@ -50,6 +51,11 @@ fn main() {
                     appears_transparent: true,
                     traffic_light_position: None,
                 }),
+                // Wayland hands a window no picture: the compositor looks
+                // the app_id up in the desktop entries and takes the icon
+                // from there. This must match StartupWMClass in
+                // dist/desktop/liwinux.desktop.
+                app_id: Some("liwinux".into()),
                 ..Default::default()
             },
             |_, _| state,
@@ -64,7 +70,7 @@ fn main() {
             if a == "--game" {
                 if let Some(pkg) = args.next() {
                     let title = pkg.clone();
-                    if let Err(e) = game::open(pkg, title, cx) {
+                    if let Err(e) = game::open(pkg, title, None, cx) {
                         tracing::error!(error = %e, "could not open the game window");
                     }
                 }
