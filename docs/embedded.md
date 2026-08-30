@@ -432,3 +432,54 @@ same key getting its own name, removing, and which bindings get markers.
 check here ran from a script, and pressing a key or clicking a marker needs
 hands. The pieces are tested individually and the layout is right; that they
 compose is inference, not measurement, until someone uses it.
+
+## Its own window, and the control editor (2026-08-30)
+
+Corrected. GameLoop does not put the game inside the launcher — it opens a
+window for it — and the first version of this had it the other way round.
+The Play tab is gone; a game now gets `GameView` in a window of its own,
+with its own title, size and place on the taskbar. Putting them together
+meant one of the two was always the wrong shape.
+
+The window comes up **before** the launch is sent, and that order matters:
+the window hosts the Wayland socket Waydroid connects to, so launching first
+would send the game to the desktop compositor instead.
+
+### The editor
+
+Pick a kind from the panel, click where it goes, set it up. Nothing is
+named.
+
+Not naming things is the part worth explaining. The engine needs a unique
+key per control, because it allocates one touch pointer per binding name and
+two controls sharing a name would fight over the same finger. That is the
+machine's problem, not the player's — a player thinks "the fire button", not
+a string they have to invent. So the key is generated and never shown, which
+also removes a way to break the pointer allocation without knowing.
+
+* **Palette** — Button, Tap once, Joystick, Aim. Only what the input engine
+  implements: a palette entry with nothing behind it is a promise that
+  cannot be kept.
+* **Placing** goes straight to waiting for a key, because that is what
+  happens next anyway. A joystick collects four in a row, so W A S D sets up
+  the whole stick.
+* **Arrows nudge** the selection by 0.2% of the screen. This is why the
+  editor is usable at all: a click is only as accurate as the pointer and
+  game buttons are small. The arrows are deliberately not bindable.
+* **Size** is offered only for the joystick, the one kind whose radius is in
+  the model. A size control for a button would change nothing.
+* **Delete** removes, **Escape** deselects.
+
+### Verified
+
+A separate window titled after the package, hosting the socket, with the
+game drawn in it and the palette beside it. A fresh launch shows the idle
+panel; the editor panel appears with the palette when mapping is on, and the
+existing profile's controls are drawn over the game as markers.
+
+### Not verified
+
+Placing, binding and nudging in the running window. The logic is covered by
+tests — placing, refusing a click in the letterboxing, per-kind behaviour,
+the joystick filling four directions, nudging and its clamp, resize limits,
+removal, selection — but pressing keys and clicking markers needs hands.

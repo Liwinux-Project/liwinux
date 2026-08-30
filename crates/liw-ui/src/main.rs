@@ -15,8 +15,8 @@ mod library;
 mod tint;
 mod android;
 mod keys;
+mod game;
 mod mapper;
-mod sidebar;
 mod shell;
 mod diagnostics;
 mod keymap;
@@ -35,13 +35,6 @@ fn main() {
     // `Application::new()`.
     gpui_platform::application().run(|cx: &mut App| {
         gpui_tokio::init(cx);
-        // F11 anywhere. The handler itself only acts on the Play page: a
-        // window with no nav strip and no Android in it has no way back.
-        cx.bind_keys([gpui::KeyBinding::new(
-            "f11",
-            crate::android::ToggleImmersive,
-            None,
-        )]);
         let bounds = Bounds::centered(None, size(px(1120.), px(720.)), cx);
         let state = state::build(cx);
         cx.open_window(
@@ -62,6 +55,21 @@ fn main() {
             |_, _| state,
         )
         .expect("could not open the window");
+
+        // `liw-ui --game <package>` opens the game window straight away.
+        // Useful on its own, and it is the only way to reach that window
+        // without a mouse — which matters when the point is to test it.
+        let mut args = std::env::args().skip(1);
+        while let Some(a) = args.next() {
+            if a == "--game" {
+                if let Some(pkg) = args.next() {
+                    let title = pkg.clone();
+                    if let Err(e) = game::open(pkg, title, cx) {
+                        tracing::error!(error = %e, "could not open the game window");
+                    }
+                }
+            }
+        }
         cx.activate(true);
     });
 }

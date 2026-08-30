@@ -18,20 +18,17 @@ use crate::tint::{self, Tint};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nav {
     Library,
-    /// Android itself, drawn in this window.
-    Play,
     Keymap,
     Diagnostics,
     Settings,
 }
 
 impl Nav {
-    pub const ALL: [Nav; 5] =
-        [Nav::Library, Nav::Play, Nav::Keymap, Nav::Diagnostics, Nav::Settings];
+    pub const ALL: [Nav; 4] =
+        [Nav::Library, Nav::Keymap, Nav::Diagnostics, Nav::Settings];
     pub fn label(self) -> &'static str {
         match self {
             Nav::Library => "Library",
-            Nav::Play => "Play",
             Nav::Keymap => "Key mapping",
             Nav::Diagnostics => "Diagnostics",
             Nav::Settings => "Settings",
@@ -53,21 +50,6 @@ pub enum Link {
 
 pub struct AppState {
     pub nav: Nav,
-    /// Android drawn inside this window, and whether chrome is hidden.
-    pub android: crate::android::Android,
-    /// The repaint loop that runs while Android is on screen.
-    frame_pump: Option<gpui::Task<()>>,
-    /// Whether the panel beside the game is open. The rail always is.
-    pub sidebar_open: bool,
-    /// Placing key bindings on the picture.
-    pub mapper: crate::mapper::Mapper,
-    /// Focus for the mapping layer.
-    ///
-    /// Key presses reach a focused element, so the layer that binds them has
-    /// to hold focus while mapping is on — otherwise the key that should
-    /// become a binding goes to whatever had focus before, which is usually
-    /// the search box.
-    pub map_focus: gpui::FocusHandle,
     pub link: Link,
     pub snapshot: Snapshot,
     pub apps: Vec<AndroidApp>,
@@ -110,11 +92,6 @@ impl AppState {
         let search_focus = cx.focus_handle();
         let mut s = Self {
             nav: Nav::Library,
-            android: Default::default(),
-            frame_pump: None,
-            sidebar_open: true,
-            mapper: Default::default(),
-            map_focus: cx.focus_handle(),
             link: Link::Connecting,
             snapshot: Snapshot::default(),
             apps: Vec::new(),
@@ -132,85 +109,11 @@ impl AppState {
             _watch: None,
         };
         s.reload(cx);
-        // `liw-ui --play` opens straight into Android. Useful on its own, and
-        // it is the only way to reach that page without a mouse — which
-        // matters when the point of the page is to test it.
-        if std::env::args().any(|a| a == "--play") {
-            s.go(Nav::Play, cx);
-        }
         s
     }
 
-    /// Opens a page, starting Android when that is the one asked for.
-    ///
-    /// Starting on demand rather than at launch keeps the EGL context and the
-    /// Wayland socket out of the way of anyone who only wanted the library.
-    pub fn go(&mut self, nav: Nav, cx: &mut Context<Self>) {
-        self.nav = nav;
-        if nav == Nav::Play {
-            self.android.start(1280, 720);
-            self.pump_frames(cx);
-        }
-        cx.notify();
-    }
 
-    /// Turns key mapping on or off.
-    ///
-    /// Which profile is edited follows the foreground package, because that
-    /// is the game on screen. Mapping without knowing what is running would
-    /// write bindings into whichever profile happened to be remembered.
-    pub fn toggle_mapping(&mut self, cx: &mut Context<Self>) {
-        if self.mapper.is_on() {
-            self.mapper.end();
-        } else {
-            let pkg = self.snapshot.foreground.clone().unwrap_or_default();
-            if pkg.is_empty() {
-                self.mapper.error =
-                    Some("Nothing is in the foreground to map keys for.".into());
-            } else {
-                let name = self.apps.iter()
-                    .find(|a| a.package == pkg)
-                    .map(|a| a.name.clone())
-                    .unwrap_or_else(|| pkg.clone());
-                self.mapper.begin(&pkg, &name);
-                self.sidebar_open = true;
-            }
-        }
-        cx.notify();
-    }
 
-    /// Repaints while Android is on screen.
-    ///
-    /// gpui redraws when something tells it to, and a frame arriving on
-    /// another thread is not something it can see. This is that signal. It
-    /// stops itself when the page changes, so a window showing the library is
-    /// not woken sixty times a second for a picture nobody is looking at.
-    fn pump_frames(&mut self, cx: &mut Context<Self>) {
-        if self.frame_pump.is_some() {
-            return;
-        }
-        self.frame_pump = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(16))
-                    .await;
-                let keep = this.update(cx, |s, cx| {
-                    if s.nav != Nav::Play || !s.android.running() {
-                        s.frame_pump = None;
-                        return false;
-                    }
-                    if s.android.poll() {
-                        cx.notify();
-                    }
-                    true
-                });
-                match keep {
-                    Ok(true) => {}
-                    _ => break,
-                }
-            }
-        }));
-    }
 
     /// Apps the library grid shows: user apps, minus the search filter.
     pub fn visible_apps(&self) -> impl Iterator<Item = &AndroidApp> {
@@ -393,10 +296,28 @@ impl AppState {
         self._watch = Some(task);
     }
 
+    /// Launches a game into its own window.
+    ///
+    /// The window comes first and the launch second, in that order on purpose:
+    /// the window hosts the Wayland socket Waydroid connects to, so starting
+    /// the game before it exists would send the game to the desktop compositor
+    /// instead — which is the behaviour this replaces.
     pub fn launch(&mut self, package: String, cx: &mut Context<Self>) {
         self.featured = Some(package.clone());
         self.error = None;
         self.busy = Some("launch");
+
+        let title = self.apps.iter()
+            .find(|a| a.package == package)
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| package.clone());
+        if let Err(e) = crate::game::open(package.clone(), title, cx) {
+            self.error = Some(format!("could not open the game window: {e}"));
+            self.busy = None;
+            cx.notify();
+            return;
+        }
+
         cx.notify();
         let t = Tokio::spawn(cx, async move {
             let m = Manager::connect().await.map_err(|e| e.to_string())?;
