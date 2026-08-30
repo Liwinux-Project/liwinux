@@ -418,7 +418,7 @@ at = { x = 0.9, y = 0.2 }
         let out = std::fs::read_to_string(&p).unwrap();
         assert!(out.contains("[bindings.zipla]"), "eklenmedi: {out}");
         assert!(!out.contains("[bindings.ates]"), "silinmedi: {out}");
-        // Tekrar okunabilmeli.
+        // It has to be readable again afterwards.
         let re = Profile::from_toml(&out).unwrap();
         assert_eq!(re.bindings.len(), 1);
     }

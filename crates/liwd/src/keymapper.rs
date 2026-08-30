@@ -129,9 +129,9 @@ impl Handle {
             tracing::warn!(file = %p.path.display(), error = %p.error, "could not load profile");
         }
         tracing::info!(
-            klavye = %device.display(),
-            fare = ?cfg.mouse.as_ref().map(|p| p.display().to_string()),
-            profil = store.len(), grab,
+            keyboard = %device.display(),
+            mouse = ?cfg.mouse.as_ref().map(|p| p.display().to_string()),
+            profiles = store.len(), grab,
             hotkey = ?cfg.hotkey_game_mode,
             "starting keymapper");
         if grab && cfg.hotkey_game_mode.is_none() {

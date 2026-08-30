@@ -65,7 +65,7 @@ pub async fn test_profile(
     let text = std::fs::read_to_string(&profile_path)
         .with_context(|| format!("could not read profile: {}", profile_path.display()))?;
     let profile = Profile::from_toml(&text).context("invalid profile")?;
-    println!("Profil : {} ({})", profile.name, profile.package);
+    println!("Profile: {} ({})", profile.name, profile.package);
     println!("Bindings: {}", profile.bindings.len());
 
     let devs = capture::discover();
@@ -455,11 +455,11 @@ pub async fn detect(save: bool, mouse_mode: bool, hotkey_mode: bool) -> Result<(
 
     let Some((path, name, code)) = found else { return Ok(()) };
     if mouse_mode {
-        println!("Fare   : {}  ({})", path.display(), name);
+        println!("Mouse   : {}  ({})", path.display(), name);
     } else if hotkey_mode {
         println!("Hotkey code: {code}   (device: {})", path.display());
     } else {
-        println!("Klavye : {}  ({})", path.display(), name);
+        println!("Keyboard: {}  ({})", path.display(), name);
         println!("First key code: {code}");
     }
 
@@ -553,7 +553,7 @@ pub async fn run(grab: bool, poll_ms: u64) -> Result<()> {
         .map(|d| d.name.clone()).unwrap_or_default();
 
     let store = Store::discover();
-    println!("Klavye  : {} ({})", device.display(), dev_name);
+    println!("Keyboard : {} ({})", device.display(), dev_name);
     println!("Profiles: {} loaded", store.len());
     for p in &store.problems {
         eprintln!("  warning: {} — {}", p.path.display(), p.error);

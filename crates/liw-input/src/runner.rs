@@ -480,9 +480,21 @@ impl Runner {
                         st.latency_p99_us = p99;
                         st.latency_samples = lat.recent_len() as u64;
                     }
-                    if !pipe_dead { continue }
+                    // Two reasons to go looking for a pipe, not one.
+                    //
+                    // A broken pipe is the obvious case. The other is that we
+                    // never got one: acquisition gives up after a handful of
+                    // attempts and falls back to uinput, and with the game
+                    // window now bringing Android up LONG after the daemon
+                    // starts, that fallback is what happens every time.
+                    // Measured: the mapper came up while the container was
+                    // down, fell back, and never tried again — game mode
+                    // turned on, the hotkey worked, and not one binding
+                    // reached the game.
+                    let on_fallback = backend.name() != "wl_touch";
+                    if !pipe_dead && !on_fallback { continue }
                     let Some(tx) = self.pipe_provider.clone() else {
-                        tracing::error!("the pipe broke and there is no channel to renew it \
+                        tracing::error!("no pipe and no channel to ask for one \
                                          — the keymapper must be restarted");
                         pipe_dead = false;
                         continue;
@@ -503,20 +515,29 @@ impl Runner {
                                         let _ = e.set_enabled(false);
                                         let _ = e.set_enabled(true);
                                     }
-                                    tracing::info!(width = w, height = h,
-                                        "touch pipe renewed");
+                                    // Says which of the two it was, because
+                                    // "renewed" after a fallback means aim
+                                    // just went from bounded to unbounded and
+                                    // that is worth knowing.
+                                    if on_fallback {
+                                        tracing::info!(width = w, height = h,
+                                            "touch pipe acquired at last — \
+                                             leaving uinput, aim is unbounded again");
+                                    } else {
+                                        tracing::info!(width = w, height = h,
+                                            "touch pipe renewed");
+                                    }
                                 }
                                 Err(e) => tracing::error!(error = %e,
                                     "could not set up the new pipe"),
                             }
                         }
-                        Ok(None) => tracing::warn!("pipe not available yet, \
-                                                    tekrar denenecek"),
+                        Ok(None) => tracing::debug!("pipe not available yet, will retry"),
                         Err(_) => {}
                     }
                 }
 
-                // --- jest saati ---
+                // --- gesture clock ---
                 _ = ticker.tick(), if engine.as_ref().is_some_and(|e| e.has_pending()) => {
                     if let Some(e) = engine.as_mut() {
                         let acts = e.tick(t0.elapsed().as_millis() as u64);

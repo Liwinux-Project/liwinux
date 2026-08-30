@@ -48,9 +48,9 @@ pub fn show(package: &str) -> Result<()> {
     let s = Store::discover();
     let e = s.for_package(package)
         .with_context(|| format!("no profile for '{package}' — check with 'liw profile list'"))?;
-    println!("Ad     : {}", e.profile.name);
-    println!("Paket  : {}", e.profile.package);
-    println!("Kaynak : {} ({})", origin_label(e.origin), e.path.display());
+    println!("Name   : {}", e.profile.name);
+    println!("Package: {}", e.profile.package);
+    println!("Source : {} ({})", origin_label(e.origin), e.path.display());
     println!();
     println!("{:<14} {:<10} {}", "BINDING", "TYPE", "DETAIL");
     for (name, b) in &e.profile.bindings {
@@ -59,7 +59,7 @@ pub fn show(package: &str) -> Result<()> {
             Tap { at, .. } => ("tap", format!("({:.2}, {:.2})", at.x, at.y)),
             Toggle { at, .. } => ("toggle", format!("({:.2}, {:.2})", at.x, at.y)),
             Joystick { center, radius, .. } =>
-                ("joystick", format!("merkez ({:.2}, {:.2}) r={radius:.2}", center.x, center.y)),
+                ("joystick", format!("centre ({:.2}, {:.2}) r={radius:.2}", center.x, center.y)),
             Aim { sensitivity, deadzone, .. } =>
                 ("aim", format!("sensitivity={sensitivity} deadzone={deadzone}")),
             Swipe { from, to, duration_ms, .. } =>
@@ -86,7 +86,7 @@ pub async fn which() -> Result<()> {
     let s = Store::discover();
     match s.for_package(&pkg) {
         Some(e) => {
-            println!("Profil  : {} ({})", e.profile.name, origin_label(e.origin));
+            println!("Profile : {} ({})", e.profile.name, origin_label(e.origin));
             println!("Dosya   : {}", e.path.display());
         }
         None => {
@@ -123,7 +123,7 @@ pub fn install(force: bool, from: Option<std::path::PathBuf>) -> Result<()> {
             .context("repository profiles not found — pass the source directory with --from \
                       (e.g. --from ~/Projects/liwinux/profiles)")?,
     };
-    println!("Kaynak: {}", src.display());
+    println!("Source: {}", src.display());
 
     let mut copied = 0;
     let mut skipped = 0;
