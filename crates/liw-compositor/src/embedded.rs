@@ -227,6 +227,7 @@ fn run(
         }
         drawn_commits = commits;
 
+        let mut element_count = 0usize;
         let result = headless.capture(|renderer, fb| {
             let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                 render_elements_from_surface_tree(
@@ -237,6 +238,11 @@ fn run(
                     1.0,
                     Kind::Unspecified,
                 );
+            // An empty list renders a blank frame perfectly successfully. If
+            // the buffer could not be imported the client is left waiting for
+            // a wl_buffer.release that never comes, and the only visible
+            // symptom is a guest that connects and then does nothing.
+            element_count = elements.len();
             damage
                 .render_output(renderer, fb, 0, &elements, [0.02, 0.02, 0.03, 1.0])
                 .map(|_| ())
@@ -244,7 +250,15 @@ fn run(
         });
 
         match result {
-            Ok(frame) => publish(&frames, frame),
+            Ok(frame) => {
+                if element_count == 0 {
+                    tracing::warn!(
+                        commits,
+                        "rendered nothing: the surface produced no elements"
+                    );
+                }
+                publish(&frames, frame)
+            }
             Err(e) => tracing::warn!(error = %e, "frame dropped"),
         }
 

@@ -344,3 +344,42 @@ target. Whichever is easier — the answer is the same either way.
   renders and reads back frames successfully.
 * **A stale machine.** Ruled out by a control run immediately afterwards,
   which is now standard practice for this work.
+
+## Android inside the gpui window (2026-08-30)
+
+Done. `liw-ui --play` hosts the Wayland socket, Waydroid connects to it, and
+Special Forces Group 2 renders inside the liwinux window with the nav strip
+above it.
+
+```
+fitted guest=(2560, 1440) view=(1120, 668) fit=0.4375
+```
+
+The view size is the real window minus the nav strip, and the guest is
+fitted into it. Through the standalone headless path, measured on the same
+build: guest 120 commits/s, frames delivered at 60/s.
+
+### The failure that was not a bug
+
+Three runs of the embedded path failed with Android never booting, and the
+last commit blamed the untested half of a two-variable bisect. That was
+wrong. The same binary, unchanged except for one log line, booted Android
+in ten seconds on the next run — and then delivered frames at 60/s.
+
+So the embedded path was working the whole time and the failures were
+**intermittent**. A control run against KWin's socket had passed before one
+of them, which is exactly why it was believed to be the code: the control
+that had caught the stale-machine problem twice before did not catch this.
+
+The honest reading is that a control run proves the machine was healthy at
+the moment it ran, not that it stayed healthy, and not that a failure a
+minute earlier had the same cause. An intermittent failure needs repetition
+to characterise, and three failures with no repeat of the success is not
+enough evidence to name a culprit — which is what naming the renderer was.
+
+### What is unverified
+
+**F11.** The action is bound and the handler only fires on the Play page,
+but pressing it needs a keyboard and every check here was done from a
+script. The resize path is verified, because the fit follows the real
+window size in the log above.
