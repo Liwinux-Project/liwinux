@@ -51,6 +51,12 @@ pub struct GameView {
     pub touch: crate::touch::Touch,
     frame_pump: Option<gpui::Task<()>>,
     _pipe: Option<gpui::Task<()>>,
+    /// The title has been put on the window.
+    ///
+    /// `TitlebarOptions.title` is not applied on Wayland in this gpui
+    /// revision, so the name has to be set explicitly — otherwise the task
+    /// switcher shows whatever the toolkit defaulted to.
+    titled: bool,
 }
 
 impl GameView {
@@ -71,6 +77,7 @@ impl GameView {
             touch: Default::default(),
             frame_pump: None,
             _pipe: None,
+            titled: false,
         };
         v.android.start(1280, 720);
         v.pump(cx);
@@ -92,21 +99,60 @@ impl GameView {
     /// and a restart that forgot the socket would take the game out of this
     /// window without explanation.
     fn bring_up_android(&mut self, cx: &mut Context<Self>) {
+        let package = self.package.clone();
         let task = gpui_tokio::Tokio::spawn(cx, async move {
             let m = liw_core::manager::Manager::connect().await
                 .map_err(|e| e.to_string())?;
             m.set_embedded_display(crate::android::SOCKET).await
                 .map_err(|e| e.to_string())?;
+
+            // Waydroid reads WAYLAND_DISPLAY once, at session start, so a
+            // session already attached elsewhere has to be restarted to move.
             let running = m.snapshot().await
                 .map(|s| s.state == "RUNNING")
                 .unwrap_or(false);
+            tracing::debug!(running, "bring-up: session state read");
             if running {
-                // A session already attached to something else has to be
-                // restarted to move: Waydroid reads WAYLAND_DISPLAY once, at
-                // session start.
                 m.session_stop().await.map_err(|e| e.to_string())?;
+                // Waydroid needs the old session to actually be gone before a
+                // new one will bind; starting into the tail of a stop leaves
+                // the container half up and the socket unused.
+                for _ in 0..40 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if !m.snapshot().await.map(|s| s.state == "RUNNING").unwrap_or(true) {
+                        break;
+                    }
+                }
             }
-            m.session_start().await.map_err(|e| e.to_string())
+            m.session_start().await.map_err(|e| e.to_string())?;
+            tracing::debug!("bring-up: session started");
+
+            // Wait for Android before launching. This is the ordering that
+            // was wrong: the launcher used to fire the launch at the same
+            // time as the window opened, so the app went into whatever
+            // session was already running — which is the OLD one, on the
+            // desktop's socket. The game then appeared in a window of
+            // Waydroid's own while this one stayed empty.
+            let mut booted = false;
+            for i in 0..90 {
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                match m.snapshot().await {
+                    Ok(s) if s.health.boot_completed => { booted = true; break; }
+                    Ok(s) if i % 10 == 0 => tracing::debug!(
+                        state = %s.state, booted = s.health.boot_completed,
+                        "bring-up: waiting for Android"),
+                    Err(e) if i % 10 == 0 => tracing::warn!(
+                        error = %e, "bring-up: cannot read the daemon"),
+                    _ => {}
+                }
+            }
+            if !booted {
+                return Err("Android did not finish booting".to_string());
+            }
+            tracing::debug!("bring-up: booted, launching the game");
+            let r = m.launch(&package).await.map_err(|e| e.to_string());
+            tracing::info!(ok = r.is_ok(), package = %package, "game launched");
+            r
         });
         cx.spawn(async move |this, cx| {
             let r = match task.await {
@@ -132,23 +178,26 @@ impl GameView {
     /// open before Android has finished booting.
     fn open_touch_pipe(&mut self, cx: &mut Context<Self>) {
         self._pipe = Some(cx.spawn(async move |this, cx| {
-            for attempt in 0..60u32 {
-                if attempt > 0 {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(2))
-                        .await;
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(2))
+                    .await;
+
+                // Only open when there is nothing usable. The pipe dies with
+                // the container and the window restarts the container itself,
+                // so this has to keep watch rather than succeed once and stop.
+                match this.update(cx, |v, _| v.touch.is_ready()) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(_) => return, // the window is gone
                 }
+
                 let task = gpui_tokio::Tokio::spawn(cx, async move {
                     let h = liw_core::helper::HelperClient::connect().await.ok()?;
                     h.open_touch_pipe().await.ok()
                 });
                 let Ok(Some((pipe, w, h))) = task.await else { continue };
-                let done = this.update(cx, |v, cx| {
-                    v.touch.attach(pipe, w, h);
-                    cx.notify();
-                    v.touch.is_ready()
-                });
-                if matches!(done, Ok(true)) {
+                if this.update(cx, |v, cx| { v.touch.attach(pipe, w, h); cx.notify(); }).is_err() {
                     return;
                 }
             }
@@ -232,6 +281,11 @@ impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::dark();
 
+        if !self.titled {
+            window.set_window_title(&self.title);
+            self.titled = true;
+        }
+
         // The picture is the window minus the rail. One piece of arithmetic
         // decides what the compositor renders AND where a click lands.
         let win = window.viewport_size();
@@ -295,9 +349,13 @@ fn picture(
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(move |v: &mut GameView, ev: &gpui::MouseDownEvent, _, cx| {
-                    if let Some(n) = crate::touch::to_norm(
-                        (f32::from(ev.position.x), f32::from(ev.position.y)), shown)
-                    {
+                    let p = (f32::from(ev.position.x), f32::from(ev.position.y));
+                    let n = crate::touch::to_norm(p, shown);
+                    // Both halves are logged because "the mouse does nothing"
+                    // has two very different causes: the handler never fires,
+                    // or it fires and the position falls outside the picture.
+                    tracing::debug!(?p, ?shown, hit = n.is_some(), "mouse down");
+                    if let Some(n) = n {
                         v.touch.press(n);
                         cx.notify();
                     }

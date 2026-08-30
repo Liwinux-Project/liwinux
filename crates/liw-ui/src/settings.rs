@@ -20,7 +20,7 @@ pub fn render(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyE
             .child(devices_panel(s, t, "Keyboard", true, c.keyboard.clone(), cx))
             .child(devices_panel(s, t, "Mouse", false, c.mouse.clone(), cx))
             .child(toggles(s, t, cx))
-            .child(hotkey(s, t))
+            .child(hotkey(s, t, cx))
             .into_any_element(),
     };
 
@@ -132,15 +132,32 @@ fn devices_panel(
                                 format!("{}/22 keys", d.typing_score))),
                     )
                 })
-                .on_click(cx.listener(move |st, _, _, cx| {
+                .on_click(cx.listener(move |st: &mut AppState, _, _, cx| {
                     let p = std::path::PathBuf::from(path.clone());
                     st.edit_config(|c| {
                         if want_keyboard { c.keyboard = Some(p) } else { c.mouse = Some(p) }
                     }, cx);
+                    // Saving alone changes nothing that is already running.
+                    // Choosing a different keyboard is the one setting whose
+                    // whole point is to take effect now.
+                    st.restart_keymapper(cx);
                 }))
                 .into_any_element(),
         );
     }
+
+    let detect = div()
+        .id(if want_keyboard { "det-kb" } else { "det-mouse" })
+        .px(px(S3))
+        .py(px(S1))
+        .rounded(px(RADIUS))
+        .border_1()
+        .border_color(t.border)
+        .text_size(px(12.0))
+        .cursor_pointer()
+        .hover(|x| x.bg(t.raised))
+        .child("Detect")
+        .on_click(cx.listener(|st: &mut AppState, _, _, cx| st.autodetect_devices(cx)));
 
     panel(t, title,
         if rows.is_empty() {
@@ -151,11 +168,15 @@ fn devices_panel(
         } else {
             "The device the aim binding reads relative motion from."
         },
-        if rows.is_empty() {
-            div().into_any_element()
-        } else {
-            div().flex().flex_col().gap(px(2.0)).children(rows).into_any_element()
-        })
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(S2))
+            .when(!rows.is_empty(), |el| {
+                el.child(div().flex().flex_col().gap(px(2.0)).children(rows))
+            })
+            .child(detect)
+            .into_any_element())
 }
 
 fn toggles(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyElement {
@@ -223,8 +244,9 @@ where
 /// Read-only for now. Capturing it here would mean grabbing the keyboard from
 /// inside this window, and `liw keymap detect --hotkey --save` already does
 /// that properly from a terminal where nothing else is listening.
-fn hotkey(s: &AppState, t: &Theme) -> gpui::AnyElement {
+fn hotkey(s: &AppState, t: &Theme, cx: &mut Context<AppState>) -> gpui::AnyElement {
     let code = s.config.as_ref().and_then(|c| c.hotkey_game_mode);
+    let capturing = s.capturing_hotkey;
     panel(t, "Game mode hotkey",
         "Game mode grabs the devices and turns mapping on. Without a hotkey \
          it grabs as soon as a profile activates, which locks the mouse \
@@ -233,35 +255,54 @@ fn hotkey(s: &AppState, t: &Theme) -> gpui::AnyElement {
             .flex()
             .flex_col()
             .gap(px(S2))
-            .child(match code {
-                Some(c) => div()
+            .child(match (capturing, code) {
+                (true, _) => div()
+                    .text_size(px(13.0))
+                    .text_color(t.accent)
+                    .child("Press the key you want…")
+                    .into_any_element(),
+                // The name, not the number. "evdev code 40" is what the file
+                // holds; it is not what anyone pressed.
+                (false, Some(c)) => div()
                     .text_size(px(13.0))
                     .text_color(t.text)
-                    .child(SharedString::from(format!("evdev code {c}")))
+                    .child(SharedString::from(crate::keys::label(c)))
                     .into_any_element(),
-                None => div()
+                (false, None) => div()
                     .text_size(px(13.0))
                     .text_color(t.warn)
                     .child("Not set — the mapper will grab as soon as a game opens")
                     .into_any_element(),
             })
-            .child(mono(t, "liw keymap detect --hotkey --save"))
+            .child(
+                div()
+                    .id("hk-set")
+                    .track_focus(&s.hotkey_focus)
+                    .px(px(S3))
+                    .py(px(S1))
+                    .rounded(px(RADIUS))
+                    .border_1()
+                    .border_color(if capturing { t.accent } else { t.border })
+                    .text_size(px(12.0))
+                    .cursor_pointer()
+                    .hover(|x| x.bg(t.raised))
+                    .child(SharedString::from(if capturing { "Cancel" } else { "Set a key" }))
+                    .on_click(cx.listener(|st: &mut AppState, _, window, cx| {
+                        st.capturing_hotkey = !st.capturing_hotkey;
+                        if st.capturing_hotkey {
+                            window.focus(&st.hotkey_focus, cx);
+                        }
+                        cx.notify();
+                    }))
+                    .on_key_down(cx.listener(
+                        |st: &mut AppState, ev: &gpui::KeyDownEvent, _, cx| {
+                            st.take_hotkey(&ev.keystroke.key, cx);
+                        },
+                    )),
+            )
             .into_any_element())
 }
 
-fn mono(t: &Theme, text: &str) -> gpui::AnyElement {
-    div()
-        .px(px(S3))
-        .py(px(S2))
-        .rounded(px(RADIUS))
-        .bg(t.bg)
-        .border_1()
-        .border_color(t.border)
-        .text_size(px(12.0))
-        .text_color(t.text_muted)
-        .child(SharedString::from(text.to_string()))
-        .into_any_element()
-}
 
 fn panel(t: &Theme, title: &str, note: &str, body: gpui::AnyElement) -> gpui::AnyElement {
     div()

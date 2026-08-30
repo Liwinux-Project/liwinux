@@ -50,6 +50,13 @@ pub enum Link {
 
 pub struct AppState {
     pub nav: Nav,
+    /// The window has been given its name. See `shell::render`.
+    pub titled: bool,
+    /// Waiting for a key press to become the game-mode hotkey.
+    pub capturing_hotkey: bool,
+    /// Focus for that capture. Key events reach a focused element, so the
+    /// panel has to hold focus while it is listening.
+    pub hotkey_focus: gpui::FocusHandle,
     pub link: Link,
     pub snapshot: Snapshot,
     pub apps: Vec<AndroidApp>,
@@ -92,6 +99,9 @@ impl AppState {
         let search_focus = cx.focus_handle();
         let mut s = Self {
             nav: Nav::Library,
+            titled: false,
+            capturing_hotkey: false,
+            hotkey_focus: cx.focus_handle(),
             link: Link::Connecting,
             snapshot: Snapshot::default(),
             apps: Vec::new(),
@@ -317,20 +327,12 @@ impl AppState {
             return;
         }
 
+        // The launch itself belongs to the window, not here. It has to happen
+        // AFTER the session has moved to that window's socket and Android has
+        // booted; firing it from here raced the move and sent the game to the
+        // session that was already running.
+        self.busy = None;
         cx.notify();
-        let t = Tokio::spawn(cx, async move {
-            let m = Manager::connect().await.map_err(|e| e.to_string())?;
-            m.launch(&package).await.map_err(|e| e.to_string())
-        });
-        cx.spawn(async move |this, cx| {
-            let r = match t.await {
-                Ok(Ok(())) => None,
-                Ok(Err(e)) => Some(e),
-                Err(e) => Some(e.to_string()),
-            };
-            let _ = this.update(cx, |s, cx| { s.busy = None; s.error = r; cx.notify(); });
-        })
-        .detach();
     }
 
     /// Opens the Play Store at a package's page.
@@ -395,6 +397,77 @@ impl AppState {
     /// Optimistic: the local copy is updated first so the control responds at
     /// once. A save that fails puts the message in the banner rather than
     /// silently reverting the switch under the cursor.
+    /// Picks the most likely keyboard and mouse from what is plugged in.
+    ///
+    /// The keyboard is chosen by typing score — how many of the twenty-two
+    /// letter keys the device actually claims. That is a hint rather than an
+    /// answer, and the list still shows the score so a wrong pick can be
+    /// seen and corrected; a multi-interface keyboard presents several nodes
+    /// with the same name, and only some of them ever send a key.
+    pub fn autodetect_devices(&mut self, cx: &mut Context<Self>) {
+        let kb = self.devices.iter()
+            .filter(|d| !d.is_virtual && d.typing_score > 0)
+            .max_by_key(|d| d.typing_score)
+            .map(|d| d.stable_path.clone().unwrap_or_else(|| d.path.clone()));
+        let mouse = self.devices.iter()
+            .filter(|d| !d.is_virtual && d.kind != "Keyboard")
+            .map(|d| d.stable_path.clone().unwrap_or_else(|| d.path.clone()))
+            .next();
+        if kb.is_none() && mouse.is_none() {
+            self.error = Some(
+                "No usable device found. Is the user in the `input` group?".into());
+            cx.notify();
+            return;
+        }
+        self.edit_config(move |c| {
+            if let Some(k) = kb { c.keyboard = Some(k.into()); }
+            if let Some(m) = mouse { c.mouse = Some(m.into()); }
+        }, cx);
+        self.restart_keymapper(cx);
+    }
+
+    /// Restarts the key mapper so a device change takes effect.
+    ///
+    /// Saving the configuration alone does not: the daemon deliberately does
+    /// NOT restart the mapper on every save, because most settings only apply
+    /// at its next start and yanking the devices out from under a running
+    /// game would be worse. Choosing a different keyboard is the one change
+    /// where the whole point IS to take effect, so it is asked for here
+    /// rather than left to the next restart.
+    pub fn restart_keymapper(&mut self, cx: &mut Context<Self>) {
+        let t = Tokio::spawn(cx, async move {
+            let m = Manager::connect().await.map_err(|e| e.to_string())?;
+            let _ = m.keymapper(false, false).await;
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            m.keymapper(true, false).await.map_err(|e| e.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let r = match t.await {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(e),
+                Err(e) => Some(e.to_string()),
+            };
+            let _ = this.update(cx, |s, cx| { s.error = r; cx.notify(); });
+        })
+        .detach();
+    }
+
+    /// Takes a key press as the game-mode hotkey.
+    pub fn take_hotkey(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        if !self.capturing_hotkey {
+            return false;
+        }
+        let Some(code) = crate::keys::evdev_code(key) else {
+            self.error = Some(format!("{key} cannot be used as a hotkey"));
+            cx.notify();
+            return true;
+        };
+        self.capturing_hotkey = false;
+        self.edit_config(move |c| c.hotkey_game_mode = Some(code), cx);
+        self.restart_keymapper(cx);
+        true
+    }
+
     pub fn edit_config<F>(&mut self, edit: F, cx: &mut Context<Self>)
     where
         F: FnOnce(&mut liw_core::Config),

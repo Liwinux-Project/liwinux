@@ -69,7 +69,9 @@ impl Touch {
         if self.down {
             self.release();
         }
-        if self.send(&[TouchAction::Down { id: MOUSE_ID, at }]) {
+        let sent = self.send(&[TouchAction::Down { id: MOUSE_ID, at }]);
+        tracing::debug!(x = at.x, y = at.y, sent, "press");
+        if sent {
             self.down = true;
         }
     }
@@ -109,7 +111,24 @@ impl Touch {
         match b.dispatch(actions) {
             Ok(()) => true,
             Err(e) => {
-                self.error = Some(e.to_string());
+                let text = e.to_string();
+                // A broken pipe means the READER is gone, and the reader is
+                // Android's EventHub inside the container. The container
+                // restarts — this very window restarts it to move the session
+                // onto its own socket — so the descriptor we were handed dies
+                // with it. Measured: every click after that fails with EPIPE
+                // and nothing says why.
+                //
+                // Dropping the backend is what makes it self-healing: the
+                // pipe task sees there is none and opens a fresh one.
+                if text.contains("Broken pipe") {
+                    tracing::info!("the touch pipe died with the container — reopening");
+                    self.backend = None;
+                    self.down = false;
+                } else {
+                    tracing::warn!(error = %text, "touch not delivered");
+                }
+                self.error = Some(text);
                 false
             }
         }

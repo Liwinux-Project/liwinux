@@ -19,6 +19,12 @@ use crate::theme::{Theme, HEADER_H, RADIUS, S1, S2, S3, S4, S6};
 impl Render for AppState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::dark();
+        // TitlebarOptions.title is not applied on Wayland in this gpui
+        // revision, so the launcher names itself here too.
+        if !self.titled {
+            window.set_window_title("liwinux");
+            self.titled = true;
+        }
         let body = content(self, &t, window, cx);
         div()
             .flex()
