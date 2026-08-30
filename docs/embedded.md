@@ -198,14 +198,38 @@ gpui path would need.
   changes a second, because the size it compared against is only refreshed
   when a frame is painted.
 
-### Unverified
+### Scale-to-fit, verified
 
-The scale-to-fit fix. By the time it was written the machine had been
-through ten session restart cycles and Waydroid would no longer boot **even
-against KWin's own socket** — a control run confirmed the failure is in that
-stale state, not in the compositor. `sudo systemctl restart
-waydroid-container` clears it. Until that is done and the run repeated, the
-fit is code that compiles and reads correctly, and nothing more.
+Repeated after `systemctl restart waydroid-container` cleared the stale
+state. Android boots against the compositor in 10 seconds, and the fit is
+computed from what the guest actually sends:
+
+```
+fitted guest=(2560, 1440) window=(1280, 720) fit=0.5
+```
+
+The whole Android screen now lands inside the window. Before the fix the
+game's menu showed two buttons running off the right edge; after it, all
+four buttons, the player panel and the version string are on screen.
+
+Sustained over five-second windows:
+
+```
+guest 120.3 commits/s   painted 60.2 /s
+guest 120.0 commits/s   painted 60.0 /s
+guest 119.9 commits/s   painted 60.0 /s
+```
+
+The guest commits at twice the frame rate — two commits per frame — and the
+throttle paints once per new frame. 60 FPS.
+
+### A warning about test method
+
+Ten session restarts in a row left Waydroid unable to boot **against KWin's
+own socket**. The failure looked exactly like a compositor bug and was not
+one; a control run against the normal socket is what separated them. Any
+session of this kind should re-run that control before blaming the code,
+and `systemctl restart waydroid-container` is the reset.
 
 ### Still unproven
 
