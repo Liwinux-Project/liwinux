@@ -72,6 +72,9 @@ pub struct Compositor {
     pub seat: Seat<Self>,
     /// What the host side is allowed to see. Nothing else crosses the thread.
     pub guest: GuestHandle,
+    /// The surface being hosted, once there is one. There is only ever one:
+    /// this is not a desktop, it shows Android and nothing else.
+    pub surface: Option<WlSurface>,
     /// Size we tell the client to be.
     pub size: (i32, i32),
     pub running: bool,
@@ -122,6 +125,7 @@ impl Compositor {
             seat_state,
             seat,
             guest: Arc::new(Mutex::new(Guest::default())),
+            surface: None,
             size,
             running: true,
         }
@@ -180,8 +184,10 @@ impl CompositorHandler for Compositor {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        // A commit is the only proof that the client is drawing rather than
-        // merely connected. Binding globals says nothing; this says everything.
+        // Read the buffer FIRST. on_commit_buffer_handler takes the pending
+        // state as it hands it to the renderer, so a read afterwards finds
+        // nothing — which is why the report said buffer=None for a whole run
+        // while frames were arriving perfectly well.
         let attached = with_states(surface, |states| {
             let mut guard = states.cached_state.get::<SurfaceAttributes>();
             match &guard.current().buffer {
@@ -190,6 +196,12 @@ impl CompositorHandler for Compositor {
                 None => None,
             }
         });
+
+        // This is what makes the attached buffer visible to the renderer.
+        // Without it the surface tree yields no elements and the window stays
+        // blank while every counter here still climbs — a commit is recorded,
+        // a dmabuf is named, and nothing is drawn.
+        smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
 
         self.with_guest(|g| {
             g.commits += 1;
@@ -290,6 +302,7 @@ impl XdgShellHandler for Compositor {
         });
         surface.send_configure();
 
+        self.surface = Some(surface.wl_surface().clone());
         self.with_guest(|g| {
             g.connected = true;
             g.size = Some(size);
@@ -310,6 +323,7 @@ impl XdgShellHandler for Compositor {
     }
 
     fn toplevel_destroyed(&mut self, _surface: ToplevelSurface) {
+        self.surface = None;
         self.with_guest(|g| {
             g.connected = false;
             g.buffer = None;

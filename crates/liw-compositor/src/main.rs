@@ -1,28 +1,38 @@
-//! `liw-compositor` — run the nested compositor on its own and see what
-//! Waydroid does with it.
+//! `liw-compositor` — host Waydroid's surface and draw it in a window.
 //!
-//! This binary exists so the Wayland half can be proved before it is joined to
-//! the renderer. It hosts the socket, accepts the client, and prints what it
-//! sees. It draws nothing: the point of running it is to find out whether
-//! hwcomposer connects, gets its configure, and commits frames — three
-//! questions that have nothing to do with drawing and everything to do with
-//! whether the rest is worth building.
+//! This binary opens a window, hosts the Wayland socket Waydroid connects to,
+//! and paints the guest's frames into that window. It is the standalone half
+//! of the embedded path: everything except the join to gpui.
 //!
 //! ```text
 //! liw-compositor --socket wayland-liw &
 //! WAYLAND_DISPLAY=wayland-liw waydroid session start
+//! WAYLAND_DISPLAY=wayland-liw waydroid show-full-ui
 //! ```
+//!
+//! `liwd` must be stopped while this runs. Its supervisor sees "Android boot
+//! did not complete" during the guest's start, restarts the session, and the
+//! restart carries liwd's own environment — which points back at the desktop
+//! compositor and ends the experiment.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use smithay::backend::renderer::damage::OutputDamageTracker;
+use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+use smithay::backend::renderer::element::{surface::render_elements_from_surface_tree, Kind};
+use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::winit::{self, WinitEvent};
+use smithay::reexports::winit::window::WindowAttributes;
+use smithay::desktop::utils::send_frames_surface_tree;
+use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
+use smithay::utils::{Rectangle, Transform};
 use smithay::wayland::socket::ListeningSocketSource;
 
 use liw_compositor::{ClientState, Compositor};
 
-/// Everything the binary takes, kept as one struct so main reads top-down.
 struct Args {
     socket: String,
     width: i32,
@@ -49,8 +59,9 @@ fn parse_args() -> Result<Args> {
             "--height" => a.height = value("--height")?.parse()?,
             "--refresh" => a.refresh = value("--refresh")?.parse()?,
             "-h" | "--help" => {
-                println!("liw-compositor [--socket NAME] [--width N] [--height N] \
-                          [--refresh mHz]");
+                println!(
+                    "liw-compositor [--socket NAME] [--width N] [--height N] [--refresh mHz]"
+                );
                 std::process::exit(0);
             }
             other => anyhow::bail!("unknown argument: {other}"),
@@ -70,6 +81,18 @@ fn main() -> Result<()> {
 
     let args = parse_args()?;
 
+    // The window comes first. If there is nowhere to draw, there is no point
+    // accepting a client that expects its frames to go somewhere.
+    let (mut backend, mut winit_loop) = winit::init_from_attributes::<GlesRenderer>(
+        WindowAttributes::default()
+            .with_title("liwinux — Android")
+            .with_inner_size(smithay::reexports::winit::dpi::LogicalSize::new(
+                args.width as f64,
+                args.height as f64,
+            )),
+    )
+    .map_err(|e| anyhow::anyhow!("could not open a window: {e}"))?;
+
     let mut event_loop: EventLoop<Compositor> =
         EventLoop::try_new().context("could not create the event loop")?;
     let display: Display<Compositor> =
@@ -78,17 +101,38 @@ fn main() -> Result<()> {
 
     let mut state = Compositor::new(&dh, (args.width, args.height), args.refresh);
 
-    // Bind the socket by NAME rather than letting it pick one. The whole
-    // mechanism depends on pointing Waydroid at this exact socket through
-    // WAYLAND_DISPLAY, and a name chosen for us would have to be read back
-    // out of the log before anything could connect to it.
+    // A second output object, matching the window rather than the advertised
+    // mode, so damage is tracked against what is actually on screen.
+    let win_size = backend.window_size();
+    let output = Output::new(
+        "liw-window".into(),
+        PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: Subpixel::Unknown,
+            make: "liwinux".into(),
+            model: "window".into(),
+        },
+    );
+    output.change_current_state(
+        Some(Mode { size: win_size, refresh: args.refresh }),
+        Some(Transform::Flipped180),
+        None,
+        Some((0, 0).into()),
+    );
+    let mut damage = OutputDamageTracker::from_output(&output);
+
+    // Bind the socket by NAME. The whole mechanism depends on pointing
+    // Waydroid at this exact socket through WAYLAND_DISPLAY.
     let socket = ListeningSocketSource::with_name(&args.socket)
         .with_context(|| format!("could not bind the socket {}", args.socket))?;
 
     let handle = event_loop.handle();
     handle
         .insert_source(socket, move |client, _, state: &mut Compositor| {
-            match state.dh.insert_client(client, std::sync::Arc::new(ClientState::default())) {
+            match state
+                .dh
+                .insert_client(client, std::sync::Arc::new(ClientState::default()))
+            {
                 Ok(_) => tracing::info!("client connected"),
                 Err(e) => tracing::error!(error = %e, "could not insert the client"),
             }
@@ -103,8 +147,8 @@ fn main() -> Result<()> {
                 smithay::reexports::calloop::Mode::Level,
             ),
             |_, display, state: &mut Compositor| {
-                // SAFETY: the display is owned by this source and is only
-                // touched here, on the event loop thread.
+                // SAFETY: the display is owned by this source and only touched
+                // here, on the event loop thread.
                 unsafe { display.get_mut().dispatch_clients(state)? };
                 Ok(smithay::reexports::calloop::PostAction::Continue)
             },
@@ -113,33 +157,149 @@ fn main() -> Result<()> {
 
     tracing::info!(
         socket = %args.socket,
-        size = ?(args.width, args.height),
+        window = ?win_size,
         "ready — point waydroid at it with WAYLAND_DISPLAY={}",
         args.socket
     );
 
-    let guest = state.guest.clone();
-    let mut last = String::new();
+    let start = Instant::now();
+    let mut painted = 0u64;
+    let mut last_report = Instant::now();
+    // What was on screen last time we painted. Repainting an unchanged frame
+    // costs a full GPU pass for nothing: the first version ran at 180 fps
+    // against a static launcher that had stopped committing at 133.
+    let mut drawn_commits = u64::MAX;
+    let mut drawn_size = (0, 0);
+    let mut applied_scale = f64::NAN;
+    let mut applied_size = (0, 0);
 
     while state.running {
+        // 1. Window events. A close request is the only one that matters here;
+        //    resizing is handled by re-reading the size each frame.
+        let status = winit_loop.dispatch_new_events(|event| {
+            if let WinitEvent::CloseRequested = event {
+                tracing::info!("window closed");
+            }
+        });
+        if let smithay::reexports::winit::platform::pump_events::PumpStatus::Exit(_) = status {
+            break;
+        }
+
+        // 2. Anything the guest sent.
         event_loop
-            .dispatch(Some(Duration::from_millis(200)), &mut state)
+            .dispatch(Some(Duration::from_millis(4)), &mut state)
             .context("event loop failed")?;
 
-        // Report only when something CHANGED. A line per tick would bury the
-        // one moment that matters — the first commit — in a scrolling wall.
-        if let Ok(g) = guest.lock() {
-            let now = format!(
-                "connected={} size={:?} commits={} buffer={:?}",
-                g.connected, g.size, g.commits, g.buffer
+        // 3. Paint. The guest's dmabuf becomes a GLES texture here; that
+        //    import is the step the whole embedded path rests on.
+        let size = backend.window_size();
+        let (commits, guest_size) = state
+            .guest
+            .lock()
+            .map(|g| (g.commits, g.size))
+            .unwrap_or((0, None));
+        let resized = (size.w, size.h) != drawn_size;
+        let fresh = commits != drawn_commits;
+
+        // Fit the guest into the window.
+        //
+        // The scale passed to render_elements_from_surface_tree only moves the
+        // element; its SIZE comes from the OUTPUT's scale, which the damage
+        // tracker reads at render time. Passing 0.5 to the element function
+        // and expecting a half-size picture is the mistake that left the
+        // game's buttons running off the right edge for two runs.
+        //
+        // Android ignores our wl_output mode and sizes itself from
+        // waydroid.display_width/height, taken from the host display, so a
+        // 2560x1440 guest in a 1280x720 window is the normal case, not an
+        // exception.
+        // A guest smaller than this is not a screen. The session manager
+        // attaches a 1x1 placeholder before Android is up, and fitting to it
+        // gives a scale of 1280 — which is then advertised to the client as
+        // its output scale. That is not a rounding error, it is nonsense sent
+        // over the wire, and it stopped Android booting at all.
+        const REAL_SCREEN: i32 = 64;
+        let (gw, gh) = guest_size.unwrap_or((size.w, size.h));
+        let fit = if gw >= REAL_SCREEN && gh >= REAL_SCREEN {
+            (size.w as f64 / gw as f64).min(size.h as f64 / gh as f64)
+        } else {
+            1.0
+        };
+
+        // Only touch the output when something it describes actually changed.
+        // The first version also fired on `resized`, which was true on every
+        // pass because the size it compared against is only updated when a
+        // frame is painted — so the client was sent a fresh wl_output state
+        // hundreds of times a second.
+        if (fit - applied_scale).abs() > 1e-9 || (size.w, size.h) != applied_size {
+            output.change_current_state(
+                Some(Mode { size, refresh: args.refresh }),
+                None,
+                Some(Scale::Fractional(fit)),
+                None,
             );
-            if now != last {
-                tracing::info!("{now}");
-                last = now;
+            damage = OutputDamageTracker::from_output(&output);
+            applied_scale = fit;
+            applied_size = (size.w, size.h);
+            tracing::info!(guest = ?(gw, gh), window = ?(size.w, size.h), fit, "fitted");
+        }
+
+        if let Some(surface) = state.surface.clone().filter(|_| fresh || resized) {
+            drawn_commits = commits;
+            drawn_size = (size.w, size.h);
+            let (renderer, mut fb) = backend
+                .bind()
+                .map_err(|e| anyhow::anyhow!("could not bind the window: {e}"))?;
+
+            let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                render_elements_from_surface_tree(
+                    renderer,
+                    &surface,
+                    (0, 0),
+                    fit,
+                    1.0,
+                    Kind::Unspecified,
+                );
+
+            let res = damage.render_output(renderer, &mut fb, 0, &elements, [0.05, 0.05, 0.07, 1.0]);
+            drop(fb);
+            match res {
+                Ok(res) => {
+                    let full = [Rectangle::from_size(size)];
+                    backend
+                        .submit(res.damage.map(|d| d.as_slice()).or(Some(&full)))
+                        .map_err(|e| anyhow::anyhow!("could not present: {e}"))?;
+                    painted += 1;
+                }
+                Err(e) => tracing::warn!(error = %e, "render failed"),
             }
+
+            // 4. Tell the guest it may draw the next frame. Without this it
+            //    paints once and then waits forever for permission.
+            send_frames_surface_tree(
+                &surface,
+                &output,
+                start.elapsed(),
+                None,
+                |_, _| Some(output.clone()),
+            );
         }
 
         state.dh.flush_clients().ok();
+
+        if last_report.elapsed() >= Duration::from_secs(5) {
+            let g = state.guest.lock().ok().map(|g| {
+                (g.connected, g.size, g.commits, g.buffer.clone())
+            });
+            if let Some((connected, gsize, commits, buffer)) = g {
+                tracing::info!(
+                    connected, ?gsize, commits, ?buffer, painted,
+                    fps = format!("{:.1}", painted as f64 / start.elapsed().as_secs_f64()),
+                    "state"
+                );
+            }
+            last_report = Instant::now();
+        }
     }
     Ok(())
 }

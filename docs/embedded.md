@@ -162,7 +162,52 @@ events. Being there is what the client checks for.
 * **Nothing is drawn.** The compositor accepts the buffers and drops them.
   Importing them as a gpui texture is the next step and the hard one.
 
+## Third run: the game is on screen (2026-08-29)
+
+`liw-compositor` now opens a window and paints the guest into it. Special
+Forces Group 2 was captured running inside a window titled
+"liwinux — Android", at **60 paints per second** while the guest committed
+at 120/s.
+
+The renderer is GLES over EGL through smithay's winit backend, on the
+RTX 3060. The guest's dmabuf becomes a GL texture with no copy. That is the
+import the design document called the hard join — solved into GLES rather
+than into gpui, but the buffer does cross, and the same import is what a
+gpui path would need.
+
+### What each mistake cost, since none of them announced itself
+
+* **No `on_commit_buffer_handler`** and the surface tree yields no elements:
+  every counter still climbs, a dmabuf is still named, and the window stays
+  blank.
+* **Reading the buffer after that handler** reports `buffer=None` forever,
+  because the handler takes the pending state as it hands it to the
+  renderer. A whole run was logged as having no buffer while frames were
+  arriving perfectly well.
+* **No paint throttle** meant 180 fps against a launcher that had stopped
+  committing at 133 — a full GPU pass per frame to redraw an unchanged
+  picture. Painting only when the commit counter moves fixed it.
+* **The scale argument to `render_elements_from_surface_tree` only moves the
+  element.** Its SIZE comes from the OUTPUT's scale, read by the damage
+  tracker at render time. Passing 0.5 there and expecting a half-size
+  picture left the game's buttons running off the right edge for two runs.
+* **Fitting to the 1x1 placeholder** the session manager attaches gives a
+  scale of 1280, which is then advertised to the client as its output scale.
+  Not a rounding error — nonsense on the wire, and Android stopped booting.
+* **Updating the output every pass** sent the client hundreds of wl_output
+  changes a second, because the size it compared against is only refreshed
+  when a frame is painted.
+
+### Unverified
+
+The scale-to-fit fix. By the time it was written the machine had been
+through ten session restart cycles and Waydroid would no longer boot **even
+against KWin's own socket** — a control run confirmed the failure is in that
+stale state, not in the compositor. `sudo systemctl restart
+waydroid-container` clears it. Until that is done and the run repeated, the
+fit is code that compiles and reads correctly, and nothing more.
+
 ### Still unproven
 
-Whether a frame can cross into gpui at all. Everything up to the buffer
-arriving is now measured; everything after it is still the design document.
+Whether a frame can cross into gpui. Everything up to and including drawing
+it in a window is now measured; the gpui join is still the design document.

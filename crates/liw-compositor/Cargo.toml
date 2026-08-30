@@ -18,7 +18,20 @@ anyhow = "1.0.104"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
-# Only the Wayland server side. The default features drag in winit, udev and
-# a renderer stack; none of that applies when the host application is the
-# thing doing the drawing.
-smithay = { version = "0.7", default-features = false, features = ["wayland_frontend"] }
+# The Wayland server side, plus a window to draw into.
+#
+# `backend_winit` pulls winit, EGL and the GLES renderer. That is a lot, and
+# it was deliberately left out at first on the reasoning that the host
+# application would do the drawing. It still should eventually — importing
+# the guest buffer as a gpui texture is the goal — but that needs a patch to
+# a pinned Zed fork, and nothing could be seen on screen until it landed.
+# Drawing here first proves the import works and gives something to look at;
+# the knowledge moves to gpui either way.
+smithay = { version = "0.7", default-features = false, features = [
+    "wayland_frontend",
+    "backend_winit",
+    "renderer_gl",
+    # For send_frames_surface_tree: without a frame callback the client draws
+    # once and then waits forever for permission to draw again.
+    "desktop",
+] }
