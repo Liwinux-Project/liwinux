@@ -13,6 +13,7 @@
 
 mod library;
 mod tint;
+mod android;
 mod shell;
 mod diagnostics;
 mod keymap;
@@ -31,6 +32,13 @@ fn main() {
     // `Application::new()`.
     gpui_platform::application().run(|cx: &mut App| {
         gpui_tokio::init(cx);
+        // F11 anywhere. The handler itself only acts on the Play page: a
+        // window with no nav strip and no Android in it has no way back.
+        cx.bind_keys([gpui::KeyBinding::new(
+            "f11",
+            crate::android::ToggleImmersive,
+            None,
+        )]);
         let bounds = Bounds::centered(None, size(px(1120.), px(720.)), cx);
         let state = state::build(cx);
         cx.open_window(

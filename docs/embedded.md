@@ -235,3 +235,62 @@ and `systemctl restart waydroid-container` is the reset.
 
 Whether a frame can cross into gpui. Everything up to and including drawing
 it in a window is now measured; the gpui join is still the design document.
+
+
+## Into gpui (2026-08-30)
+
+### The import question, answered by looking
+
+gpui has **no external-texture path on Linux**. Its `surface` element is
+`#[cfg(target_os = "macos")]` and takes a `CVPixelBuffer`; `paint_surface`
+is the same. So the choice was a patch to the pinned Zed fork, or reading
+each frame back to bytes.
+
+That was measured before anything was built on it. Reading a 1280x720 frame
+back costs **0.80 to 2.02 ms**, 5 to 12 per cent of a 16.67 ms frame. Worth
+paying while the rest is brought up; the first thing to delete when the fork
+grows a texture path.
+
+Two details the measurement itself taught:
+
+* The readback must not be **waited on** between render and swap. Doing so
+  left EGL with a different current draw surface, the context was lost on
+  the next present, and the whole compositor exited. Ask for the copy while
+  the framebuffer is bound; wait for it after the frame is on screen.
+* Capture as `Argb8888`, not `Abgr8888`. DRM names channels
+  most-significant-first in a little-endian word, so ARGB8888 lands in
+  memory as B, G, R, A — already what gpui's `RenderImage` wants. Capturing
+  the guest's own ABGR8888 would need a per-pixel swap: 55 million byte
+  swaps a second at 720p60, for nothing.
+
+### What is built
+
+* `liw_compositor::headless` renders into an offscreen GLES texture on a
+  headless EGL context (`PLATFORM_DEVICE_EXT`), no window of its own.
+* `liw_compositor::embedded::spawn` runs the whole Wayland side on a thread
+  and leaves the newest frame in a one-slot mailbox. One slot, not a queue:
+  a UI that is behind wants the current picture, not a backlog.
+* `liw-ui` has a **Play** page that draws that frame, a frame pump that
+  repaints only when the serial changes, and **F11** for immersive mode —
+  chrome hidden, Android alone. `liw-ui --play` opens straight into it.
+* The render size follows the window. Confirmed in the log: with the real
+  window open, `fitted guest=(1280, 720) view=(1120, 668) fit=0.875`.
+
+### Where it stops
+
+Android's composer does not come up against the headless compositor.
+`android.hardware.graphics.composer@2.1::IComposer` never registers,
+SurfaceFlinger waits for it forever, and boot never completes — the same
+shape as the missing-`wl_seat` failure, though the seat is present now.
+
+A control run against KWin's socket booted in 10 seconds immediately
+afterwards, so this is the embedded path and not a stale machine.
+
+The guest **does** connect: the socket is hosted by `liw-ui`, the toplevel
+is created and configured, and the fit is computed against the real window.
+What is missing is between that and the composer starting.
+
+The difference from the working standalone binary is the renderer: winit's
+window-backed EGL there, `EGLDevice` headless here. That is the first place
+to look, and the next run should compare what each advertises to the client
+rather than guessing which of the two matters.

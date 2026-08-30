@@ -20,14 +20,24 @@ impl Render for AppState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::dark();
         let body = content(self, &t, window, cx);
+        // Immersive: Android alone, no nav strip. F11 toggles it, and it only
+        // applies on the Play page — hiding the chrome anywhere else would
+        // leave a window with no way back to it.
+        let immersive = self.nav == Nav::Play && self.android.immersive;
         div()
+            .on_action(cx.listener(|s: &mut AppState, _: &crate::android::ToggleImmersive, _, cx| {
+                if s.nav == Nav::Play {
+                    s.android.immersive = !s.android.immersive;
+                    cx.notify();
+                }
+            }))
             .flex()
             .flex_col()
             .size_full()
             .bg(t.bg)
             .text_color(t.text)
             .font_family("sans-serif")
-            .child(nav(self, &t, window, cx))
+            .when(!immersive, |el| el.child(nav(self, &t, window, cx)))
             .child(
                 div()
                     .flex()
@@ -117,7 +127,7 @@ fn tab(s: &AppState, t: &Theme, n: Nav, cx: &mut Context<AppState>) -> gpui::Any
         .hover(|x| x.text_color(t.text))
         .child(n.label())
         .on_click(cx.listener(move |st, _, _, cx| {
-            st.nav = n;
+            st.go(n, cx);
             cx.notify();
         }))
         .into_any_element()
@@ -368,10 +378,10 @@ fn content(
     }
     match s.nav {
         Nav::Library => library::render(s, t, window, cx),
+        Nav::Play => crate::android::render(s, t, window, cx),
         Nav::Keymap => crate::keymap::render(s, t, cx),
         Nav::Diagnostics => crate::diagnostics::render(s, t, cx),
         Nav::Settings => crate::settings::render(s, t, cx),
-        other => placeholder(t, other),
     }
 }
 

@@ -19,8 +19,12 @@ use std::sync::{Arc, Mutex};
 
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 
+pub mod embedded;
+pub mod headless;
 pub mod state;
 
+pub use embedded::{spawn, Embedded};
+pub use headless::{Frame, FrameSlot, Headless};
 pub use state::{Compositor, Surface};
 
 /// What the host needs to know about the guest, without holding Wayland types.

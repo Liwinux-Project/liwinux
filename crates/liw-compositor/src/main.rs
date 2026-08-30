@@ -22,6 +22,7 @@ use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{surface::render_elements_from_surface_tree, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::{ExportMem, Renderer};
 use smithay::backend::winit::{self, WinitEvent};
 use smithay::reexports::winit::window::WindowAttributes;
 use smithay::desktop::utils::send_frames_surface_tree;
@@ -35,6 +36,14 @@ use liw_compositor::{ClientState, Compositor};
 
 struct Args {
     socket: String,
+    /// Time a full-frame CPU readback each frame.
+    ///
+    /// This is a measurement, not a feature. gpui has no external-texture
+    /// path on Linux — its `surface` element is macOS-only — so putting the
+    /// guest inside the UI means either patching the pinned Zed fork or
+    /// reading each frame back and handing gpui the bytes. The second costs
+    /// something; this says how much before anything is built on it.
+    readback: bool,
     width: i32,
     height: i32,
     /// Refresh in mHz, the unit wl_output uses. 60 Hz is 60_000.
@@ -47,6 +56,7 @@ fn parse_args() -> Result<Args> {
         width: 1280,
         height: 720,
         refresh: 60_000,
+        readback: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -58,9 +68,11 @@ fn parse_args() -> Result<Args> {
             "--width" => a.width = value("--width")?.parse()?,
             "--height" => a.height = value("--height")?.parse()?,
             "--refresh" => a.refresh = value("--refresh")?.parse()?,
+            "--readback" => a.readback = true,
             "-h" | "--help" => {
                 println!(
-                    "liw-compositor [--socket NAME] [--width N] [--height N] [--refresh mHz]"
+                    "liw-compositor [--socket NAME] [--width N] [--height N] \
+                     [--refresh mHz] [--readback]"
                 );
                 std::process::exit(0);
             }
@@ -172,6 +184,9 @@ fn main() -> Result<()> {
     let mut drawn_size = (0, 0);
     let mut applied_scale = f64::NAN;
     let mut applied_size = (0, 0);
+    let mut readback_ns = 0u64;
+    let mut readback_n = 0u64;
+    let mut readback_bytes = 0usize;
 
     while state.running {
         // 1. Window events. A close request is the only one that matters here;
@@ -262,6 +277,22 @@ fn main() -> Result<()> {
                 );
 
             let res = damage.render_output(renderer, &mut fb, 0, &elements, [0.05, 0.05, 0.07, 1.0]);
+
+            // Ask for the copy while the framebuffer is still bound, but do
+            // NOT wait for it here. Waiting between the render and the swap
+            // left EGL with a different current draw surface and the context
+            // was lost on the next present — the whole compositor exited.
+            let t0 = Instant::now();
+            let mapping = if args.readback {
+                let region = Rectangle::from_size((size.w, size.h).into());
+                renderer
+                    .copy_framebuffer(&fb, region, smithay::backend::allocator::Fourcc::Abgr8888)
+                    .map_err(|e| tracing::warn!(error = %e, "readback failed"))
+                    .ok()
+            } else {
+                None
+            };
+
             drop(fb);
             match res {
                 Ok(res) => {
@@ -270,6 +301,20 @@ fn main() -> Result<()> {
                         .submit(res.damage.map(|d| d.as_slice()).or(Some(&full)))
                         .map_err(|e| anyhow::anyhow!("could not present: {e}"))?;
                     painted += 1;
+
+                    // The wait happens here, after the frame is on screen, so
+                    // what is measured is the cost a CPU consumer would add
+                    // rather than a stall inserted into the middle of drawing.
+                    if let Some(m) = mapping {
+                        match backend.renderer().map_texture(&m) {
+                            Ok(bytes) => {
+                                readback_ns += t0.elapsed().as_nanos() as u64;
+                                readback_n += 1;
+                                readback_bytes = bytes.len();
+                            }
+                            Err(e) => tracing::warn!(error = %e, "map failed"),
+                        }
+                    }
                 }
                 Err(e) => tracing::warn!(error = %e, "render failed"),
             }
@@ -297,6 +342,18 @@ fn main() -> Result<()> {
                     fps = format!("{:.1}", painted as f64 / start.elapsed().as_secs_f64()),
                     "state"
                 );
+            }
+            if readback_n > 0 {
+                let ms = readback_ns as f64 / readback_n as f64 / 1e6;
+                tracing::info!(
+                    frames = readback_n,
+                    mean_ms = format!("{ms:.2}"),
+                    mib = format!("{:.1}", readback_bytes as f64 / (1024.0 * 1024.0)),
+                    budget_pct = format!("{:.0}", ms / 16.67 * 100.0),
+                    "readback"
+                );
+                readback_ns = 0;
+                readback_n = 0;
             }
             last_report = Instant::now();
         }

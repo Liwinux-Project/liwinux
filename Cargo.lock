@@ -3351,6 +3351,7 @@ dependencies = [
  "gpui_platform",
  "gpui_tokio",
  "image",
+ "liw-compositor",
  "liw-core",
  "serde",
  "serde_json",

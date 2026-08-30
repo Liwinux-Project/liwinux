@@ -18,17 +18,20 @@ use crate::tint::{self, Tint};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nav {
     Library,
+    /// Android itself, drawn in this window.
+    Play,
     Keymap,
     Diagnostics,
     Settings,
 }
 
 impl Nav {
-    pub const ALL: [Nav; 4] =
-        [Nav::Library, Nav::Keymap, Nav::Diagnostics, Nav::Settings];
+    pub const ALL: [Nav; 5] =
+        [Nav::Library, Nav::Play, Nav::Keymap, Nav::Diagnostics, Nav::Settings];
     pub fn label(self) -> &'static str {
         match self {
             Nav::Library => "Library",
+            Nav::Play => "Play",
             Nav::Keymap => "Key mapping",
             Nav::Diagnostics => "Diagnostics",
             Nav::Settings => "Settings",
@@ -50,6 +53,10 @@ pub enum Link {
 
 pub struct AppState {
     pub nav: Nav,
+    /// Android drawn inside this window, and whether chrome is hidden.
+    pub android: crate::android::Android,
+    /// The repaint loop that runs while Android is on screen.
+    frame_pump: Option<gpui::Task<()>>,
     pub link: Link,
     pub snapshot: Snapshot,
     pub apps: Vec<AndroidApp>,
@@ -92,6 +99,8 @@ impl AppState {
         let search_focus = cx.focus_handle();
         let mut s = Self {
             nav: Nav::Library,
+            android: Default::default(),
+            frame_pump: None,
             link: Link::Connecting,
             snapshot: Snapshot::default(),
             apps: Vec::new(),
@@ -109,7 +118,59 @@ impl AppState {
             _watch: None,
         };
         s.reload(cx);
+        // `liw-ui --play` opens straight into Android. Useful on its own, and
+        // it is the only way to reach that page without a mouse — which
+        // matters when the point of the page is to test it.
+        if std::env::args().any(|a| a == "--play") {
+            s.go(Nav::Play, cx);
+        }
         s
+    }
+
+    /// Opens a page, starting Android when that is the one asked for.
+    ///
+    /// Starting on demand rather than at launch keeps the EGL context and the
+    /// Wayland socket out of the way of anyone who only wanted the library.
+    pub fn go(&mut self, nav: Nav, cx: &mut Context<Self>) {
+        self.nav = nav;
+        if nav == Nav::Play {
+            self.android.start(1280, 720);
+            self.pump_frames(cx);
+        }
+        cx.notify();
+    }
+
+    /// Repaints while Android is on screen.
+    ///
+    /// gpui redraws when something tells it to, and a frame arriving on
+    /// another thread is not something it can see. This is that signal. It
+    /// stops itself when the page changes, so a window showing the library is
+    /// not woken sixty times a second for a picture nobody is looking at.
+    fn pump_frames(&mut self, cx: &mut Context<Self>) {
+        if self.frame_pump.is_some() {
+            return;
+        }
+        self.frame_pump = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(16))
+                    .await;
+                let keep = this.update(cx, |s, cx| {
+                    if s.nav != Nav::Play || !s.android.running() {
+                        s.frame_pump = None;
+                        return false;
+                    }
+                    if s.android.poll() {
+                        cx.notify();
+                    }
+                    true
+                });
+                match keep {
+                    Ok(true) => {}
+                    _ => break,
+                }
+            }
+        }));
     }
 
     /// Apps the library grid shows: user apps, minus the search filter.
