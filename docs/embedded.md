@@ -294,3 +294,53 @@ The difference from the working standalone binary is the renderer: winit's
 window-backed EGL there, `EGLDevice` headless here. That is the first place
 to look, and the next run should compare what each advertises to the client
 rather than guessing which of the two matters.
+
+## Narrowing the embedded failure (2026-08-30)
+
+`liw-compositor --headless` runs the embedded code path with no window and
+no gpui around it. Against it, Android does not boot; a control run against
+KWin's socket ten seconds later does. So **gpui is not the cause** — the
+process it lives in makes no difference.
+
+What the headless run establishes, from its own log:
+
+```
+guest connected
+toplevel created and configured size=(1280, 720)
+(true, Some((1, 1)), 2, Some("shm Argb8888")) frame=Some((1280, 720, 2))
+```
+
+The compositor is working. The guest connects, creates a toplevel, takes the
+configure, attaches the 1x1 placeholder the session manager always attaches,
+and **two frames are rendered and read back**. Then the guest goes quiet
+without disconnecting — the windowed run logs `toplevel destroyed` at this
+point and this one never does.
+
+Android's side is the same shape every time:
+`android.hardware.graphics.composer@2.1::IComposer` never registers,
+SurfaceFlinger is waited for, and system_server's watchdog eventually kills
+it inside `DisplayManagerService.<init>`. That is all downstream of the
+composer, not a second fault.
+
+### The bisect was not clean, and saying so is the point
+
+`--headless` swaps **two** things at once: the renderer (winit's
+window-backed EGL for a headless `EGLDevice`) and the loop (`main.rs` for
+`embedded.rs`). It rules out gpui. It does not say which of those two
+remaining halves matters, and treating it as though it did would be exactly
+the reasoning that has cost this work the most time.
+
+The next run has to change one. Either drive `embedded.rs`'s loop with a
+winit-backed renderer, or drive `main.rs`'s loop against an offscreen
+target. Whichever is easier — the answer is the same either way.
+
+### What is known not to be the difference
+
+* **The seat.** Both runs log `add_keyboard` and `Loaded Keymap
+  name="Turkish"`; the globals advertised are built by the same
+  `Compositor::new` in both.
+* **The EGL context.** The headless one comes up on `PLATFORM_DEVICE_EXT`
+  against the RTX 3060 with `EGL_EXT_image_dma_buf_import` present, and it
+  renders and reads back frames successfully.
+* **A stale machine.** Ruled out by a control run immediately afterwards,
+  which is now standard practice for this work.

@@ -36,6 +36,16 @@ use liw_compositor::{ClientState, Compositor};
 
 struct Args {
     socket: String,
+    /// Use the headless renderer and no window at all.
+    ///
+    /// This exists to bisect one specific failure: Android boots against the
+    /// windowed compositor and does not boot against the embedded one. The
+    /// two differ in the renderer (winit's window-backed EGL against a
+    /// headless EGLDevice) and in the process they live in (a compositor
+    /// alone against a gpui application). This flag changes only the first,
+    /// so a run says which of the two matters instead of leaving it to a
+    /// guess.
+    headless: bool,
     /// Time a full-frame CPU readback each frame.
     ///
     /// This is a measurement, not a feature. gpui has no external-texture
@@ -57,6 +67,7 @@ fn parse_args() -> Result<Args> {
         height: 720,
         refresh: 60_000,
         readback: false,
+        headless: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -69,6 +80,7 @@ fn parse_args() -> Result<Args> {
             "--height" => a.height = value("--height")?.parse()?,
             "--refresh" => a.refresh = value("--refresh")?.parse()?,
             "--readback" => a.readback = true,
+            "--headless" => a.headless = true,
             "-h" | "--help" => {
                 println!(
                     "liw-compositor [--socket NAME] [--width N] [--height N] \
@@ -92,6 +104,10 @@ fn main() -> Result<()> {
         .init();
 
     let args = parse_args()?;
+
+    if args.headless {
+        return run_headless(&args);
+    }
 
     // The window comes first. If there is nowhere to draw, there is no point
     // accepting a client that expects its frames to go somewhere.
@@ -356,6 +372,40 @@ fn main() -> Result<()> {
                 readback_n = 0;
             }
             last_report = Instant::now();
+        }
+    }
+    Ok(())
+}
+
+/// Runs exactly what `liw-ui` runs, with no window and no gpui around it.
+///
+/// If Android boots here, the renderer is not what breaks the embedded path
+/// and the gpui process is. If it does not, the renderer is.
+fn run_headless(args: &Args) -> Result<()> {
+    let embedded = liw_compositor::spawn(&args.socket, args.width, args.height)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    tracing::info!(
+        socket = %args.socket,
+        size = ?(args.width, args.height),
+        "headless — point waydroid at it with WAYLAND_DISPLAY={}",
+        args.socket
+    );
+
+    let mut last = String::new();
+    while embedded.is_running() {
+        std::thread::sleep(Duration::from_millis(500));
+        let frame = embedded
+            .frames
+            .lock()
+            .ok()
+            .and_then(|f| f.as_ref().map(|f| (f.width, f.height, f.serial)));
+        let g = embedded.guest.lock().ok().map(|g| {
+            (g.connected, g.size, g.commits, g.buffer.clone())
+        });
+        let now = format!("{g:?} frame={frame:?}");
+        if now != last {
+            tracing::info!("{now}");
+            last = now;
         }
     }
     Ok(())
